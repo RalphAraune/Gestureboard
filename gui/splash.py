@@ -2,19 +2,18 @@ from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap
 
-from gui.tutorial import TutorialScreen
 
-
-class SplashScreen(QWidget):
-    def __init__(self):
+class SplashPage(QWidget):
+    def __init__(self, parent=None):
         super().__init__()
 
-        self.setWindowTitle("GestureBoard")
-        self.setFixedSize(1000, 600)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
 
-        # -----------------------
-        # Main Layout
-        # -----------------------
+        # Save the MainWindow reference
+        self.parent_window = parent
+
+        self.setWindowFlag(Qt.FramelessWindowHint)
 
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignCenter)
@@ -26,7 +25,6 @@ class SplashScreen(QWidget):
 
         self.logo = QLabel()
 
-        # Change this path if your logo has another filename
         pixmap = QPixmap("assets/logo/logo.png")
 
         if not pixmap.isNull():
@@ -57,7 +55,7 @@ class SplashScreen(QWidget):
         self.subtitle.setAlignment(Qt.AlignCenter)
 
         # -----------------------
-        # Loading Text
+        # Loading
         # -----------------------
 
         self.loading = QLabel("Loading...")
@@ -89,22 +87,18 @@ class SplashScreen(QWidget):
         self.setLayout(layout)
 
         # -----------------------
-        # Styles
+        # Style
         # -----------------------
 
         self.setStyleSheet("""
-            QWidget{
-                background-color:#111827;
-            }
+        QWidget{
+            background-color:#111827;
+        }
 
-            QLabel{
-                color:white;
-            }
-
-            QLabel#title{
-                font-size:42px;
-                font-weight:bold;
-            }
+        QLabel{
+            background:transparent;
+            color:white;
+        }
         """)
 
         self.title.setStyleSheet("""
@@ -129,17 +123,16 @@ class SplashScreen(QWidget):
             margin-bottom:15px;
         """)
 
-        # -----------------------
-        # Open Tutorial after 3 seconds
-        # -----------------------
-
-        QTimer.singleShot(3000, self.openTutorial)
+        # Splash duration
+        QTimer.singleShot(3000, self.next_page)
 
     # -----------------------
-    # Open Tutorial
+    # Next Page
     # -----------------------
 
-    def openTutorial(self):
-        self.tutorial = TutorialScreen()
-        self.tutorial.show()
-        self.close()
+    def next_page(self):
+
+        if self.parent_window:
+            self.parent_window.stack.setCurrentWidget(
+                self.parent_window.tutorial
+            )

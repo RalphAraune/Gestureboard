@@ -8,25 +8,27 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-from gui.home import HomeScreen
 
+class TutorialPage(QWidget):
 
-class TutorialScreen(QWidget):
-
-    def __init__(self):
+    def __init__(self, parent=None):
         super().__init__()
 
-        self.setWindowTitle("GestureBoard Tutorial")
-        self.resize(1000, 600)
+        self.parent_window = parent
+
+        # Let MainWindow control the window
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(False)
 
         self.setStyleSheet("""
             QWidget{
-                background:#111827;
-                color:white;
+                background: transparent;
+                color: white;
             }
 
             QLabel{
-                color:white;
+                color: white;
+                background: transparent;
             }
 
             QPushButton{
@@ -51,14 +53,14 @@ class TutorialScreen(QWidget):
         self.stack.addWidget(self.page3())
 
         mainLayout = QVBoxLayout()
-
+        mainLayout.setContentsMargins(40, 40, 40, 40)
         mainLayout.addWidget(self.stack)
 
         self.setLayout(mainLayout)
 
-    # -------------------------
+    # =========================================================
     # PAGE 1
-    # -------------------------
+    # =========================================================
 
     def page1(self):
 
@@ -70,15 +72,21 @@ class TutorialScreen(QWidget):
 
         title = QLabel("Welcome to GestureBoard")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:32px;font-weight:bold;")
+        title.setStyleSheet("""
+            font-size:32px;
+            font-weight:bold;
+        """)
 
         subtitle = QLabel(
             "Control presentations using simple hand gestures.\n\n"
-            "This quick tutorial will show you the available features."
+            "This short tutorial will introduce the basic features."
         )
 
         subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet("font-size:18px;color:lightgray;")
+        subtitle.setStyleSheet("""
+            font-size:18px;
+            color:#D1D5DB;
+        """)
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -103,9 +111,9 @@ class TutorialScreen(QWidget):
 
         return page
 
-    # -------------------------
+    # =========================================================
     # PAGE 2
-    # -------------------------
+    # =========================================================
 
     def page2(self):
 
@@ -117,7 +125,10 @@ class TutorialScreen(QWidget):
 
         title = QLabel("Virtual Mouse")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:32px;font-weight:bold;")
+        title.setStyleSheet("""
+            font-size:32px;
+            font-weight:bold;
+        """)
 
         info = QLabel(
             "• Move Cursor - Index Finger\n\n"
@@ -127,7 +138,10 @@ class TutorialScreen(QWidget):
         )
 
         info.setAlignment(Qt.AlignCenter)
-        info.setStyleSheet("font-size:18px;color:lightgray;")
+        info.setStyleSheet("""
+            font-size:18px;
+            color:#D1D5DB;
+        """)
 
         layout.addWidget(title)
         layout.addWidget(info)
@@ -152,9 +166,9 @@ class TutorialScreen(QWidget):
 
         return page
 
-    # -------------------------
+    # =========================================================
     # PAGE 3
-    # -------------------------
+    # =========================================================
 
     def page3(self):
 
@@ -166,7 +180,10 @@ class TutorialScreen(QWidget):
 
         title = QLabel("Presentation Controls")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:32px;font-weight:bold;")
+        title.setStyleSheet("""
+            font-size:32px;
+            font-weight:bold;
+        """)
 
         info = QLabel(
             "• Start Presentation\n\n"
@@ -176,7 +193,10 @@ class TutorialScreen(QWidget):
         )
 
         info.setAlignment(Qt.AlignCenter)
-        info.setStyleSheet("font-size:18px;color:lightgray;")
+        info.setStyleSheet("""
+            font-size:18px;
+            color:#D1D5DB;
+        """)
 
         layout.addWidget(title)
         layout.addWidget(info)
@@ -201,29 +221,27 @@ class TutorialScreen(QWidget):
 
         return page
 
-    # -------------------------
+    # =========================================================
 
     def nextPage(self):
 
-        index = self.stack.currentIndex()
+        current = self.stack.currentIndex()
 
-        if index < self.stack.count()-1:
-            self.stack.setCurrentIndex(index+1)
+        if current < self.stack.count() - 1:
+            self.stack.setCurrentIndex(current + 1)
 
-    # -------------------------
+    # =========================================================
 
     def previousPage(self):
 
-        index = self.stack.currentIndex()
+        current = self.stack.currentIndex()
 
-        if index > 0:
-            self.stack.setCurrentIndex(index-1)
+        if current > 0:
+            self.stack.setCurrentIndex(current - 1)
 
-    # -------------------------
+    # =========================================================
 
     def finishTutorial(self):
 
-        self.home = HomeScreen()
-        self.home.show()
-
-        self.close()
+        if self.parent_window:
+            self.parent_window.showHome()
