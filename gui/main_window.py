@@ -1,5 +1,12 @@
-from PyQt5.QtWidgets import QMainWindow, QStackedWidget
+from PyQt5.QtWidgets import (
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QStackedWidget
+)
 from PyQt5.QtCore import Qt
+
+from widgets.titlebar import TitleBar
 
 from gui.splash import SplashPage
 from gui.tutorial import TutorialPage
@@ -11,54 +18,92 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # ---------------------------
+        # ======================================================
         # Window Settings
-        # ---------------------------
+        # ======================================================
+
         self.setWindowTitle("GestureBoard")
 
-        # Fullscreen
-        self.showFullScreen()
+        # Remove the default Windows title bar
+        self.setWindowFlags(Qt.FramelessWindowHint)
 
-        # Prevent white background
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setAutoFillBackground(True)
+        # Start maximized (recommended)
+        self.showMaximized()
 
-        # Global Application Style
+        # Dark background
         self.setStyleSheet("""
             QMainWindow{
                 background-color:#111827;
             }
 
-            QStackedWidget{
+            QWidget{
                 background-color:#111827;
+                color:white;
             }
         """)
 
-        # ---------------------------
-        # Stacked Widget
-        # ---------------------------
+        # ======================================================
+        # Main Container
+        # ======================================================
+
+        self.central = QWidget()
+
+        self.setCentralWidget(self.central)
+
+        self.mainLayout = QVBoxLayout()
+
+        self.mainLayout.setContentsMargins(0, 0, 0, 0)
+
+        self.mainLayout.setSpacing(0)
+
+        self.central.setLayout(self.mainLayout)
+
+        # ======================================================
+        # Custom Title Bar
+        # ======================================================
+
+        self.titlebar = TitleBar(self)
+
+        self.mainLayout.addWidget(self.titlebar)
+
+        # ======================================================
+        # Page Container
+        # ======================================================
+
         self.stack = QStackedWidget()
 
         self.stack.setObjectName("MainStack")
-        self.setCentralWidget(self.stack)
 
-        # ---------------------------
+        self.mainLayout.addWidget(self.stack)
+
+        # ======================================================
         # Pages
-        # ---------------------------
+        # ======================================================
+
         self.splash = SplashPage(self)
+
         self.tutorial = TutorialPage(self)
+
         self.home = HomePage(self)
 
-        # Add pages
+        # ======================================================
+        # Add Pages
+        # ======================================================
+
         self.stack.addWidget(self.splash)
+
         self.stack.addWidget(self.tutorial)
+
         self.stack.addWidget(self.home)
 
-        # Show Splash First
+        # ======================================================
+        # First Page
+        # ======================================================
+
         self.stack.setCurrentWidget(self.splash)
 
     # ======================================================
-    # Navigation Functions
+    # Navigation
     # ======================================================
 
     def showSplash(self):

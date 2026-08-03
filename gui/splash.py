@@ -13,7 +13,7 @@ class SplashPage(QWidget):
         # Save the MainWindow reference
         self.parent_window = parent
 
-        self.setWindowFlag(Qt.FramelessWindowHint)
+        # self.setWindowFlag(Qt.FramelessWindowHint)
 
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignCenter)
@@ -124,7 +124,7 @@ class SplashPage(QWidget):
         """)
 
         # Splash duration
-        QTimer.singleShot(3000, self.next_page)
+        QTimer.singleShot(5000, self.next_page)
 
     # -----------------------
     # Next Page
