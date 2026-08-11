@@ -11,6 +11,8 @@ from widgets.titlebar import TitleBar
 from gui.splash import SplashPage
 from gui.tutorial import TutorialPage
 from gui.home import HomePage
+from gui.camera_setup import CameraSetupPage
+from gui.dashboard import DashboardPage
 
 
 class MainWindow(QMainWindow):
@@ -23,21 +25,20 @@ class MainWindow(QMainWindow):
         # ======================================================
 
         self.setWindowTitle("GestureBoard")
+        self.active_camera_index = None
+        self.active_camera_name = "No camera selected"
 
         # Remove the default Windows title bar
         self.setWindowFlags(Qt.FramelessWindowHint)
 
-        # Start maximized (recommended)
-        self.showMaximized()
-
         # Dark background
         self.setStyleSheet("""
             QMainWindow{
-                background-color:#111827;
+                background-color:#071426;
             }
 
             QWidget{
-                background-color:#111827;
+                background-color:#071426;
                 color:white;
             }
         """)
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
         self.stack.setObjectName("MainStack")
 
         self.mainLayout.addWidget(self.stack)
+        self.mainLayout.setStretch(1, 1)
 
         # ======================================================
         # Pages
@@ -85,6 +87,8 @@ class MainWindow(QMainWindow):
         self.tutorial = TutorialPage(self)
 
         self.home = HomePage(self)
+        self.camera_setup = CameraSetupPage(self)
+        self.dashboard = DashboardPage(self)
 
         # ======================================================
         # Add Pages
@@ -95,6 +99,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.tutorial)
 
         self.stack.addWidget(self.home)
+        self.stack.addWidget(self.camera_setup)
+        self.stack.addWidget(self.dashboard)
 
         # ======================================================
         # First Page
@@ -114,3 +120,15 @@ class MainWindow(QMainWindow):
 
     def showHome(self):
         self.stack.setCurrentWidget(self.home)
+
+    def showCameraSetup(self):
+        self.stack.setCurrentWidget(self.camera_setup)
+
+    def showDashboard(self):
+        self.dashboard.updateCameraName(self.active_camera_name)
+        self.stack.setCurrentWidget(self.dashboard)
+
+    def setActiveCamera(self, index, name):
+        self.active_camera_index = index
+        self.active_camera_name = name
+        self.home.updateCameraName(name)

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap
@@ -5,7 +7,7 @@ from PyQt5.QtGui import QPixmap
 
 class SplashPage(QWidget):
     def __init__(self, parent=None):
-        super().__init__()
+        super().__init__(parent)
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAutoFillBackground(True)
@@ -17,7 +19,7 @@ class SplashPage(QWidget):
 
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignCenter)
-        layout.setSpacing(20)
+        layout.setContentsMargins(40, 40, 40, 40)
 
         # -----------------------
         # Logo
@@ -25,12 +27,13 @@ class SplashPage(QWidget):
 
         self.logo = QLabel()
 
-        pixmap = QPixmap("assets/logo/logo.png")
+        logo_path = Path(__file__).resolve().parent.parent / "assets" / "logo" / "logo.jpg"
+        pixmap = QPixmap(str(logo_path))
 
         if not pixmap.isNull():
             pixmap = pixmap.scaled(
-                120,
-                120,
+                240,
+                240,
                 Qt.KeepAspectRatio,
                 Qt.SmoothTransformation
             )
@@ -38,51 +41,10 @@ class SplashPage(QWidget):
 
         self.logo.setAlignment(Qt.AlignCenter)
 
-        # -----------------------
-        # Title
-        # -----------------------
-
-        self.title = QLabel("GestureBoard")
-        self.title.setAlignment(Qt.AlignCenter)
-
-        # -----------------------
-        # Subtitle
-        # -----------------------
-
-        self.subtitle = QLabel(
-            "Gesture-Controlled Presentation and Annotation System"
-        )
-        self.subtitle.setAlignment(Qt.AlignCenter)
-
-        # -----------------------
-        # Loading
-        # -----------------------
-
-        self.loading = QLabel("Loading...")
-        self.loading.setAlignment(Qt.AlignCenter)
-
-        # -----------------------
-        # Footer
-        # -----------------------
-
-        self.footer = QLabel("Version 1.0")
-        self.footer.setAlignment(Qt.AlignCenter)
-
-        # -----------------------
-        # Add Widgets
-        # -----------------------
-
+        # The splash is intentionally logo-only.
         layout.addStretch()
-
         layout.addWidget(self.logo)
-        layout.addWidget(self.title)
-        layout.addWidget(self.subtitle)
-        layout.addSpacing(20)
-        layout.addWidget(self.loading)
-
         layout.addStretch()
-
-        layout.addWidget(self.footer)
 
         self.setLayout(layout)
 
@@ -92,35 +54,13 @@ class SplashPage(QWidget):
 
         self.setStyleSheet("""
         QWidget{
-            background-color:#111827;
+            background-color:#071426;
         }
 
         QLabel{
             background:transparent;
             color:white;
         }
-        """)
-
-        self.title.setStyleSheet("""
-            font-size:40px;
-            font-weight:bold;
-            color:white;
-        """)
-
-        self.subtitle.setStyleSheet("""
-            font-size:18px;
-            color:#9CA3AF;
-        """)
-
-        self.loading.setStyleSheet("""
-            font-size:15px;
-            color:#60A5FA;
-        """)
-
-        self.footer.setStyleSheet("""
-            font-size:12px;
-            color:#6B7280;
-            margin-bottom:15px;
         """)
 
         # Splash duration

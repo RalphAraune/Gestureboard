@@ -1,118 +1,49 @@
-from PyQt5.QtWidgets import (
-    QWidget,
-    QLabel,
-    QPushButton,
-    QHBoxLayout
-)
 from PyQt5.QtCore import Qt, QPoint
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 
 class TitleBar(QWidget):
+    """Compact, draggable title bar for the frameless main window."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        self.parent_window = parent
         self.dragPos = QPoint()
-
         self.setFixedHeight(45)
-
         self.setStyleSheet("""
-            QWidget{
-                background:#1F2937;
+            QWidget { background: #0B1B32; }
+            QLabel { color: white; font-size: 14px; }
+            QPushButton {
+                background: transparent; color: white; border: none; font-size: 18px;
+                min-width: 45px; min-height: 45px;
             }
-
-            QLabel{
-                color:white;
-                font-size:14px;
-            }
-
-            QPushButton{
-                background:transparent;
-                color:white;
-                border:none;
-                font-size:16px;
-                min-width:45px;
-                min-height:45px;
-            }
-
-            QPushButton:hover{
-                background:#374151;
-            }
-
-            QPushButton#closeButton:hover{
-                background:#EF4444;
-            }
+            QPushButton:hover { background: #173454; }
+            QPushButton#closeButton:hover { background: #EF4444; }
         """)
-
-        # -----------------------------------
-        # App Name
-        # -----------------------------------
 
         title = QLabel("GestureBoard")
-        title.setStyleSheet("""
-            font-size:16px;
-            font-weight:bold;
-        """)
-
-        # -----------------------------------
-        # Status
-        # -----------------------------------
-
-        status = QLabel("🟢 Camera Ready")
-
-        # -----------------------------------
-        # Window Buttons
-        # -----------------------------------
-
-        self.minBtn = QPushButton("—")
-
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        status = QLabel("●  System Ready")
+        status.setStyleSheet("color: #45D99A; font-size: 12px;")
+        self.minBtn = QPushButton("−")
         self.maxBtn = QPushButton("□")
-
-        self.closeBtn = QPushButton("✕")
+        self.closeBtn = QPushButton("×")
         self.closeBtn.setObjectName("closeButton")
-
-        self.minBtn.clicked.connect(self.minimize)
-
+        self.minBtn.clicked.connect(lambda: self.window().showMinimized())
         self.maxBtn.clicked.connect(self.maximizeRestore)
+        self.closeBtn.clicked.connect(lambda: self.window().close())
 
-        self.closeBtn.clicked.connect(self.closeWindow)
-
-        # -----------------------------------
-        # Layout
-        # -----------------------------------
-
-        layout = QHBoxLayout()
-
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(15, 0, 0, 0)
-
+        layout.setSpacing(0)
         layout.addWidget(title)
-
         layout.addStretch()
-
         layout.addWidget(status)
-
         layout.addStretch()
-
         layout.addWidget(self.minBtn)
-
         layout.addWidget(self.maxBtn)
-
         layout.addWidget(self.closeBtn)
 
-        layout.setSpacing(0)
-
-        self.setLayout(layout)
-
-    # =======================================================
-    # Window Buttons
-    # =======================================================
-
-    def minimize(self):
-        self.window().showMinimized()
-
     def maximizeRestore(self):
-
         if self.window().isMaximized():
             self.window().showNormal()
             self.maxBtn.setText("□")
@@ -120,34 +51,14 @@ class TitleBar(QWidget):
             self.window().showMaximized()
             self.maxBtn.setText("❐")
 
-    def closeWindow(self):
-        self.window().close()
-
-    # =======================================================
-    # Drag Window
-    # =======================================================
-
     def mousePressEvent(self, event):
-
         if event.button() == Qt.LeftButton:
             self.dragPos = event.globalPos()
 
     def mouseMoveEvent(self, event):
-
-        if event.buttons() == Qt.LeftButton:
-
-            if self.window().isMaximized():
-                return
-
-            self.window().move(
-                self.window().pos() + event.globalPos() - self.dragPos
-            )
-
+        if event.buttons() == Qt.LeftButton and not self.window().isMaximized():
+            self.window().move(self.window().pos() + event.globalPos() - self.dragPos)
             self.dragPos = event.globalPos()
-
-    # =======================================================
-    # Double Click = Maximize
-    # =======================================================
 
     def mouseDoubleClickEvent(self, event):
         self.maximizeRestore()

@@ -7,7 +7,8 @@ from gui.main_window import MainWindow
 app = QApplication(sys.argv)
 
 window = MainWindow()
-
-window.show()
+# Keep maximization as the final show request so Windows does not restore the
+# previously saved, smaller geometry.
+window.showMaximized()
 
 sys.exit(app.exec_())
