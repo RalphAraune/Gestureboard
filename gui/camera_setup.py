@@ -3,13 +3,19 @@
 import cv2
 import numpy as np
 
-# MediaPipe may fail to load its DLL on some Python setups. Make the import
-# optional so the rest of the app still starts; initialize_mediapipe() guards
-# against mp being None.
+# ============================================================
+# MEDIAPIPE
+# ============================================================
+
 try:
     import mediapipe as mp
-except Exception:
+except Exception as error:
+    print("MediaPipe import error:", error)
     mp = None
+
+# ============================================================
+# PYQT5
+# ============================================================
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
@@ -26,9 +32,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-
 # ============================================================
-# CAMERA DETECTION
+# OPTIONAL CAMERA ENUMERATION
 # ============================================================
 
 try:
@@ -37,59 +42,25 @@ except ImportError:
     enumerate_cameras = None
 
 
+# ============================================================
+# CAMERA DETECTION
+# ============================================================
+
 def find_named_cameras():
     """
     Detect available cameras.
 
     Returns:
-        list[tuple[int, str]]
-        Example:
-            [(0, "Integrated Camera")]
+        [
+            (camera_index, camera_name),
+            ...
+        ]
     """
 
+    if cv2 is None:
+        return []
+
     cameras = []
-
-    # --------------------------------------------------------
-    # Method 1: cv2-enumerate-cameras
-    # --------------------------------------------------------
-
-    if enumerate_cameras is not None:
-
-        try:
-
-            backend = (
-                cv2.CAP_DSHOW
-                if hasattr(cv2, "CAP_DSHOW")
-                else cv2.CAP_ANY
-            )
-
-            devices = enumerate_cameras(backend)
-
-            for device in devices:
-
-                try:
-                    cameras.append(
-                        (
-                            int(device.index),
-                            str(device.name)
-                        )
-                    )
-                except Exception:
-                    pass
-
-            if cameras:
-                return cameras
-
-        except Exception as error:
-
-            print(
-                "Camera enumeration warning:",
-                error
-            )
-
-    # --------------------------------------------------------
-    # Method 2: OpenCV fallback
-    # --------------------------------------------------------
 
     backend = (
         cv2.CAP_DSHOW
@@ -97,12 +68,39 @@ def find_named_cameras():
         else cv2.CAP_ANY
     )
 
+    # --------------------------------------------------------
+    # Try cv2-enumerate-cameras first
+    # --------------------------------------------------------
+
+    if enumerate_cameras is not None:
+        try:
+            devices = enumerate_cameras(backend)
+
+            for device in devices:
+                try:
+                    index = int(device.index)
+                    name = str(device.name)
+
+                    cameras.append((index, name))
+
+                except Exception:
+                    pass
+
+            if cameras:
+                return cameras
+
+        except Exception as error:
+            print("Camera enumeration warning:", error)
+
+    # --------------------------------------------------------
+    # OpenCV fallback
+    # --------------------------------------------------------
+
     for index in range(10):
 
         camera = None
 
         try:
-
             camera = cv2.VideoCapture(
                 index,
                 backend
@@ -142,18 +140,24 @@ def find_named_cameras():
 
 class CameraSetupPage(QWidget):
     """
-    Camera setup page.
+    GestureBoard Camera Setup.
 
     Features:
     - Camera selection
     - Resolution selection
     - Mirrored live camera preview
-    - MediaPipe hand detection
+    - Automatic MediaPipe hand detection
     - Hand landmark dots
     - Hand connection lines
     - Camera status
-    - Tracking status
-    - Continue to dashboard
+    - Hand detection status
+    - Continue button
+
+    IMPORTANT:
+    There is NO Start Tracking button.
+
+    MediaPipe automatically starts processing when
+    Test Camera is clicked.
     """
 
     def __init__(self, parent=None):
@@ -162,19 +166,19 @@ class CameraSetupPage(QWidget):
 
         self.parent_window = parent
 
-        # ----------------------------------------------------
-        # Camera
-        # ----------------------------------------------------
+        # ====================================================
+        # CAMERA
+        # ====================================================
 
         self.capture = None
-
         self.camera_index = None
 
-        self._tracking_active = False
+        # Camera has been successfully tested
+        self.camera_tested = False
 
-        # ----------------------------------------------------
-        # MediaPipe
-        # ----------------------------------------------------
+        # ====================================================
+        # MEDIAPIPE
+        # ====================================================
 
         self.mp_hands = None
         self.mp_draw = None
@@ -183,9 +187,9 @@ class CameraSetupPage(QWidget):
 
         self.initialize_mediapipe()
 
-        # ----------------------------------------------------
-        # Timer
-        # ----------------------------------------------------
+        # ====================================================
+        # TIMER
+        # ====================================================
 
         self.timer = QTimer(self)
 
@@ -193,17 +197,18 @@ class CameraSetupPage(QWidget):
             self.update_preview
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # UI
-        # ----------------------------------------------------
+        # ====================================================
 
         self.build_ui()
 
-        # ----------------------------------------------------
-        # Detect cameras
-        # ----------------------------------------------------
+        # ====================================================
+        # CAMERA DETECTION
+        # ====================================================
 
         self.refresh_cameras()
+
 
     # ========================================================
     # MEDIAPIPE INITIALIZATION
@@ -211,21 +216,28 @@ class CameraSetupPage(QWidget):
 
     def initialize_mediapipe(self):
 
+        if mp is None:
+
+            print(
+                "MediaPipe is not available."
+            )
+
+            return
+
         try:
 
             self.mp_hands = mp.solutions.hands
 
-            self.mp_draw = mp.solutions.drawing_utils
+            self.mp_draw = (
+                mp.solutions.drawing_utils
+            )
 
             self.mp_drawing_styles = (
                 mp.solutions.drawing_styles
             )
 
             # ------------------------------------------------
-            # Create MediaPipe Hands directly.
-            #
-            # This avoids depending on HandTracker during
-            # camera preview.
+            # Create MediaPipe Hands
             # ------------------------------------------------
 
             self.hands = self.mp_hands.Hands(
@@ -239,7 +251,6 @@ class CameraSetupPage(QWidget):
                 min_detection_confidence=0.4,
 
                 min_tracking_confidence=0.4
-
             )
 
             print(
@@ -258,6 +269,7 @@ class CameraSetupPage(QWidget):
             self.mp_drawing_styles = None
             self.hands = None
 
+
     # ========================================================
     # BUILD UI
     # ========================================================
@@ -270,82 +282,86 @@ class CameraSetupPage(QWidget):
 
         self.setStyleSheet(
             """
-
             QWidget#cameraSetup {
-                background: #F4F6FB;
+                background: #F5FEFF;
             }
 
             QLabel {
                 background: transparent;
-                color: #1F2430;
+                color: #0E2F76;
             }
 
             QLabel#heading {
                 font-size: 26px;
                 font-weight: 800;
-                color: #1F2430;
+                color: #0E2F76;
             }
 
             QLabel#muted {
-                color: #7B87A0;
+                color: #5A6B93;
                 font-size: 12px;
             }
 
             QFrame#preview {
                 background: #FFFFFF;
-                border: 1px solid #E4E8F2;
+                border: 1px solid #AAC0E1;
                 border-radius: 12px;
             }
 
             QFrame#cameraPlaceholder {
-                background: #FAFBFE;
-                border: 2px dashed #CDD6EA;
+                background: #EFF4FC;
+                border: 2px dashed #AAC0E1;
                 border-radius: 10px;
             }
 
             QFrame#status {
-                background: #EFF2F9;
-                border: 1px solid #E4E8F2;
+                background: #EFF4FC;
+                border: 1px solid #AAC0E1;
                 border-radius: 8px;
             }
 
             QComboBox {
                 background: #FFFFFF;
-                color: #1F2430;
-                border: 1px solid #D7DEEB;
+                color: #0E2F76;
+                border: 1px solid #AAC0E1;
                 border-radius: 8px;
                 padding: 8px 10px;
             }
 
             QComboBox QAbstractItemView {
                 background: #FFFFFF;
-                color: #1F2430;
-                selection-background-color: #3E7CF7;
+                color: #0E2F76;
+                selection-background-color: #AAC0E1;
             }
 
             QPushButton {
                 background: #FFFFFF;
-                color: #5A6470;
-                border: 1px solid #D7DEEB;
+                color: #5A6B93;
+                border: 1px solid #AAC0E1;
                 border-radius: 8px;
                 padding: 9px;
             }
 
             QPushButton:hover {
-                background: #F0F3FA;
-                color: #1F2430;
+                background: #EFF4FC;
+                color: #0E2F76;
             }
 
             QPushButton#continue {
-                background: #3E7CF7;
-                color: white;
+                background: #0E2F76;
+                color: #F5FEFF;
                 border: none;
                 border-radius: 8px;
                 font-weight: 700;
             }
 
             QPushButton#continue:hover {
-                background: #5790FF;
+                background: #1B4499;
+            }
+
+            QPushButton#continue:disabled {
+                background: #AAC0E1;
+                color: #EFF4FC;
             }
 
             QLabel#live {
@@ -356,7 +372,6 @@ class CameraSetupPage(QWidget):
                 font-size: 10px;
                 font-weight: 700;
             }
-
             """
         )
 
@@ -364,9 +379,7 @@ class CameraSetupPage(QWidget):
         # MAIN LAYOUT
         # ====================================================
 
-        layout = QVBoxLayout(
-            self
-        )
+        layout = QVBoxLayout(self)
 
         layout.setContentsMargins(
             30,
@@ -375,9 +388,7 @@ class CameraSetupPage(QWidget):
             24
         )
 
-        layout.setSpacing(
-            6
-        )
+        layout.setSpacing(6)
 
         # ====================================================
         # HEADER
@@ -399,17 +410,11 @@ class CameraSetupPage(QWidget):
             "muted"
         )
 
-        layout.addWidget(
-            title
-        )
+        layout.addWidget(title)
 
-        layout.addWidget(
-            subtitle
-        )
+        layout.addWidget(subtitle)
 
-        layout.addSpacing(
-            6
-        )
+        layout.addSpacing(6)
 
         # ====================================================
         # CONTENT
@@ -417,9 +422,7 @@ class CameraSetupPage(QWidget):
 
         content = QHBoxLayout()
 
-        content.setSpacing(
-            28
-        )
+        content.setSpacing(28)
 
         # ====================================================
         # PREVIEW BOX
@@ -500,9 +503,9 @@ class CameraSetupPage(QWidget):
             Qt.AlignCenter
         )
 
-        # ----------------------------------------------------
-        # Camera icon
-        # ----------------------------------------------------
+        # ====================================================
+        # CAMERA ICON
+        # ====================================================
 
         self.cam_icon = QLabel(
             "📷"
@@ -519,9 +522,9 @@ class CameraSetupPage(QWidget):
             """
         )
 
-        # ----------------------------------------------------
-        # Preview label
-        # ----------------------------------------------------
+        # ====================================================
+        # PREVIEW LABEL
+        # ====================================================
 
         self.preview_label = QLabel(
             "Awaiting Camera Feed…\n\n"
@@ -592,14 +595,12 @@ class CameraSetupPage(QWidget):
         )
 
         # ====================================================
-        # CONTROLS
+        # RIGHT CONTROLS
         # ====================================================
 
         controls = QVBoxLayout()
 
-        controls.setSpacing(
-            7
-        )
+        controls.setSpacing(7)
 
         controls.setContentsMargins(
             0,
@@ -613,16 +614,12 @@ class CameraSetupPage(QWidget):
         # ====================================================
 
         controls.addWidget(
-            self._caption(
-                "CAMERA"
-            )
+            self._caption("CAMERA")
         )
 
         camera_row = QHBoxLayout()
 
-        camera_row.setSpacing(
-            6
-        )
+        camera_row.setSpacing(6)
 
         self.camera_combo = QComboBox()
 
@@ -672,14 +669,10 @@ class CameraSetupPage(QWidget):
         # RESOLUTION
         # ====================================================
 
-        controls.addSpacing(
-            6
-        )
+        controls.addSpacing(6)
 
         controls.addWidget(
-            self._caption(
-                "RESOLUTION"
-            )
+            self._caption("RESOLUTION")
         )
 
         self.resolution_combo = QComboBox()
@@ -708,9 +701,7 @@ class CameraSetupPage(QWidget):
         # STATUS
         # ====================================================
 
-        controls.addSpacing(
-            10
-        )
+        controls.addSpacing(10)
 
         status = QFrame()
 
@@ -740,14 +731,17 @@ class CameraSetupPage(QWidget):
             "● Camera Not Tested"
         )
 
+        # OpenCV
         self.status_items["opencv"] = QLabel(
             "● OpenCV Loaded"
         )
 
+        # MediaPipe
         self.status_items["mediapipe"] = QLabel(
             "● MediaPipe Ready"
         )
 
+        # Hand Model
         self.status_items["hand"] = QLabel(
             "● Hand Model Ready"
         )
@@ -774,7 +768,7 @@ class CameraSetupPage(QWidget):
             )
 
         # ----------------------------------------------------
-        # Update MediaPipe status
+        # MediaPipe unavailable
         # ----------------------------------------------------
 
         if self.hands is None:
@@ -818,7 +812,7 @@ class CameraSetupPage(QWidget):
         controls.addStretch()
 
         # ====================================================
-        # TEST CAMERA
+        # TEST CAMERA BUTTON
         # ====================================================
 
         self.test_button = QPushButton(
@@ -842,35 +836,7 @@ class CameraSetupPage(QWidget):
         )
 
         # ====================================================
-        # START TRACKING
-        # ====================================================
-
-        self.track_button = QPushButton(
-            "Start Tracking"
-        )
-
-        self.track_button.setMinimumWidth(
-            300
-        )
-
-        self.track_button.setFixedHeight(
-            40
-        )
-
-        self.track_button.setEnabled(
-            False
-        )
-
-        self.track_button.clicked.connect(
-            self.start_tracking
-        )
-
-        controls.addWidget(
-            self.track_button
-        )
-
-        # ====================================================
-        # CONTINUE
+        # CONTINUE BUTTON
         # ====================================================
 
         self.continue_button = QPushButton(
@@ -889,6 +855,7 @@ class CameraSetupPage(QWidget):
             44
         )
 
+        # Disabled until camera test succeeds
         self.continue_button.setEnabled(
             False
         )
@@ -902,7 +869,7 @@ class CameraSetupPage(QWidget):
         )
 
         # ====================================================
-        # ADD TO CONTENT
+        # ADD CONTENT
         # ====================================================
 
         content.addWidget(
@@ -918,6 +885,7 @@ class CameraSetupPage(QWidget):
             content,
             1
         )
+
 
     # ========================================================
     # CAPTION
@@ -943,6 +911,7 @@ class CameraSetupPage(QWidget):
 
         return label
 
+
     # ========================================================
     # REFRESH CAMERAS
     # ========================================================
@@ -951,16 +920,10 @@ class CameraSetupPage(QWidget):
 
         self.stop_preview()
 
-        self.track_button.setEnabled(
-            False
-        )
+        self.camera_tested = False
 
         self.continue_button.setEnabled(
             False
-        )
-
-        self.track_button.setText(
-            "Start Tracking"
         )
 
         self.camera_combo.blockSignals(
@@ -1034,8 +997,9 @@ class CameraSetupPage(QWidget):
             False
         )
 
+
     # ========================================================
-    # PLACEHOLDER
+    # PLACEHOLDER TEXT
     # ========================================================
 
     def _placeholder_text(self):
@@ -1055,6 +1019,7 @@ class CameraSetupPage(QWidget):
             "Select a camera, then click Test Camera."
         )
 
+
     # ========================================================
     # CAMERA CHANGED
     # ========================================================
@@ -1063,16 +1028,10 @@ class CameraSetupPage(QWidget):
 
         self.stop_preview()
 
-        self.track_button.setEnabled(
-            False
-        )
+        self.camera_tested = False
 
         self.continue_button.setEnabled(
             False
-        )
-
-        self.track_button.setText(
-            "Start Tracking"
         )
 
         index = self.camera_combo.currentData()
@@ -1099,6 +1058,7 @@ class CameraSetupPage(QWidget):
                 font-weight: 600;
                 """
             )
+
 
     # ========================================================
     # START PREVIEW
@@ -1141,9 +1101,7 @@ class CameraSetupPage(QWidget):
             height = 720
 
         # ----------------------------------------------------
-        # Open camera
-        #
-        # CAP_DSHOW is used on Windows.
+        # Windows camera backend
         # ----------------------------------------------------
 
         backend = (
@@ -1177,7 +1135,7 @@ class CameraSetupPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Verify camera
+        # Check camera
         # ----------------------------------------------------
 
         if not self.capture.isOpened():
@@ -1225,12 +1183,20 @@ class CameraSetupPage(QWidget):
             return
 
         # ----------------------------------------------------
+        # Camera successfully tested
+        # ----------------------------------------------------
+
+        self.camera_tested = True
+
+        # ----------------------------------------------------
         # Hide placeholder
         # ----------------------------------------------------
 
         self.cam_icon.hide()
 
-        self.preview_label.setText("")
+        self.preview_label.setText(
+            ""
+        )
 
         # ----------------------------------------------------
         # Update status
@@ -1252,30 +1218,45 @@ class CameraSetupPage(QWidget):
             """
         )
 
+        # ====================================================
+        # IMPORTANT
+        # ====================================================
+        #
+        # Continue is enabled immediately after
+        # successful camera testing.
+        #
+        # No Start Tracking button is required.
+        #
+
+        self.continue_button.setEnabled(
+            True
+        )
+
         # ----------------------------------------------------
-        # Start timer
+        # Start automatic hand detection
+        # ----------------------------------------------------
+
+        self.tracking_status.setText(
+            "● Camera Ready — Detecting hands automatically"
+        )
+
+        self.tracking_status.setStyleSheet(
+            """
+            color: #2F9E62;
+            font-size: 10px;
+            font-weight: 700;
+            margin: 6px 0 0 0;
+            """
+        )
+
+        # ----------------------------------------------------
+        # Start preview timer
         # ----------------------------------------------------
 
         self.timer.start(
             30
         )
 
-        self.track_button.setEnabled(
-            True
-        )
-
-        self.tracking_status.setText(
-            "● Camera Ready — Show your hand"
-        )
-
-        self.tracking_status.setStyleSheet(
-            """
-            color: #E8A33D;
-            font-size: 10px;
-            font-weight: 700;
-            margin: 6px 0 0 0;
-            """
-        )
 
     # ========================================================
     # UPDATE PREVIEW
@@ -1284,7 +1265,6 @@ class CameraSetupPage(QWidget):
     def update_preview(self):
 
         if self.capture is None:
-
             return
 
         if not self.capture.isOpened():
@@ -1292,6 +1272,10 @@ class CameraSetupPage(QWidget):
             self.stop_preview()
 
             return
+
+        # ----------------------------------------------------
+        # Read frame
+        # ----------------------------------------------------
 
         ok, frame = self.capture.read()
 
@@ -1309,31 +1293,24 @@ class CameraSetupPage(QWidget):
         # MIRROR CAMERA
         # ====================================================
         #
-        # This makes the preview behave like a selfie camera.
+        # 1 = horizontal flip
         #
-        # ====================================================
+        # This makes the camera behave like a selfie camera.
+        #
 
         frame = cv2.flip(
             frame,
             1
         )
 
-        # ----------------------------------------------------
-        # Ensure contiguous memory
-        # ----------------------------------------------------
-
         frame = np.ascontiguousarray(
             frame
-        )
-
-        frame_height, frame_width = (
-            frame.shape[:2]
         )
 
         hand_detected = False
 
         # ====================================================
-        # MEDIAPIPE HAND TRACKING
+        # MEDIAPIPE HAND DETECTION
         # ====================================================
 
         if (
@@ -1354,22 +1331,23 @@ class CameraSetupPage(QWidget):
                 )
 
                 # ------------------------------------------------
-                # Make frame read-only for MediaPipe
+                # MediaPipe doesn't need to modify the image
                 # ------------------------------------------------
 
                 rgb_frame.flags.writeable = False
 
                 # ------------------------------------------------
-                # IMPORTANT:
-                # process() receives RGB image
+                # PROCESS FRAME
                 # ------------------------------------------------
 
                 results = self.hands.process(
                     rgb_frame
                 )
 
+                rgb_frame.flags.writeable = True
+
                 # ------------------------------------------------
-                # Draw landmarks
+                # HAND FOUND
                 # ------------------------------------------------
 
                 if (
@@ -1379,18 +1357,19 @@ class CameraSetupPage(QWidget):
 
                     hand_detected = True
 
+                    # ============================================
+                    # DRAW EVERY DETECTED HAND
+                    # ============================================
+
                     for hand_landmarks in (
                         results.multi_hand_landmarks
                     ):
 
-                        # ----------------------------------------
-                        # Draw lines and dots
-                        # ----------------------------------------
+                        # ------------------------------------------------
+                        # Draw landmark lines and dots
+                        # ------------------------------------------------
 
-                        if (
-                            self.mp_drawing_styles
-                            is not None
-                        ):
+                        if self.mp_drawing_styles is not None:
 
                             self.mp_draw.draw_landmarks(
 
@@ -1405,7 +1384,6 @@ class CameraSetupPage(QWidget):
 
                                 self.mp_drawing_styles
                                 .get_default_hand_connections_style()
-
                             )
 
                         else:
@@ -1417,14 +1395,7 @@ class CameraSetupPage(QWidget):
                                 hand_landmarks,
 
                                 self.mp_hands.HAND_CONNECTIONS
-
                             )
-
-                # ------------------------------------------------
-                # Restore writeable state
-                # ------------------------------------------------
-
-                rgb_frame.flags.writeable = True
 
             except Exception as error:
 
@@ -1434,7 +1405,7 @@ class CameraSetupPage(QWidget):
                 )
 
         # ====================================================
-        # TRACKING STATUS
+        # UPDATE TRACKING STATUS
         # ====================================================
 
         if hand_detected:
@@ -1455,7 +1426,7 @@ class CameraSetupPage(QWidget):
         else:
 
             self.tracking_status.setText(
-                "● Camera Ready — Show your hand"
+                "● Camera Active — Show your hand"
             )
 
             self.tracking_status.setStyleSheet(
@@ -1480,13 +1451,13 @@ class CameraSetupPage(QWidget):
             frame_rgb.shape
         )
 
-        # ====================================================
-        # QIMAGE
-        # ====================================================
-
         bytes_per_line = (
             channels * width
         )
+
+        # ====================================================
+        # CREATE QIMAGE
+        # ====================================================
 
         image = QImage(
 
@@ -1499,14 +1470,10 @@ class CameraSetupPage(QWidget):
             bytes_per_line,
 
             QImage.Format_RGB888
-
         )
 
         # ----------------------------------------------------
-        # Copy image.
-        #
-        # This prevents QImage from referencing memory
-        # that may change after this function.
+        # Copy image so Qt owns the data
         # ----------------------------------------------------
 
         image = image.copy()
@@ -1537,25 +1504,31 @@ class CameraSetupPage(QWidget):
             Qt.KeepAspectRatio,
 
             Qt.SmoothTransformation
-
         )
 
         self.preview_label.setPixmap(
             pixmap
         )
 
+
     # ========================================================
-    # START TRACKING
+    # COMPATIBILITY METHOD
     # ========================================================
+    #
+    # Other parts of the application may still call
+    # start_tracking().
+    #
+    # We keep the method so old code won't crash.
+    #
+    # However, tracking is already automatic.
+    #
 
     def start_tracking(self):
 
         if self.capture is None:
-
             return
 
         if not self.capture.isOpened():
-
             return
 
         camera_index = (
@@ -1567,7 +1540,7 @@ class CameraSetupPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Inform MainWindow
+        # Inform MainWindow if supported
         # ----------------------------------------------------
 
         if self.parent_window is not None:
@@ -1580,11 +1553,8 @@ class CameraSetupPage(QWidget):
                 try:
 
                     self.parent_window.setActiveCamera(
-
                         camera_index,
-
                         camera_name
-
                     )
 
                 except Exception as error:
@@ -1595,47 +1565,15 @@ class CameraSetupPage(QWidget):
                     )
 
         # ----------------------------------------------------
-        # Activate tracking
+        # Continue is already allowed
         # ----------------------------------------------------
 
-        self._tracking_active = True
-
-        # ----------------------------------------------------
-        # Button
-        # ----------------------------------------------------
-
-        self.track_button.setText(
-            "Tracking Ready"
-        )
-
-        self.track_button.setEnabled(
-            False
-        )
-
-        # ----------------------------------------------------
-        # Enable Continue
-        # ----------------------------------------------------
+        self.camera_tested = True
 
         self.continue_button.setEnabled(
             True
         )
 
-        # ----------------------------------------------------
-        # Status
-        # ----------------------------------------------------
-
-        self.tracking_status.setText(
-            "● Tracking Active"
-        )
-
-        self.tracking_status.setStyleSheet(
-            """
-            color: #2F9E62;
-            font-size: 10px;
-            font-weight: 700;
-            margin: 6px 0 0 0;
-            """
-        )
 
     # ========================================================
     # STOP PREVIEW
@@ -1664,8 +1602,6 @@ class CameraSetupPage(QWidget):
                 pass
 
             self.capture = None
-
-        self._tracking_active = False
 
         # ----------------------------------------------------
         # Restore placeholder
@@ -1713,6 +1649,7 @@ class CameraSetupPage(QWidget):
                 """
             )
 
+
     # ========================================================
     # CONTINUE TO DASHBOARD
     # ========================================================
@@ -1720,7 +1657,48 @@ class CameraSetupPage(QWidget):
     def continue_to_dashboard(self):
 
         # ----------------------------------------------------
-        # Stop camera
+        # Make sure camera was tested
+        # ----------------------------------------------------
+
+        if not self.camera_tested:
+
+            return
+
+        # ----------------------------------------------------
+        # Save camera information
+        # ----------------------------------------------------
+
+        camera_index = (
+            self.camera_combo.currentData()
+        )
+
+        camera_name = (
+            self.camera_combo.currentText()
+        )
+
+        if self.parent_window is not None:
+
+            if hasattr(
+                self.parent_window,
+                "setActiveCamera"
+            ):
+
+                try:
+
+                    self.parent_window.setActiveCamera(
+                        camera_index,
+                        camera_name
+                    )
+
+                except Exception as error:
+
+                    print(
+                        "setActiveCamera error:",
+                        error
+                    )
+
+        # ----------------------------------------------------
+        # Stop preview
         # ----------------------------------------------------
 
         self.stop_preview()
@@ -1749,11 +1727,15 @@ class CameraSetupPage(QWidget):
                 error
             )
 
-        # ----------------------------------------------------
-        # Go to dashboard
-        # ----------------------------------------------------
+        # ====================================================
+        # GO TO DASHBOARD
+        # ====================================================
 
         if self.parent_window is not None:
+
+            # ------------------------------------------------
+            # Preferred method
+            # ------------------------------------------------
 
             if hasattr(
                 self.parent_window,
@@ -1795,6 +1777,7 @@ class CameraSetupPage(QWidget):
                         error
                     )
 
+
     # ========================================================
     # HIDE EVENT
     # ========================================================
@@ -1806,6 +1789,7 @@ class CameraSetupPage(QWidget):
         super().hideEvent(
             event
         )
+
 
     # ========================================================
     # CLOSE EVENT
@@ -1839,7 +1823,9 @@ class CameraSetupPage(QWidget):
 
 class CameraPickerDialog(QDialog):
     """
-    Simple dialog for selecting a camera.
+    Simple camera selection dialog.
+
+    Kept for compatibility with the rest of GestureBoard.
     """
 
     def __init__(self, parent=None):
@@ -1859,14 +1845,13 @@ class CameraPickerDialog(QDialog):
 
         self.setStyleSheet(
             """
-
             QWidget {
-                background: #F4F6FB;
+                background: #F5FEFF;
             }
 
             QLabel {
                 background: transparent;
-                color: #1F2430;
+                color: #0E2F76;
             }
 
             QLabel#heading {
@@ -1875,14 +1860,14 @@ class CameraPickerDialog(QDialog):
             }
 
             QLabel#muted {
-                color: #7B87A0;
+                color: #5A6B93;
                 font-size: 12px;
             }
 
             QComboBox {
                 background: #FFFFFF;
-                color: #1F2430;
-                border: 1px solid #D7DEEB;
+                color: #0E2F76;
+                border: 1px solid #AAC0E1;
                 border-radius: 7px;
                 padding: 8px;
                 min-width: 200px;
@@ -1890,27 +1875,27 @@ class CameraPickerDialog(QDialog):
 
             QComboBox QAbstractItemView {
                 background: #FFFFFF;
-                color: #1F2430;
-                selection-background-color: #3E7CF7;
+                color: #0E2F76;
+                selection-background-color: #AAC0E1;
             }
 
             QPushButton {
                 background: #FFFFFF;
-                color: #5A6470;
-                border: 1px solid #D7DEEB;
+                color: #5A6B93;
+                border: 1px solid #AAC0E1;
                 border-radius: 7px;
                 padding: 9px;
                 min-width: 100px;
             }
 
             QPushButton:hover {
-                background: #F0F3FA;
-                color: #1F2430;
+                background: #EFF4FC;
+                color: #0E2F76;
             }
 
             QPushButton#accept {
-                background: #3E7CF7;
-                color: white;
+                background: #0E2F76;
+                color: #F5FEFF;
                 border: none;
                 border-radius: 7px;
                 padding: 9px;
@@ -1918,24 +1903,23 @@ class CameraPickerDialog(QDialog):
             }
 
             QPushButton#accept:hover {
-                background: #5790FF;
+                background: #1B4499;
             }
 
             QPushButton#cancel {
                 background: #FFFFFF;
-                color: #7B87A0;
-                border: 1px solid #D7DEEB;
+                color: #5A6B93;
+                border: 1px solid #AAC0E1;
                 border-radius: 7px;
                 padding: 9px;
                 min-width: 100px;
             }
-
             """
         )
 
-        # ----------------------------------------------------
-        # Layout
-        # ----------------------------------------------------
+        # ====================================================
+        # LAYOUT
+        # ====================================================
 
         layout = QVBoxLayout(
             self
@@ -1952,9 +1936,9 @@ class CameraPickerDialog(QDialog):
             12
         )
 
-        # ----------------------------------------------------
-        # Title
-        # ----------------------------------------------------
+        # ====================================================
+        # TITLE
+        # ====================================================
 
         title = QLabel(
             "Select Camera"
@@ -1972,9 +1956,9 @@ class CameraPickerDialog(QDialog):
             title
         )
 
-        # ----------------------------------------------------
-        # Subtitle
-        # ----------------------------------------------------
+        # ====================================================
+        # SUBTITLE
+        # ====================================================
 
         subtitle = QLabel(
             "Choose a camera to use with GestureBoard"
@@ -1992,9 +1976,9 @@ class CameraPickerDialog(QDialog):
             subtitle
         )
 
-        # ----------------------------------------------------
-        # Camera Combo
-        # ----------------------------------------------------
+        # ====================================================
+        # CAMERA COMBO
+        # ====================================================
 
         self.camera_combo = QComboBox()
 
@@ -2002,15 +1986,15 @@ class CameraPickerDialog(QDialog):
             self.camera_combo
         )
 
-        # ----------------------------------------------------
-        # Buttons
-        # ----------------------------------------------------
+        # ====================================================
+        # BUTTONS
+        # ====================================================
 
         self.button_box = QDialogButtonBox(
 
             QDialogButtonBox.Ok
-            | QDialogButtonBox.Cancel
-
+            |
+            QDialogButtonBox.Cancel
         )
 
         self.button_box.setObjectName(
@@ -2041,19 +2025,20 @@ class CameraPickerDialog(QDialog):
             self.button_box
         )
 
-        # ----------------------------------------------------
-        # Selected camera
-        # ----------------------------------------------------
+        # ====================================================
+        # SELECTED CAMERA
+        # ====================================================
 
         self.selected_index = None
 
         self.selected_name = None
 
-        # ----------------------------------------------------
-        # Detect cameras
-        # ----------------------------------------------------
+        # ====================================================
+        # DETECT CAMERAS
+        # ====================================================
 
         self.refresh_cameras()
+
 
     # ========================================================
     # REFRESH CAMERAS
@@ -2080,6 +2065,7 @@ class CameraPickerDialog(QDialog):
                 name,
                 index
             )
+
 
     # ========================================================
     # ACCEPT

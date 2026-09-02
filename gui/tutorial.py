@@ -20,30 +20,30 @@ class TutorialPage(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setObjectName("tutorialPage")
         self.setStyleSheet("""
-            QWidget#tutorialPage { background: #F4F6FB; }
+            QWidget#tutorialPage { background: #F5FEFF; }
             QFrame#tutorialCard {
-                background: #FFFFFF; border: 1px solid #E4E8F2; border-radius: 18px;
+                background: #FFFFFF; border: 1px solid #AAC0E1; border-radius: 18px;
             }
-            QLabel { background: transparent; color: #1F2430; }
-            QLabel#eyebrow { color: #8A94A6; font-size: 12px; font-weight: 700; }
-            QLabel#title { font-size: 28px; font-weight: 800; color: #1F2430; }
-            QLabel#description { color: #7B87A0; font-size: 14px; }
+            QLabel { background: transparent; color: #0E2F76; }
+            QLabel#eyebrow { color: #AAC0E1; font-size: 12px; font-weight: 700; }
+            QLabel#title { font-size: 28px; font-weight: 800; color: #0E2F76; }
+            QLabel#description { color: #5A6B93; font-size: 14px; }
             QFrame#gestureRow {
-                background: #F4F6FB; border: 1px solid #E4E8F2; border-radius: 8px;
+                background: #EFF4FC; border: 1px solid #AAC0E1; border-radius: 8px;
             }
-            QLabel#gestureName { color: #3A4254; font-size: 13px; }
-            QLabel#gestureAction { color: #3E7CF7; font-size: 12px; font-weight: 600; }
-            QLabel#pageDot { color: #CBD2E0; font-size: 18px; }
-            QLabel#pageDotActive { color: #3E7CF7; font-size: 18px; }
+            QLabel#gestureName { color: #0E2F76; font-size: 13px; }
+            QLabel#gestureAction { color: #2C55A6; font-size: 12px; font-weight: 600; }
+            QLabel#pageDot { color: #AAC0E1; font-size: 18px; }
+            QLabel#pageDotActive { color: #0E2F76; font-size: 18px; }
             QPushButton {
-                background: #3E7CF7; color: white; border: none; border-radius: 9px;
+                background: #0E2F76; color: #F5FEFF; border: none; border-radius: 9px;
                 padding: 11px 22px; min-width: 110px; font-size: 13px; font-weight: 700;
             }
-            QPushButton:hover { background: #5790FF; }
-            QPushButton#backButton { background: #FFFFFF; color: #7B87A0; border: 1px solid #E4E8F2; }
-            QPushButton#backButton:hover { background: #F0F3FA; color: #1F2430; }
-            QPushButton#backButton:disabled { color: #CBD2E0; background: #FFFFFF; }
-            QLabel#footer { color: #A0AABC; font-size: 11px; }
+            QPushButton:hover { background: #1B4499; }
+            QPushButton#backButton { background: #F5FEFF; color: #5A6B93; border: 1px solid #AAC0E1; }
+            QPushButton#backButton:hover { background: #EFF4FC; color: #0E2F76; }
+            QPushButton#backButton:disabled { color: #AAC0E1; background: #F5FEFF; border-color: #CDDBF0; }
+            QLabel#footer { color: #AAC0E1; font-size: 11px; }
         """)
 
         self.stack = QStackedWidget()
@@ -113,7 +113,7 @@ class TutorialPage(QWidget):
         visual_layout.setContentsMargins(14, 16, 14, 14)
         icon = QLabel(visual_icon)
         icon.setAlignment(Qt.AlignCenter)
-        icon.setStyleSheet("font-size: 64px; color: #3E7CF7;")
+        icon.setStyleSheet("font-size: 64px; color: #0E2F76;")
         caption = QLabel(visual_caption)
         caption.setAlignment(Qt.AlignCenter)
         caption.setWordWrap(True)

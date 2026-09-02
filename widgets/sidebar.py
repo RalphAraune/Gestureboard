@@ -26,44 +26,45 @@ class Sidebar(QFrame):
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.setStyleSheet("""
             QFrame#sidebar {
-                background: #0A1628;
-                border-right: 1px solid #1E3A5F;
+                background: #0E2F76;
+                border-right: 1px solid #AAC0E1;
             }
-            QLabel { background: transparent; color: #E8EDF5; }
-            QLabel#brand { font-size: 16px; font-weight: 700; color: #FFFFFF; }
+            QLabel { background: transparent; color: #F5FEFF; }
+            QLabel#brand { font-size: 16px; font-weight: 700; color: #F5FEFF; }
             QLabel#brandIcon { font-size: 22px; }
-            QLabel#section { color: #6A7A9A; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
-            QLabel#statusLabel { color: #8899BB; font-size: 11px; }
+            QLabel#section { color: #AAC0E1; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
+            QLabel#statusLabel { color: #F5FEFF; font-size: 11px; }
             QPushButton {
                 background: transparent;
                 border: none;
                 border-radius: 8px;
-                color: #A8B3CC;
+                color: #F5FEFF;
                 text-align: left;
                 padding: 10px 14px;
                 font-size: 13px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background: #142A4A;
-                color: #FFFFFF;
+                background: #1B4499;
+                color: #F5FEFF;
             }
             QPushButton#active {
-                background: #1E3A5F;
-                color: #4A9EFF;
+                background: #AAC0E1;
+                color: #0E2F76;
+                font-weight: 700;
             }
             QPushButton#active:hover {
-                background: #254478;
-                color: #6AB0FF;
+                background: #BFD1EB;
+                color: #0E2F76;
             }
             QFrame#statusSection {
                 background: transparent;
-                border-top: 1px solid #1E3A5F;
+                border-top: 1px solid #AAC0E1;
                 padding-top: 12px;
                 margin-top: 8px;
             }
-            QLabel#statusDot { color: #45D99A; font-size: 10px; }
-            QLabel#fpsLabel { color: #6A7A9A; font-size: 10px; margin-top: 4px; }
+            QLabel#statusDot { color: #AAC0E1; font-size: 10px; }
+            QLabel#fpsLabel { color: #AAC0E1; font-size: 10px; margin-top: 4px; }
         """)
 
         layout = QVBoxLayout(self)
@@ -78,7 +79,7 @@ class Sidebar(QFrame):
         brand_icon.setFixedSize(28, 28)
         brand_icon.setAlignment(Qt.AlignCenter)
         brand_icon.setStyleSheet(
-            "background:#3E7CF7; color:white; border-radius:14px;"
+            "background:#F5FEFF; color:#0E2F76; border-radius:14px;"
             "font-size:16px; font-weight:800;"
         )
         brand_text = QLabel("GestureBoard")
@@ -161,23 +162,23 @@ class TitleBar(QFrame):
         self.setFixedHeight(44)
         self.setStyleSheet("""
             QFrame#titleBar {
-                background: #071426;
-                border-bottom: 1px solid #1E3A5F;
+                background: #0E2F76;
+                border-bottom: 1px solid #AAC0E1;
             }
-            QLabel { background: transparent; color: #FFFFFF; }
-            QLabel#titleText { font-size: 15px; font-weight: 700; }
-            QLabel#statusReady { color: #45D99A; font-size: 11px; font-weight: 600; }
+            QLabel { background: transparent; color: #F5FEFF; }
+            QLabel#titleText { font-size: 15px; font-weight: 700; color: #F5FEFF; }
+            QLabel#statusReady { color: #F5FEFF; font-size: 11px; font-weight: 600; }
             QPushButton {
                 background: transparent;
                 border: none;
                 border-radius: 4px;
                 min-width: 36px;
                 min-height: 28px;
-                color: #9AA8C8;
+                color: #F5FEFF;
             }
             QPushButton:hover {
-                background: #1A2A4A;
-                color: #FFFFFF;
+                background: #1B4499;
+                color: #F5FEFF;
             }
             QPushButton#closeBtn:hover {
                 background: #E81123;
@@ -196,7 +197,7 @@ class TitleBar(QFrame):
         logo.setFixedSize(26, 26)
         logo.setAlignment(Qt.AlignCenter)
         logo.setStyleSheet(
-            "background:#3E7CF7; border-radius:13px; color:white;"
+            "background:#F5FEFF; border-radius:13px; color:#0E2F76;"
             "font-size:14px; font-weight:800;"
         )
         title = QLabel("GestureBoard")

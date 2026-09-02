@@ -21,20 +21,20 @@ class SplashPage(QWidget):
         self.finished_loading = False
         self.setObjectName("splashPage")
 
-        # Light background with concentric rings drawn in paintEvent.
+        # Frost White background with concentric rings drawn in paintEvent.
         self.setStyleSheet("""
-            QWidget#splashPage { background: #F4F6FB; }
-            QLabel { background: transparent; color: #1F2430; }
-            QLabel#brand { font-size: 30px; font-weight: 800; color: #1F2430; }
+            QWidget#splashPage { background: #F5FEFF; }
+            QLabel { background: transparent; color: #0E2F76; }
+            QLabel#brand { font-size: 30px; font-weight: 800; color: #0E2F76; }
             QLabel#tagline { color: #5C6BC0; font-size: 13px; }
-            QLabel#loading { color: #A0AABC; font-size: 11px; }
-            QProgressBar { background: #E3E8F6; border: none; border-radius: 3px; height: 4px; }
-            QProgressBar::chunk { background: #3E7CF7; border-radius: 3px; }
+            QLabel#loading { color: #AAC0E1; font-size: 11px; }
+            QProgressBar { background: #E4ECF7; border: none; border-radius: 3px; height: 4px; }
+            QProgressBar::chunk { background: #0E2F76; border-radius: 3px; }
             QPushButton#getStarted {
-                background: #3E7CF7; color: white; border: none; border-radius: 10px;
+                background: #0E2F76; color: #F5FEFF; border: none; border-radius: 10px;
                 min-height: 50px; min-width: 210px; font-size: 15px; font-weight: 700;
             }
-            QPushButton#getStarted:hover { background: #5790FF; }
+            QPushButton#getStarted:hover { background: #1B4499; }
         """)
 
         layout = QVBoxLayout(self)
@@ -52,7 +52,7 @@ class SplashPage(QWidget):
             self.logo.setPixmap(pixmap.scaled(56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
             self.logo.setStyleSheet(
-                "background: #3E7CF7; color: white; border-radius: 12px;"
+                "background: #0E2F76; color: #F5FEFF; border-radius: 12px;"
                 "font-size: 30px; font-weight: 800;"
             )
             self.logo.setText("G")
@@ -116,7 +116,7 @@ class SplashPage(QWidget):
         # Faint outer rings to innermost, using progressively stronger blue.
         rings = [(330, 26), (270, 38), (210, 52), (150, 70)]
         for radius, alpha in rings:
-            pen = QPen(QColor(63, 124, 247, alpha))
+            pen = QPen(QColor(14, 47, 118, alpha))
             pen.setWidthF(2.0)
             painter.setPen(pen)
             painter.drawEllipse(QRectF(cx - radius, cy - radius, radius * 2, radius * 2))

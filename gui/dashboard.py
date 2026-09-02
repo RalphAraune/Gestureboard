@@ -17,11 +17,11 @@ class StatusCard(QFrame):
         self.setStyleSheet("""
             QFrame#statusCard {
                 background: #FFFFFF;
-                border: 1px solid #E4E8F2;
+                border: 1px solid #AAC0E1;
                 border-radius: 10px;
             }
-            QLabel { background: transparent; color: #1F2430; }
-            QLabel#cardTitle { color: #8A94A6; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
+            QLabel { background: transparent; color: #0E2F76; }
+            QLabel#cardTitle { color: #AAC0E1; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
             QLabel#cardStatus { font-size: 14px; font-weight: 600; }
             QLabel#statusDot { color: #2F9E62; font-size: 10px; }
         """)
@@ -60,19 +60,19 @@ class FeatureCard(QFrame):
         self.setStyleSheet("""
             QFrame#featureCard {
                 background: #FFFFFF;
-                border: 1px solid #E4E8F2;
+                border: 1px solid #AAC0E1;
                 border-radius: 12px;
             }
             QFrame#featureCard:hover {
-                border: 1px solid #B9CDF6;
+                border: 1px solid #6E8FC8;
             }
-            QLabel { background: transparent; color: #1F2430; }
-            QLabel#featureTitle { font-size: 15px; font-weight: 800; color: #1F2430; }
-            QLabel#featureDesc { color: #7B87A0; font-size: 12px; }
+            QLabel { background: transparent; color: #0E2F76; }
+            QLabel#featureTitle { font-size: 15px; font-weight: 800; color: #0E2F76; }
+            QLabel#featureDesc { color: #5A6B93; font-size: 12px; }
             QLabel#featureIcon { font-size: 28px; }
             QPushButton {
-                background: #3E7CF7;
-                color: #FFFFFF;
+                background: #0E2F76;
+                color: #F5FEFF;
                 border: none;
                 border-radius: 8px;
                 padding: 10px 16px;
@@ -80,7 +80,7 @@ class FeatureCard(QFrame):
                 font-weight: 600;
             }
             QPushButton:hover {
-                background: #5790FF;
+                background: #1B4499;
             }
         """)
 
@@ -124,10 +124,10 @@ class DashboardPage(QWidget):
         self.parent_window = parent
         self.setObjectName("dashboard")
         self.setStyleSheet("""
-            QWidget#dashboard { background: #F4F6FB; }
-            QLabel { background: transparent; color: #1F2430; }
-            QLabel#heading { font-size: 28px; font-weight: 800; color: #1F2430; }
-            QLabel#subtitle { color: #7B87A0; font-size: 13px; }
+            QWidget#dashboard { background: #F5FEFF; }
+            QLabel { background: transparent; color: #0E2F76; }
+            QLabel#heading { font-size: 28px; font-weight: 800; color: #0E2F76; }
+            QLabel#subtitle { color: #5A6B93; font-size: 13px; }
         """)
 
         # Root layout with sidebar + content
@@ -143,7 +143,7 @@ class DashboardPage(QWidget):
         content = QWidget()
         content.setObjectName("contentArea")
         content.setStyleSheet("""
-            QWidget#contentArea { background: #F4F6FB; }
+            QWidget#contentArea { background: #F5FEFF; }
         """)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(32, 24, 32, 24)
