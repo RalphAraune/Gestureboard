@@ -1,8 +1,14 @@
 import cv2
-import mediapipe as mp
 import pyautogui
 
-from PyQt5.QtCore import Qt, QTimer
+# MediaPipe may fail to load its DLL on some Python setups. Make it optional.
+try:
+    import mediapipe as mp
+except Exception as e:
+    print("MediaPipe import error:", e)
+    mp = None
+
+from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QWidget,
@@ -43,7 +49,7 @@ class VirtualMousePage(QWidget):
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
-            model_complexity=1,
+            model_complexity=0,
             min_detection_confidence=0.55,
             min_tracking_confidence=0.55,
         )
@@ -62,12 +68,12 @@ class VirtualMousePage(QWidget):
         # MOUSE SETTINGS
         # ======================================================
 
-        self.sensitivity = 50
+        self.sensitivity = 90
 
         self.previous_x = None
         self.previous_y = None
 
-        self.smoothing = 0.35
+        self.smoothing = 0.6
 
         self.last_gesture = "None"
 
@@ -578,7 +584,7 @@ class VirtualMousePage(QWidget):
         )
 
         self.sensitivity_slider.setValue(
-            50
+            90
         )
 
         self.sensitivity_slider.valueChanged.connect(
@@ -878,12 +884,19 @@ class VirtualMousePage(QWidget):
 
         self.camera.set(
             cv2.CAP_PROP_FRAME_WIDTH,
-            1280
+            640
         )
 
         self.camera.set(
             cv2.CAP_PROP_FRAME_HEIGHT,
-            720
+            480
+        )
+
+        # Keep the camera label size fixed so the preview doesn't pop/zoom.
+        # The displayed frame is scaled to fit the label, not the label to frame.
+        self.camera_label.setMinimumSize(
+            650,
+            450
         )
 
         return True
@@ -1182,7 +1195,7 @@ class VirtualMousePage(QWidget):
         # ------------------------------------------------------
 
         if (
-            thumb_index_distance < 0.055
+            thumb_index_distance < 0.075
             and index_up
         ):
 
@@ -1193,7 +1206,7 @@ class VirtualMousePage(QWidget):
         # ------------------------------------------------------
 
         if (
-            thumb_middle_distance < 0.055
+            thumb_middle_distance < 0.075
             and middle_up
         ):
 
@@ -1278,7 +1291,7 @@ class VirtualMousePage(QWidget):
 
                 pyautogui.click()
 
-                self.left_click_cooldown = 15
+                self.left_click_cooldown = 8
 
             else:
 
@@ -1305,7 +1318,7 @@ class VirtualMousePage(QWidget):
 
                 pyautogui.rightClick()
 
-                self.right_click_cooldown = 15
+                self.right_click_cooldown = 8
 
             else:
 
@@ -1357,20 +1370,27 @@ class VirtualMousePage(QWidget):
             self.mp_hands.HandLandmark.INDEX_FINGER_TIP
         ]
 
-        # Camera coordinates → screen coordinates
+        # Center of the visible tracking area. Normalized coordinates
+        # (0..1) are remapped around 0.5 with a gain, so you only need to
+        # move your hand a little to cover more of the screen — no need to
+        # fully extend your arm toward the edges.
+        center = 0.5
+        gain = 1.6
+
+        cx = (index_tip.x - center) * gain + center
+        cy = (index_tip.y - center) * gain + center
 
         target_x = int(
-            index_tip.x
+            max(0.0, min(1.0, cx))
             * self.screen_width
         )
 
         target_y = int(
-            index_tip.y
+            max(0.0, min(1.0, cy))
             * self.screen_height
         )
 
         # Sensitivity adjustment
-
         sensitivity_factor = (
             self.sensitivity / 50
         )
@@ -1389,8 +1409,6 @@ class VirtualMousePage(QWidget):
             )
             *
             self.smoothing
-            *
-            sensitivity_factor
         )
 
         smooth_y = (
@@ -1402,8 +1420,6 @@ class VirtualMousePage(QWidget):
             )
             *
             self.smoothing
-            *
-            sensitivity_factor
         )
 
         smooth_x = max(
@@ -1579,10 +1595,16 @@ class VirtualMousePage(QWidget):
             image
         )
 
+        # Use a fixed target and FastTransformation: cheaper than
+        # SmoothTransformation every frame (reduces lag) and stable size.
+        target = self.camera_label.size()
+        if target.width() < 40 or target.height() < 40:
+            target = QSize(650, 450)
+
         pixmap = pixmap.scaled(
-            self.camera_label.size(),
+            target,
             Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
+            Qt.FastTransformation
         )
 
         self.camera_label.setPixmap(

@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget, QGridLayout
 )
 
-from widgets.sidebar import Sidebar, TitleBar
+from widgets.sidebar import TitleBar
 
 
 class StatusCard(QFrame):
@@ -130,14 +130,12 @@ class DashboardPage(QWidget):
             QLabel#subtitle { color: #5A6B93; font-size: 13px; }
         """)
 
-        # Root layout with sidebar + content
-        root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        # Sidebar
-        self.sidebar = Sidebar(parent, "Home")
-        root.addWidget(self.sidebar)
+        # Root layout with content only.
+        # The navigation sidebar is provided globally by MainWindow, so the
+        # Dashboard itself does not create its own sidebar (avoids duplicates).
+        view = QVBoxLayout(self)
+        view.setContentsMargins(0, 0, 0, 0)
+        view.setSpacing(0)
 
         # Content area
         content = QWidget()
@@ -197,7 +195,7 @@ class DashboardPage(QWidget):
         content_layout.addLayout(grid)
         content_layout.addStretch()
 
-        root.addWidget(content, 1)
+        view.addWidget(content, 1)
 
     def updateCameraName(self, name):
         """Update camera status card."""
@@ -210,6 +208,4 @@ class DashboardPage(QWidget):
             self.status_cards[0].findChild(QLabel, "cardStatus").setText(name)
 
     def setActivePage(self, page_name):
-        """Update sidebar active state."""
-        if self.sidebar:
-            self.sidebar.setActivePage(page_name)
+        """No-op: sidebar is managed globally by MainWindow."""

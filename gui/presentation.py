@@ -5,7 +5,14 @@ import sys
 
 import cv2
 import fitz
-import mediapipe as mp
+
+# MediaPipe may fail to load its DLL on some Python setups. Make it optional so
+# the rest of the app still starts; feature code guards against mp being None.
+try:
+    import mediapipe as mp
+except Exception:
+    print("MediaPipe import error:", sys.exc_info()[1])
+    mp = None
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap

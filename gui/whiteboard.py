@@ -47,10 +47,15 @@ class DrawingCanvas(QWidget):
         self.opacity = 100
 
         # ----------------------------------------------------
-        # Canvas
+        # Canvas - sized to fill the widget (like the Annotation
+        # canvas), so there is no fixed "limit" / letterboxing.
         # ----------------------------------------------------
 
-        self.canvas = QPixmap(1200, 700)
+        self.canvas = QPixmap(
+            max(1, self.width()),
+            max(1, self.height())
+        )
+
         self.canvas.fill(QColor("#F8FDFF"))
 
         # ----------------------------------------------------
@@ -250,22 +255,51 @@ class DrawingCanvas(QWidget):
 
     # ========================================================
     # MAP DISPLAY COORDINATES TO PIXMAP
+    #
+    # Must mirror paintEvent() exactly: the canvas is scaled with
+    # KeepAspectRatio and centered, so we first remove the centering
+    # offsets, then map from the scaled area back into canvas pixels.
     # ========================================================
 
     def map_to_canvas(self, point):
 
+        scaled = self.canvas.scaled(
+            self.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+
+        # Centering offsets used in paintEvent()
+        scaled_w = scaled.width()
+        scaled_h = scaled.height()
+
+        offset_x = (
+            self.width()
+            - scaled_w
+        ) // 2
+
+        offset_y = (
+            self.height()
+            - scaled_h
+        ) // 2
+
+        # Remove the offsets -> coordinates inside the scaled image
+        local_x = point.x() - offset_x
+        local_y = point.y() - offset_y
+
+        # Map scaled-image coordinates back into canvas (device) pixels
         x_ratio = (
             self.canvas.width()
-            / max(1, self.width())
+            / max(1, scaled_w)
         )
 
         y_ratio = (
             self.canvas.height()
-            / max(1, self.height())
+            / max(1, scaled_h)
         )
 
-        x = int(point.x() * x_ratio)
-        y = int(point.y() * y_ratio)
+        x = int(local_x * x_ratio)
+        y = int(local_y * y_ratio)
 
         x = max(
             0,
@@ -278,6 +312,29 @@ class DrawingCanvas(QWidget):
         )
 
         return QPoint(x, y)
+
+    # ========================================================
+    # BRUSH SCALE
+    #
+    # The pen draws in canvas (device) pixels, but is displayed
+    # scaled down. Multiply by the inverse scale so the stroke
+    # thickness the user selects is the thickness they see.
+    # ========================================================
+
+    def scaled_brush(self, value):
+
+        scaled = self.canvas.scaled(
+            self.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+
+        scale = max(1, self.canvas.width()) / max(
+            1,
+            scaled.width()
+        )
+
+        return max(1, int(value * scale))
 
     # ========================================================
     # DRAW
@@ -300,7 +357,7 @@ class DrawingCanvas(QWidget):
 
             pen = QPen(
                 QColor("#F8FDFF"),
-                self.brush_size * 4,
+                self.scaled_brush(self.brush_size) * 4,
                 Qt.SolidLine,
                 Qt.RoundCap,
                 Qt.RoundJoin
@@ -317,12 +374,12 @@ class DrawingCanvas(QWidget):
             color = QColor(self.color)
 
             color.setAlpha(
-                int(self.opacity * 0.35)
+                int(self.opacity * 255 / 100.0 * 0.35)
             )
 
             pen = QPen(
                 color,
-                max(10, self.brush_size * 3),
+                max(10, self.scaled_brush(self.brush_size) * 3),
                 Qt.SolidLine,
                 Qt.RoundCap,
                 Qt.RoundJoin
@@ -338,13 +395,14 @@ class DrawingCanvas(QWidget):
 
             color = QColor(self.color)
 
+            # Map opacity slider (10-100) to a proper 0-255 alpha.
             color.setAlpha(
-                self.opacity
+                int(self.opacity * 255 / 100.0)
             )
 
             pen = QPen(
                 color,
-                self.brush_size,
+                self.scaled_brush(self.brush_size),
                 Qt.SolidLine,
                 Qt.RoundCap,
                 Qt.RoundJoin
