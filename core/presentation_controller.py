@@ -1,19 +1,18 @@
 # core/presentation_controller.py
 
 import os
-import subprocess
 import time
-
-import pyautogui
 
 
 class PresentationController:
     """
-    Controls external PDF / PowerPoint presentations using keyboard commands.
+    Controls the in-app presentation (PDF / PowerPoint slides) shown on the
+    presentation page.
 
-    GestureBoard itself does not need to render the PowerPoint application.
-    The presentation can be opened externally and controlled using
-    keyboard shortcuts.
+    GestureBoard renders slides inside its own window, so this controller does
+    NOT launch or control external apps (e.g. PowerPoint / a PDF viewer). It
+    simply tracks the current slide and applies a short cooldown so gestures
+    do not fire repeatedly.
     """
 
     def __init__(self):
@@ -24,6 +23,11 @@ class PresentationController:
         # Prevent commands from firing continuously.
         self.last_command_time = 0
         self.command_cooldown = 0.7
+
+        # In-app slide position, mirrored by the page.
+        self.current_slide = 0
+        self.total_slides = 0
+        self.fullscreen = False
 
     # ============================================================
     # FILE
@@ -44,29 +48,6 @@ class PresentationController:
         return True
 
     # ============================================================
-    # OPEN FILE
-    # ============================================================
-
-    def open_file(self):
-        """Open the selected file using Windows default application."""
-
-        if not self.current_file:
-            return False
-
-        try:
-            os.startfile(self.current_file)
-
-            self.last_action = "Presentation Opened"
-            time.sleep(1)
-
-            return True
-
-        except Exception as e:
-            print("Unable to open presentation:", e)
-            self.last_action = "Open Failed"
-            return False
-
-    # ============================================================
     # COMMAND COOLDOWN
     # ============================================================
 
@@ -84,15 +65,7 @@ class PresentationController:
     # ============================================================
 
     def start_presentation(self):
-        """
-        Starts the presentation.
-
-        PowerPoint:
-            F5 = start slideshow
-
-        PDF viewer:
-            F11 can enter fullscreen in many viewers.
-        """
+        """Begin the in-app presentation (no external app is opened)."""
 
         if not self._can_execute():
             return False
@@ -101,23 +74,12 @@ class PresentationController:
             self.last_action = "No File Loaded"
             return False
 
-        # Open the file first if necessary.
-        if not self.presentation_running:
-            self.open_file()
-            time.sleep(1)
+        # Starting the in-app slideshow is handled by the page (it enters
+        # fullscreen). Nothing external is launched here.
+        self.presentation_running = True
+        self.last_action = "Presentation Started"
 
-        try:
-            pyautogui.press("f5")
-
-            self.presentation_running = True
-            self.last_action = "Presentation Started"
-
-            return True
-
-        except Exception as e:
-            print("Start presentation error:", e)
-            self.last_action = "Start Failed"
-            return False
+        return True
 
     # ============================================================
     # NEXT SLIDE
@@ -129,15 +91,13 @@ class PresentationController:
         if not self._can_execute():
             return False
 
-        try:
-            pyautogui.press("right")
+        self.current_slide = min(
+            self.current_slide + 1,
+            max(0, self.total_slides - 1)
+        )
 
-            self.last_action = "Next Slide"
-            return True
-
-        except Exception as e:
-            print("Next slide error:", e)
-            return False
+        self.last_action = "Next Slide"
+        return True
 
     # ============================================================
     # PREVIOUS SLIDE
@@ -149,103 +109,54 @@ class PresentationController:
         if not self._can_execute():
             return False
 
-        try:
-            pyautogui.press("left")
+        self.current_slide = max(
+            0,
+            self.current_slide - 1
+        )
 
-            self.last_action = "Previous Slide"
-            return True
-
-        except Exception as e:
-            print("Previous slide error:", e)
-            return False
+        self.last_action = "Previous Slide"
+        return True
 
     # ============================================================
     # FULL SCREEN
     # ============================================================
 
     def full_screen(self):
-        """
-        Attempts to make the presentation fullscreen.
-
-        F11 works with many PDF viewers and browsers.
-        """
+        """Enter fullscreen for the in-app presentation."""
 
         if not self._can_execute():
             return False
 
-        try:
-            pyautogui.press("f11")
-
-            self.last_action = "Full Screen"
-            return True
-
-        except Exception as e:
-            print("Fullscreen error:", e)
-            return False
+        self.fullscreen = True
+        self.last_action = "Full Screen"
+        return True
 
     # ============================================================
     # EXIT FULL SCREEN
     # ============================================================
 
     def exit_full_screen(self):
-        """Exit slideshow/fullscreen mode."""
+        """Exit fullscreen for the in-app presentation."""
 
         if not self._can_execute():
             return False
 
-        try:
-            pyautogui.press("esc")
-
-            self.last_action = "Exit Full Screen"
-            return True
-
-        except Exception as e:
-            print("Exit fullscreen error:", e)
-            return False
-
-    # ============================================================
-    # MINIMIZE
-    # ============================================================
-
-    def minimize_presentation(self):
-        """
-        Minimize the currently active presentation window.
-        """
-
-        if not self._can_execute():
-            return False
-
-        try:
-            pyautogui.hotkey("win", "down")
-
-            self.last_action = "Presentation Minimized"
-            return True
-
-        except Exception as e:
-            print("Minimize error:", e)
-            return False
+        self.fullscreen = False
+        self.presentation_running = False
+        self.last_action = "Exit Full Screen"
+        return True
 
     # ============================================================
     # END PRESENTATION
     # ============================================================
 
     def end_presentation(self):
-        """Exit slideshow mode."""
+        """End the in-app presentation."""
 
-        if not self._can_execute():
-            return False
-
-        try:
-            pyautogui.press("esc")
-
-            self.presentation_running = False
-            self.last_action = "Presentation Ended"
-
-            return True
-
-        except Exception as e:
-            print("End presentation error:", e)
-            return False
+        self.presentation_running = False
+        self.fullscreen = False
+        self.last_action = "Presentation Ended"
+        return True
 
     # ============================================================
     # GESTURE HANDLER

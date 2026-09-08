@@ -15,7 +15,7 @@ except Exception:
     mp = None
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QColor, QBrush, QPen
 from PyQt5.QtWidgets import (
     QWidget,
     QLabel,
@@ -28,10 +28,18 @@ from PyQt5.QtWidgets import (
     QFrame,
     QMessageBox,
     QScrollArea,
+    QDialog,
+    QDialogButtonBox,
+    QProgressDialog,
 )
 
 from core.gesture_detector import GestureDetector
 from core.presentation_controller import PresentationController
+
+try:
+    from pptx import Presentation as PptxPresentation
+except Exception:
+    PptxPresentation = None
 
 
 class PresentationPage(QWidget):
@@ -54,6 +62,10 @@ class PresentationPage(QWidget):
         self.pdf_document = None
         self.current_page = 0
         self.total_pages = 0
+        self.ppt_slides = None
+
+        # In-app fullscreen presentation window (gesture controlled).
+        self.fullscreen_window = None
 
         # ---------------------------------------------------------
         # CAMERA
@@ -79,6 +91,10 @@ class PresentationPage(QWidget):
         self.detected_gesture = "None"
         self.current_action = "Ready"
 
+        # Tracks whether this page has been opened at least once. Used to stop
+        # gesture handling from firing at startup (splash screen).
+        self._page_opened = False
+
         # ---------------------------------------------------------
         # BUILD UI
         # ---------------------------------------------------------
@@ -92,7 +108,15 @@ class PresentationPage(QWidget):
         self.camera_timer = QTimer(self)
         self.camera_timer.timeout.connect(self.update_camera)
 
-        self.start_camera()
+    # ============================================================
+    # SHOW EVENT — start the camera only when the page is shown.
+    # ============================================================
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._page_opened = True
+        if self.camera is None:
+            self.start_camera()
 
     # ============================================================
     # UI
@@ -480,6 +504,25 @@ class PresentationPage(QWidget):
             alignment=Qt.AlignCenter
         )
 
+        # Separate status block placed BELOW the feed so it never covers it.
+        status_block = QFrame()
+        status_block.setStyleSheet("""
+            QFrame {
+                background: #F2F6FC;
+                border: 1px solid #D9E4F5;
+                border-radius: 8px;
+            }
+            QLabel {
+                background: transparent;
+            }
+        """)
+
+        status_block_layout = QVBoxLayout(status_block)
+        status_block_layout.setContentsMargins(
+            10, 8, 10, 8
+        )
+        status_block_layout.setSpacing(4)
+
         self.camera_status = QLabel(
             "● Camera Connecting..."
         )
@@ -491,7 +534,7 @@ class PresentationPage(QWidget):
             }
         """)
 
-        camera_layout.addWidget(self.camera_status)
+        status_block_layout.addWidget(self.camera_status)
 
         self.detected_label = QLabel(
             "Detected: None"
@@ -504,7 +547,7 @@ class PresentationPage(QWidget):
             }
         """)
 
-        camera_layout.addWidget(self.detected_label)
+        status_block_layout.addWidget(self.detected_label)
 
         self.action_label = QLabel(
             "Action: Ready"
@@ -516,7 +559,9 @@ class PresentationPage(QWidget):
             }
         """)
 
-        camera_layout.addWidget(self.action_label)
+        status_block_layout.addWidget(self.action_label)
+
+        camera_layout.addWidget(status_block)
 
         right_panel.addWidget(camera_frame)
 
@@ -528,6 +573,25 @@ class PresentationPage(QWidget):
         self.start_button.setFixedHeight(42)
         self.start_button.clicked.connect(
             self.manual_start
+        )
+
+        self.stop_button = QPushButton("Stop Presentation")
+        self.stop_button.setFixedHeight(42)
+        self.stop_button.setStyleSheet("""
+            QPushButton {
+                background: #EAF8EF;
+                color: #2A9561;
+                border: 1px solid #B7E1C7;
+                border-radius: 6px;
+                font-weight: 600;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background: #D8F0E1;
+            }
+        """)
+        self.stop_button.clicked.connect(
+            self.manual_stop
         )
 
         self.next_button = QPushButton("Next Slide")
@@ -543,6 +607,7 @@ class PresentationPage(QWidget):
         )
 
         right_panel.addWidget(self.start_button)
+        right_panel.addWidget(self.stop_button)
         right_panel.addWidget(self.next_button)
         right_panel.addWidget(self.previous_button)
 
@@ -695,49 +760,211 @@ class PresentationPage(QWidget):
 
     def load_powerpoint(self, file_path):
 
-        self.total_pages = 0
-        self.current_page = 0
+        if PptxPresentation is None:
+            QMessageBox.warning(
+                self,
+                "PowerPoint Unavailable",
+                "python-pptx is not installed. "
+                "Please install it to view PowerPoint files in-app."
+            )
+            return
 
-        self.status_mode.setText(
-            "PowerPoint"
+        try:
+            prs = PptxPresentation(file_path)
+
+            slides = [slide for slide in prs.slides]
+            self.total_pages = len(slides)
+            self.current_page = 0
+
+            self.ppt_slides = [
+                self.render_pptx_slide(slide, prs)
+                for slide in slides
+            ]
+
+            self.status_mode.setText("PowerPoint")
+
+            self.file_status.setText(
+                "● "
+                + os.path.basename(file_path)
+                + " — PowerPoint Loaded"
+            )
+
+            self.file_status.setStyleSheet("""
+                QLabel {
+                    background: #EAF8EF;
+                    color: #2A9561;
+                    padding: 10px 16px;
+                    border-radius: 8px;
+                    font-weight: 600;
+                }
+            """)
+
+            self.render_pdf_page()
+
+            self.slide_counter.setText(
+                f"Slide {self.current_page + 1} / "
+                f"{self.total_pages}"
+            )
+
+            self.update_status()
+
+        except Exception as e:
+
+            QMessageBox.critical(
+                self,
+                "PowerPoint Error",
+                f"Unable to load PowerPoint:\n\n{e}"
+            )
+
+    # ============================================================
+    # PPTX RENDER (in-app)
+    # ============================================================
+
+    def render_pptx_slide(self, slide, prs):
+        """Render a python-pptx slide into a QImage using QPainter."""
+
+        # Use a consistent canvas size (16:9-ish) scaled for display.
+        width = 1600
+        height = 900
+
+        img = QImage(
+            width,
+            height,
+            QImage.Format_ARGB32
+        )
+        img.fill(QColor("#FFFFFF"))
+
+        painter = QPainter(img)
+        painter.setRenderHint(
+            QPainter.Antialiasing,
+            True
         )
 
-        self.file_status.setText(
-            "● "
-            + os.path.basename(file_path)
-            + " — PowerPoint Loaded"
-        )
+        # Slide dimensions from the presentation (EMU -> px).
+        try:
+            slide_w = prs.slide_width
+            slide_h = prs.slide_height
+            scale = width / float(slide_w)
+        except Exception:
+            scale = 1.0
 
-        self.file_status.setStyleSheet("""
-            QLabel {
-                background: #EAF8EF;
-                color: #2A9561;
-                padding: 10px 16px;
-                border-radius: 8px;
-                font-weight: 600;
-            }
-        """)
+        # Draw text shapes (title & body placeholders / text boxes).
+        for shape in slide.shapes:
+            try:
+                if not shape.has_text_frame:
+                    continue
+                text = shape.text_frame.text.strip()
+                if not text:
+                    continue
+                if text == "Click to add title":
+                    continue
 
-        self.preview_label.setText(
-            "PowerPoint Presentation Loaded\n\n"
-            + os.path.basename(file_path)
-            + "\n\n"
-            "Click Start Presentation or use ✊ Fist."
-        )
+                left = int(shape.left * scale)
+                top = int(shape.top * scale)
+                s_width = int(shape.width * scale)
+                s_height = int(shape.height * scale)
 
-        self.slide_counter.setText(
-            "PowerPoint"
-        )
+                is_title = (
+                    shape.name.lower().startswith(
+                        ("title", "subtitle")
+                    )
+                )
 
-        self.clear_thumbnails()
+                # Auto-fit font so the full text is visible without clipping.
+                body_font = 24
+                font_size = (
+                    46
+                    if is_title
+                    else body_font
+                )
 
-        self.update_status()
+                box_w = max(30, s_width)
+                box_h = max(30, s_height)
+
+                while font_size > 8:
+                    painter.setFont(
+                        QFont("Segoe UI", font_size)
+                    )
+                    metrics = painter.fontMetrics()
+                    needed_w = metrics.horizontalAdvance(text)
+                    # Rough estimate: add padding for wrapped lines.
+                    est_lines = max(
+                        1,
+                        needed_w // max(1, box_w) + 1
+                    )
+                    total_h = est_lines * metrics.height()
+                    if total_h <= box_h or font_size <= 10:
+                        break
+                    font_size -= 2
+
+                painter.setPen(
+                    QColor("#132B5C")
+                )
+                painter.setFont(
+                    QFont("Segoe UI", font_size)
+                )
+
+                rect = (
+                    left,
+                    top,
+                    box_w,
+                    box_h
+                )
+
+                painter.drawText(
+                    rect[0],
+                    rect[1],
+                    rect[2],
+                    rect[3],
+                    Qt.AlignTop
+                    | Qt.AlignLeft
+                    | Qt.TextWordWrap,
+                    text,
+                )
+
+            except Exception:
+                continue
+
+        painter.end()
+
+        return img
 
     # ============================================================
     # PDF RENDER
     # ============================================================
 
     def render_pdf_page(self):
+
+        # PowerPoint slides render from the in-app image cache.
+        if getattr(self, "ppt_slides", None):
+            if self.current_page < 0:
+                self.current_page = 0
+            if self.current_page >= self.total_pages:
+                self.current_page = self.total_pages - 1
+
+            img = self.ppt_slides[self.current_page]
+            pixmap = QPixmap.fromImage(img)
+
+            pixmap = pixmap.scaled(
+                self.preview_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+
+            self.preview_label.setPixmap(pixmap)
+
+            self.slide_counter.setText(
+                f"Slide {self.current_page + 1} / "
+                f"{self.total_pages}"
+            )
+
+            self.status_slide.setText(
+                f"{self.current_page + 1} / "
+                f"{self.total_pages}"
+            )
+
+            self.refresh_fullscreen()
+            return
 
         if not self.pdf_document:
             return
@@ -795,6 +1022,8 @@ class PresentationPage(QWidget):
             f"{self.current_page + 1} / "
             f"{self.total_pages}"
         )
+
+        self.refresh_fullscreen()
 
     # ============================================================
     # PDF THUMBNAILS
@@ -910,12 +1139,12 @@ class PresentationPage(QWidget):
 
             self.camera.set(
                 cv2.CAP_PROP_FRAME_WIDTH,
-                1280
+                640
             )
 
             self.camera.set(
                 cv2.CAP_PROP_FRAME_HEIGHT,
-                720
+                480
             )
 
             self.camera_timer.start(30)
@@ -1062,6 +1291,13 @@ class PresentationPage(QWidget):
         ]:
             return
 
+        # Only act once the page has been opened at least once. This prevents
+        # the camera (which keeps running in the background so gestures still
+        # work while the user is in another app) from firing presentation
+        # actions during the splash screen or before the page is first shown.
+        if not self._page_opened:
+            return
+
         # --------------------------------------------------------
         # PREVENT SAME GESTURE FROM FIRING EVERY FRAME
         # --------------------------------------------------------
@@ -1139,9 +1375,34 @@ class PresentationPage(QWidget):
 
             self.next_pdf_preview()
 
+            # If fullscreen, move the slide there too.
+            if self.fullscreen_window is not None:
+                self.refresh_fullscreen()
+
         elif gesture == "Three Fingers":
 
             self.previous_pdf_preview()
+
+            if self.fullscreen_window is not None:
+                self.refresh_fullscreen()
+
+        elif gesture == "Fist":
+
+            # Start the in-app fullscreen presentation.
+            self.enter_fullscreen()
+
+        elif gesture == "Thumb + Pinky":
+
+            self.enter_fullscreen()
+
+        elif gesture == "Open Hand":
+
+            self.exit_fullscreen()
+
+            self.current_action = "Exit Full Screen"
+            self.action_label.setText(
+                "Action: Exit Full Screen"
+            )
 
         self.update_status()
 
@@ -1186,6 +1447,8 @@ class PresentationPage(QWidget):
 
         self.presentation_controller.start_presentation()
 
+        self.enter_fullscreen()
+
         self.current_action = (
             "Presentation Started"
         )
@@ -1196,11 +1459,34 @@ class PresentationPage(QWidget):
 
         self.update_status()
 
+    def manual_stop(self):
+
+        self.presentation_controller.end_presentation()
+
+        self.exit_fullscreen()
+
+        self.current_action = (
+            "Presentation Stopped"
+        )
+
+        self.action_label.setText(
+            "Action: Presentation Stopped"
+        )
+
+        self.status_gesture.setText(
+            "● Inactive"
+        )
+
+        self.update_status()
+
     def manual_next(self):
 
         self.presentation_controller.next_slide()
 
         self.next_pdf_preview()
+
+        if self.fullscreen_window is not None:
+            self.refresh_fullscreen()
 
         self.current_action = (
             "Next Slide"
@@ -1217,6 +1503,9 @@ class PresentationPage(QWidget):
         self.presentation_controller.previous_slide()
 
         self.previous_pdf_preview()
+
+        if self.fullscreen_window is not None:
+            self.refresh_fullscreen()
 
         self.current_action = (
             "Previous Slide"
@@ -1262,6 +1551,81 @@ class PresentationPage(QWidget):
         )
 
     # ============================================================
+    # FULLSCREEN VIEWER
+    # ============================================================
+
+    def _current_slide_image(self):
+        """Return the current slide as a QImage (PDF or PPTX)."""
+
+        if getattr(self, "ppt_slides", None):
+            if -1 < self.current_page < len(self.ppt_slides):
+                return self.ppt_slides[self.current_page]
+            return None
+
+        if self.pdf_document:
+
+            page = self.pdf_document.load_page(
+                self.current_page
+            )
+
+            pix = page.get_pixmap(
+                matrix=fitz.Matrix(1.4, 1.4),
+                alpha=False
+            )
+
+            return QImage(
+                pix.samples,
+                pix.width,
+                pix.height,
+                pix.stride,
+                QImage.Format_RGB888
+            )
+
+        return None
+
+    def enter_fullscreen(self):
+        """Open (or refresh) the in-app fullscreen presentation view."""
+
+        # If no file is loaded yet, silently do nothing (do not popup during
+        # startup/splash or when the user is on another screen).
+        if not self.pdf_document and not getattr(
+            self,
+            "ppt_slides",
+            None
+        ):
+            return
+
+        if self.fullscreen_window is None:
+            self.fullscreen_window = FullscreenViewer(
+                self,
+                self
+            )
+
+        self.fullscreen_window.showFullScreen()
+
+        self.refresh_fullscreen()
+
+    def refresh_fullscreen(self):
+        """Push the current slide into the fullscreen viewer."""
+
+        if self.fullscreen_window is not None:
+            image = self._current_slide_image()
+
+            if image is not None:
+                self.fullscreen_window.set_slide(
+                    image,
+                    self.current_page + 1,
+                    self.total_pages,
+                )
+
+    def exit_fullscreen(self):
+        """Close the fullscreen view."""
+
+        if self.fullscreen_window is not None:
+            self.fullscreen_window.close()
+            self.fullscreen_window = None
+
+    # ============================================================
     # CLEANUP
     # ============================================================
 
@@ -1287,4 +1651,101 @@ class PresentationPage(QWidget):
 
         self.close_camera()
 
+        if self.fullscreen_window is not None:
+            self.fullscreen_window.close()
+            self.fullscreen_window = None
+
         event.accept()
+
+
+# ============================================================
+# FULLSCREEN VIEWER
+# ============================================================
+
+class FullscreenViewer(QDialog):
+    """Black fullscreen window that displays the current presentation slide.
+
+    Created as a frameless, always-on-top, independent window (no parent) so
+    it can still show fullscreen even if the main GestureBoard window is
+    minimized or the user is working in another application.
+    """
+
+    def __init__(self, parent=None, page=None):
+        super().__init__()
+        self.page = page
+
+        self.setWindowTitle("Presentation")
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.Window
+            | Qt.WindowStaysOnTopHint
+        )
+        self.setStyleSheet("""
+            QDialog {
+                background: #000000;
+            }
+            QLabel {
+                background: transparent;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.slide_label = QLabel("Loading slide...")
+        self.slide_label.setAlignment(Qt.AlignCenter)
+        self.slide_label.setStyleSheet("""
+            color: #FFFFFF;
+            font-size: 18px;
+        """)
+        layout.addWidget(self.slide_label, 1)
+
+        info = QLabel("")
+        info.setObjectName("infoLabel")
+        info.setAlignment(Qt.AlignCenter)
+        info.setStyleSheet("""
+            color: #888888;
+            font-size: 12px;
+            padding: 6px;
+        """)
+        self.info_label = info
+        layout.addWidget(info)
+
+        # Cache the current image so we can re-scale on resize.
+        self._image = None
+
+    def set_slide(self, image, page_number, total_pages):
+        """Display a slide image fullscreen."""
+
+        self._image = image
+        self._render()
+
+        self.info_label.setText(
+            f"{page_number} / {total_pages}"
+        )
+
+    def _render(self):
+        if self._image is None:
+            return
+
+        pixmap = QPixmap.fromImage(self._image)
+
+        pixmap = pixmap.scaled(
+            self.slide_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+
+        self.slide_label.setPixmap(pixmap)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render()
+
+    def keyPressEvent(self, event):
+        # Allow ESC / Q to exit fullscreen too.
+        if event.key() in (Qt.Key_Escape, Qt.Key_Q):
+            self.close()
+        else:
+            super().keyPressEvent(event)
