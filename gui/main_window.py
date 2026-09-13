@@ -25,6 +25,8 @@ from gui.annotation import AnnotationPage
 from gui.saved_files import SavedFilesPage
 from gui.settings import SettingsPage
 
+from settings import theme as app_theme
+
 
 class MainWindow(QMainWindow):
 
@@ -55,18 +57,20 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(Qt.FramelessWindowHint)
 
         # ==========================================================
-        # WINDOW STYLE
+        # WINDOW STYLE  (theme-driven)
         # ==========================================================
 
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #F5FEFF;
-            }
+        c = app_theme.colors()
 
-            QWidget {
-                background-color: #F5FEFF;
-                color: #0E2F76;
-            }
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {c['bg']};
+            }}
+
+            QWidget {{
+                background-color: {c['bg']};
+                color: {c['text']};
+            }}
         """)
 
         # ==========================================================
@@ -76,11 +80,11 @@ class MainWindow(QMainWindow):
         self.central = QWidget()
         self.central.setObjectName("CentralWidget")
 
-        self.central.setStyleSheet("""
-            QWidget#CentralWidget {
-                background-color: #F5FEFF;
-                border: 1px solid #AAC0E1;
-            }
+        self.central.setStyleSheet(f"""
+            QWidget#CentralWidget {{
+                background-color: {c['bg']};
+                border: 1px solid {c['border']};
+            }}
         """)
 
         self.setCentralWidget(self.central)
@@ -114,10 +118,10 @@ class MainWindow(QMainWindow):
 
         self.body = QWidget()
 
-        self.body.setStyleSheet("""
-            QWidget {
-                background-color: #F5FEFF;
-            }
+        self.body.setStyleSheet(f"""
+            QWidget {{
+                background-color: {c['bg']};
+            }}
         """)
 
         self.bodyLayout = QHBoxLayout(
@@ -159,11 +163,11 @@ class MainWindow(QMainWindow):
             "MainStack"
         )
 
-        self.stack.setStyleSheet("""
-            QStackedWidget#MainStack {
-                background-color: #F5FEFF;
+        self.stack.setStyleSheet(f"""
+            QStackedWidget#MainStack {{
+                background-color: {c['bg']};
                 border: none;
-            }
+            }}
         """)
 
         self.bodyLayout.addWidget(
@@ -282,6 +286,90 @@ class MainWindow(QMainWindow):
         QApplication.instance().installEventFilter(
             self
         )
+
+        # Apply the saved theme (light / dark) on startup.
+        self.apply_theme()
+
+    # ==============================================================
+    # APPLY THEME (light / dark)
+    # ==============================================================
+
+    def apply_theme(self):
+
+        c = app_theme.colors()
+
+        # ----------------------------------------------------------
+        # Global stylesheet (dialogs, tooltips, scrollbars)
+        # ----------------------------------------------------------
+
+        app = QApplication.instance()
+
+        if app is not None:
+            app.setStyleSheet(
+                app_theme.global_stylesheet()
+            )
+
+        # ----------------------------------------------------------
+        # Shell
+        # ----------------------------------------------------------
+
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {c['bg']};
+            }}
+
+            QWidget {{
+                background-color: {c['bg']};
+                color: {c['text']};
+            }}
+        """)
+
+        self.central.setStyleSheet(f"""
+            QWidget#CentralWidget {{
+                background-color: {c['bg']};
+                border: 1px solid {c['border']};
+            }}
+        """)
+
+        self.body.setStyleSheet(f"""
+            QWidget {{
+                background-color: {c['bg']};
+            }}
+        """)
+
+        self.stack.setStyleSheet(f"""
+            QStackedWidget#MainStack {{
+                background-color: {c['bg']};
+                border: none;
+            }}
+        """)
+
+        # ----------------------------------------------------------
+        # Sidebar + title bar
+        # ----------------------------------------------------------
+
+        for widget in (self.sidebar, self.titlebar):
+
+            if hasattr(widget, "apply_theme"):
+                try:
+                    widget.apply_theme()
+                except Exception:
+                    pass
+
+        # ----------------------------------------------------------
+        # Pages that support theming
+        # ----------------------------------------------------------
+
+        for page in (
+            self.settings,
+            self.dashboard,
+        ):
+
+            if hasattr(page, "apply_theme"):
+                try:
+                    page.apply_theme()
+                except Exception:
+                    pass
 
     # ==============================================================
     # RESIZE EVENT
@@ -582,6 +670,33 @@ class MainWindow(QMainWindow):
         """
 
         self.current_page = page_name
+
+        # ----------------------------------------------------------
+        # Presentation gesture safety:
+        #
+        # Whenever the active page is NOT Presentation Control, make sure
+        # presentation gestures are completely disabled and any fullscreen
+        # presentation view is closed. This guarantees that switching to
+        # Virtual Mouse / Whiteboard / Annotation / etc. can never leave
+        # presentation gestures running or open the presentation.
+        # ----------------------------------------------------------
+
+        if page_name != "Presentation Control":
+
+            try:
+
+                if hasattr(
+                    self.presentation,
+                    "deactivate_gestures"
+                ):
+
+                    self.presentation.deactivate_gestures()
+
+            except Exception as e:
+
+                print(
+                    f"Presentation deactivate warning: {e}"
+                )
 
         # ----------------------------------------------------------
         # Tell Sidebar about the active page

@@ -14,17 +14,10 @@ class StatusCard(QFrame):
         self.setObjectName("statusCard")
         self.setFixedHeight(80)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setStyleSheet("""
-            QFrame#statusCard {
-                background: #FFFFFF;
-                border: 1px solid #AAC0E1;
-                border-radius: 10px;
-            }
-            QLabel { background: transparent; color: #0E2F76; }
-            QLabel#cardTitle { color: #AAC0E1; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
-            QLabel#cardStatus { font-size: 14px; font-weight: 600; }
-            QLabel#statusDot { color: #2F9E62; font-size: 10px; }
-        """)
+
+        self._status_color = status_color
+
+        self.setStyleSheet(self._stylesheet())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -48,6 +41,23 @@ class StatusCard(QFrame):
         status_row.addStretch()
         layout.addLayout(status_row)
 
+    def _stylesheet(self):
+        from settings import theme as app_theme
+        c = app_theme.colors()
+        return f"""
+            QFrame#statusCard {{
+                background: {c['card']};
+                border: 1px solid {c['border']};
+                border-radius: 10px;
+            }}
+            QLabel {{ background: transparent; color: {c['text']}; }}
+            QLabel#cardTitle {{ color: {c['text_secondary']}; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }}
+            QLabel#cardStatus {{ font-size: 14px; font-weight: 600; }}
+        """
+
+    def apply_theme(self):
+        self.setStyleSheet(self._stylesheet())
+
 
 class FeatureCard(QFrame):
     """Larger feature card with icon, description, and action button."""
@@ -57,32 +67,7 @@ class FeatureCard(QFrame):
         self.setObjectName("featureCard")
         self.setMinimumHeight(160)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setStyleSheet("""
-            QFrame#featureCard {
-                background: #FFFFFF;
-                border: 1px solid #AAC0E1;
-                border-radius: 12px;
-            }
-            QFrame#featureCard:hover {
-                border: 1px solid #6E8FC8;
-            }
-            QLabel { background: transparent; color: #0E2F76; }
-            QLabel#featureTitle { font-size: 15px; font-weight: 800; color: #0E2F76; }
-            QLabel#featureDesc { color: #5A6B93; font-size: 12px; }
-            QLabel#featureIcon { font-size: 28px; }
-            QPushButton {
-                background: #0E2F76;
-                color: #F5FEFF;
-                border: none;
-                border-radius: 8px;
-                padding: 10px 16px;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #1B4499;
-            }
-        """)
+        self.setStyleSheet(self._stylesheet())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
@@ -115,6 +100,39 @@ class FeatureCard(QFrame):
             btn.clicked.connect(callback)
         layout.addWidget(btn)
 
+    def _stylesheet(self):
+        from settings import theme as app_theme
+        c = app_theme.colors()
+        return f"""
+            QFrame#featureCard {{
+                background: {c['card']};
+                border: 1px solid {c['border']};
+                border-radius: 12px;
+            }}
+            QFrame#featureCard:hover {{
+                border: 1px solid {c['accent']};
+            }}
+            QLabel {{ background: transparent; color: {c['text']}; }}
+            QLabel#featureTitle {{ font-size: 15px; font-weight: 800; color: {c['text']}; }}
+            QLabel#featureDesc {{ color: {c['text_secondary']}; font-size: 12px; }}
+            QLabel#featureIcon {{ font-size: 28px; }}
+            QPushButton {{
+                background: {c['primary']};
+                color: {c['primary_text']};
+                border: none;
+                border-radius: 8px;
+                padding: 10px 16px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: {c['sidebar_hover']};
+            }}
+        """
+
+    def apply_theme(self):
+        self.setStyleSheet(self._stylesheet())
+
 
 class DashboardPage(QWidget):
     """Main app dashboard shown after camera verification."""
@@ -123,12 +141,7 @@ class DashboardPage(QWidget):
         super().__init__(parent)
         self.parent_window = parent
         self.setObjectName("dashboard")
-        self.setStyleSheet("""
-            QWidget#dashboard { background: #F5FEFF; }
-            QLabel { background: transparent; color: #0E2F76; }
-            QLabel#heading { font-size: 28px; font-weight: 800; color: #0E2F76; }
-            QLabel#subtitle { color: #5A6B93; font-size: 13px; }
-        """)
+        self.setStyleSheet(self._stylesheet())
 
         # Root layout with content only.
         # The navigation sidebar is provided globally by MainWindow, so the
@@ -140,9 +153,8 @@ class DashboardPage(QWidget):
         # Content area
         content = QWidget()
         content.setObjectName("contentArea")
-        content.setStyleSheet("""
-            QWidget#contentArea { background: #F5FEFF; }
-        """)
+        content.setStyleSheet(self._content_stylesheet())
+        self._content = content
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(32, 24, 32, 24)
         content_layout.setSpacing(24)
@@ -186,16 +198,46 @@ class DashboardPage(QWidget):
             ("Annotation", "✎", "Annotate presentation materials using mouse controls", "Open Annotation", "showAnnotation"),
         ]
 
+        self.feature_cards = []
         for idx, (title, icon, desc, btn_text, cb_name) in enumerate(features):
             row, col = divmod(idx, 2)
             callback = getattr(parent, cb_name, None)
             card = FeatureCard(title, icon, desc, btn_text, callback)
+            self.feature_cards.append(card)
             grid.addWidget(card, row, col)
 
         content_layout.addLayout(grid)
         content_layout.addStretch()
 
         view.addWidget(content, 1)
+
+    def _stylesheet(self):
+        from settings import theme as app_theme
+        c = app_theme.colors()
+        return f"""
+            QWidget#dashboard {{ background: {c['bg']}; }}
+            QLabel {{ background: transparent; color: {c['text']}; }}
+            QLabel#heading {{ font-size: 28px; font-weight: 800; color: {c['text']}; }}
+            QLabel#subtitle {{ color: {c['text_secondary']}; font-size: 13px; }}
+        """
+
+    def _content_stylesheet(self):
+        from settings import theme as app_theme
+        c = app_theme.colors()
+        return f"""
+            QWidget#contentArea {{ background: {c['bg']}; }}
+        """
+
+    def apply_theme(self):
+        self.setStyleSheet(self._stylesheet())
+        if hasattr(self, "_content"):
+            self._content.setStyleSheet(self._content_stylesheet())
+        for card in getattr(self, "status_cards", []):
+            if hasattr(card, "apply_theme"):
+                card.apply_theme()
+        for card in getattr(self, "feature_cards", []):
+            if hasattr(card, "apply_theme"):
+                card.apply_theme()
 
     def updateCameraName(self, name):
         """Update camera status card."""

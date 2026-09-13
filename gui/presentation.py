@@ -14,6 +14,12 @@ except Exception:
     print("MediaPipe import error:", sys.exc_info()[1])
     mp = None
 
+# PyAutoGUI is used for the Index Finger presentation cursor. Keep it optional.
+try:
+    import pyautogui
+except Exception:
+    pyautogui = None
+
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QColor, QBrush, QPen
 from PyQt5.QtWidgets import (
@@ -74,16 +80,23 @@ class PresentationPage(QWidget):
         self.camera = None
         self.camera_index = 0
 
-        self.mp_hands = mp.solutions.hands
-        self.mp_drawing = mp.solutions.drawing_utils
+        # MediaPipe is optional: if it failed to load, disable hand tracking
+        # but keep the page (and the rest of the app) fully functional.
+        if mp is not None:
+            self.mp_hands = mp.solutions.hands
+            self.mp_drawing = mp.solutions.drawing_utils
 
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            model_complexity=1,
-            min_detection_confidence=0.55,
-            min_tracking_confidence=0.55,
-        )
+            self.hands = self.mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=1,
+                model_complexity=1,
+                min_detection_confidence=0.55,
+                min_tracking_confidence=0.55,
+            )
+        else:
+            self.mp_hands = None
+            self.mp_drawing = None
+            self.hands = None
 
         self.gesture_detector = GestureDetector()
         self.presentation_controller = PresentationController()
@@ -94,6 +107,27 @@ class PresentationPage(QWidget):
         # Tracks whether this page has been opened at least once. Used to stop
         # gesture handling from firing at startup (splash screen).
         self._page_opened = False
+
+        # Hand-gesture control switch.
+        #
+        # IMPORTANT state rules:
+        #   * Opening Presentation Control does NOT enable gestures.
+        #   * Only the Start Presentation button enables them.
+        #   * Stop / Exit Full Screen disables them again.
+        #   * Switching to any other sidebar page disables them.
+        self.gestures_enabled = False
+
+        # Index Finger cursor state (smoothed movement).
+        self._cursor_prev_x = None
+        self._cursor_prev_y = None
+        self._cursor_smoothing = 0.5
+
+        try:
+            self._screen_w, self._screen_h = (
+                pyautogui.size() if pyautogui else (1920, 1080)
+            )
+        except Exception:
+            self._screen_w, self._screen_h = (1920, 1080)
 
         # ---------------------------------------------------------
         # BUILD UI
@@ -115,8 +149,25 @@ class PresentationPage(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self._page_opened = True
+
+        # Opening (or returning to) the page must NEVER auto-start the
+        # presentation or enable gesture control. The user has to press
+        # Start Presentation explicitly.
+        self.gestures_enabled = False
+
         if self.camera is None:
             self.start_camera()
+
+    def deactivate_gestures(self):
+        """Disable presentation gestures and close any fullscreen view.
+
+        Called when navigating away from Presentation Control (or on Stop /
+        Exit Full Screen) so gestures can never open the presentation while
+        the user is on another page.
+        """
+
+        self.gestures_enabled = False
+        self.exit_fullscreen()
 
     # ============================================================
     # UI
@@ -203,14 +254,14 @@ class PresentationPage(QWidget):
         content_layout.setSpacing(20)
 
         # ========================================================
-        # LEFT
+        # CENTER COLUMN  (presentation preview + buttons)
         # ========================================================
 
-        left_panel = QVBoxLayout()
-        left_panel.setSpacing(12)
+        center_column = QVBoxLayout()
+        center_column.setSpacing(12)
 
         # --------------------------------------------------------
-        # PRESENTATION PREVIEW
+        # PRESENTATION PREVIEW  (slide counter at upper-right)
         # --------------------------------------------------------
 
         preview_frame = QFrame()
@@ -222,12 +273,12 @@ class PresentationPage(QWidget):
             }
         """)
 
-        preview_layout = QVBoxLayout(preview_frame)
-        preview_layout.setContentsMargins(20, 20, 20, 15)
+        preview_layout = QGridLayout(preview_frame)
+        preview_layout.setContentsMargins(16, 16, 16, 16)
 
         self.preview_label = QLabel()
 
-        self.preview_label.setMinimumSize(700, 430)
+        self.preview_label.setMinimumSize(700, 470)
         self.preview_label.setAlignment(Qt.AlignCenter)
 
         self.preview_label.setStyleSheet("""
@@ -245,66 +296,97 @@ class PresentationPage(QWidget):
             "Your presentation preview will appear here."
         )
 
-        preview_layout.addWidget(self.preview_label)
-
-        # --------------------------------------------------------
-        # SLIDE INFO
-        # --------------------------------------------------------
-
+        # Slide counter overlaid at the preview's upper-right corner.
         self.slide_counter = QLabel("Slide 0 / 0")
 
-        self.slide_counter.setAlignment(Qt.AlignRight)
+        self.slide_counter.setAlignment(Qt.AlignCenter)
 
         self.slide_counter.setStyleSheet("""
             QLabel {
-                background: #EAF1F8;
-                color: #5574A8;
-                padding: 6px 12px;
-                border-radius: 15px;
+                background: rgba(18, 55, 125, 0.88);
+                color: #FFFFFF;
+                padding: 5px 12px;
+                border-radius: 12px;
                 font-weight: 600;
+                font-size: 12px;
             }
         """)
 
-        preview_layout.addWidget(self.slide_counter)
+        preview_layout.addWidget(self.preview_label, 0, 0)
+        preview_layout.addWidget(
+            self.slide_counter,
+            0,
+            0,
+            Qt.AlignTop | Qt.AlignRight
+        )
 
-        left_panel.addWidget(preview_frame)
+        center_column.addWidget(preview_frame, 1)
 
         # --------------------------------------------------------
-        # THUMBNAILS
+        # PRESENTATION BUTTONS  (directly under the preview)
+        #   1 - 2 - 1 layout
         # --------------------------------------------------------
 
-        self.thumbnail_scroll = QScrollArea()
-        self.thumbnail_scroll.setFixedHeight(105)
-        self.thumbnail_scroll.setWidgetResizable(True)
-        self.thumbnail_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAlwaysOn
-        )
-        self.thumbnail_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAlwaysOff
+        self.start_button = QPushButton("Start Presentation")
+        self.start_button.setFixedHeight(42)
+        self.start_button.clicked.connect(
+            self.manual_start
         )
 
-        self.thumbnail_container = QWidget()
-        self.thumbnail_layout = QHBoxLayout(
-            self.thumbnail_container
+        self.stop_button = QPushButton("Stop Presentation")
+        self.stop_button.setFixedHeight(42)
+        self.stop_button.setStyleSheet("""
+            QPushButton {
+                background: #EAF8EF;
+                color: #2A9561;
+                border: 1px solid #B7E1C7;
+                border-radius: 6px;
+                font-weight: 600;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background: #D8F0E1;
+            }
+        """)
+        self.stop_button.clicked.connect(
+            self.manual_stop
         )
 
-        self.thumbnail_layout.setSpacing(10)
-        self.thumbnail_layout.setContentsMargins(5, 5, 5, 5)
-
-        self.thumbnail_scroll.setWidget(
-            self.thumbnail_container
+        self.previous_button = QPushButton("Previous Slide")
+        self.previous_button.setFixedHeight(42)
+        self.previous_button.clicked.connect(
+            self.manual_previous
         )
 
-        left_panel.addWidget(self.thumbnail_scroll)
+        self.next_button = QPushButton("Next Slide")
+        self.next_button.setFixedHeight(42)
+        self.next_button.clicked.connect(
+            self.manual_next
+        )
 
-        content_layout.addLayout(left_panel, 3)
+        nav_row = QHBoxLayout()
+        nav_row.setSpacing(10)
+        nav_row.addWidget(self.previous_button)
+        nav_row.addWidget(self.next_button)
+
+        center_column.addWidget(self.start_button)
+        center_column.addLayout(nav_row)
+        center_column.addWidget(self.stop_button)
+
+        content_layout.addLayout(center_column, 1)
 
         # ========================================================
         # RIGHT PANEL
         # ========================================================
 
-        right_panel = QVBoxLayout()
-        right_panel.setSpacing(15)
+        # Fixed-width container keeps the Gesture Controls, Presentation
+        # Status and Camera panels the same size and prevents overlap.
+        right_container = QWidget()
+        right_container.setFixedWidth(370)
+
+        right_panel = QVBoxLayout(right_container)
+        right_panel.setContentsMargins(0, 0, 0, 0)
+        right_panel.setSpacing(12)
 
         # --------------------------------------------------------
         # GESTURE CONTROLS
@@ -320,8 +402,8 @@ class PresentationPage(QWidget):
         """)
 
         gesture_layout = QVBoxLayout(gesture_frame)
-        gesture_layout.setContentsMargins(18, 18, 18, 18)
-        gesture_layout.setSpacing(12)
+        gesture_layout.setContentsMargins(14, 12, 14, 12)
+        gesture_layout.setSpacing(7)
 
         gesture_title = QLabel("Gesture Controls")
 
@@ -347,16 +429,17 @@ class PresentationPage(QWidget):
         for icon, gesture, action in gestures:
 
             row = QHBoxLayout()
+            row.setSpacing(8)
 
             icon_label = QLabel(icon)
-            icon_label.setFixedWidth(35)
+            icon_label.setFixedSize(30, 26)
+            icon_label.setAlignment(Qt.AlignCenter)
 
             icon_label.setStyleSheet("""
                 QLabel {
                     background: #E8F0FA;
-                    border-radius: 8px;
-                    padding: 8px;
-                    font-size: 18px;
+                    border-radius: 6px;
+                    font-size: 15px;
                 }
             """)
 
@@ -366,6 +449,7 @@ class PresentationPage(QWidget):
                 QLabel {
                     color: #5273A9;
                     font-weight: 600;
+                    font-size: 12px;
                 }
             """)
 
@@ -374,6 +458,7 @@ class PresentationPage(QWidget):
             action_label.setStyleSheet("""
                 QLabel {
                     color: #7183A6;
+                    font-size: 12px;
                 }
             """)
 
@@ -401,8 +486,8 @@ class PresentationPage(QWidget):
         """)
 
         status_layout = QGridLayout(status_frame)
-        status_layout.setContentsMargins(18, 18, 18, 18)
-        status_layout.setVerticalSpacing(10)
+        status_layout.setContentsMargins(14, 12, 14, 12)
+        status_layout.setVerticalSpacing(8)
 
         status_title = QLabel("Presentation Status")
 
@@ -549,71 +634,13 @@ class PresentationPage(QWidget):
 
         status_block_layout.addWidget(self.detected_label)
 
-        self.action_label = QLabel(
-            "Action: Ready"
-        )
-
-        self.action_label.setStyleSheet("""
-            QLabel {
-                color: #7183A6;
-            }
-        """)
-
-        status_block_layout.addWidget(self.action_label)
-
         camera_layout.addWidget(status_block)
 
         right_panel.addWidget(camera_frame)
 
-        # --------------------------------------------------------
-        # CONTROL BUTTONS
-        # --------------------------------------------------------
-
-        self.start_button = QPushButton("Start Presentation")
-        self.start_button.setFixedHeight(42)
-        self.start_button.clicked.connect(
-            self.manual_start
-        )
-
-        self.stop_button = QPushButton("Stop Presentation")
-        self.stop_button.setFixedHeight(42)
-        self.stop_button.setStyleSheet("""
-            QPushButton {
-                background: #EAF8EF;
-                color: #2A9561;
-                border: 1px solid #B7E1C7;
-                border-radius: 6px;
-                font-weight: 600;
-                padding: 8px;
-            }
-            QPushButton:hover {
-                background: #D8F0E1;
-            }
-        """)
-        self.stop_button.clicked.connect(
-            self.manual_stop
-        )
-
-        self.next_button = QPushButton("Next Slide")
-        self.next_button.setFixedHeight(42)
-        self.next_button.clicked.connect(
-            self.manual_next
-        )
-
-        self.previous_button = QPushButton("Previous Slide")
-        self.previous_button.setFixedHeight(42)
-        self.previous_button.clicked.connect(
-            self.manual_previous
-        )
-
-        right_panel.addWidget(self.start_button)
-        right_panel.addWidget(self.stop_button)
-        right_panel.addWidget(self.next_button)
-        right_panel.addWidget(self.previous_button)
-
         right_panel.addStretch()
 
-        content_layout.addLayout(right_panel, 1)
+        content_layout.addWidget(right_container)
 
         main_layout.addLayout(content_layout)
 
@@ -692,14 +719,27 @@ class PresentationPage(QWidget):
         if extension == ".pdf":
             self.load_pdf(file_path)
 
-        elif extension in [".ppt", ".pptx"]:
+        elif extension == ".pptx":
             self.load_powerpoint(file_path)
+
+        elif extension == ".ppt":
+            # Legacy binary .ppt files cannot be rendered in-app (python-pptx
+            # only reads the modern .pptx format). Give a clear message
+            # instead of the cryptic "Package not found" error.
+            QMessageBox.warning(
+                self,
+                "Unsupported PowerPoint Format",
+                "Legacy .ppt files are not supported.\n\n"
+                "Please open the file in PowerPoint and use "
+                "\"Save As\" → PowerPoint Presentation (*.pptx), "
+                "then upload the .pptx file."
+            )
 
         else:
             QMessageBox.warning(
                 self,
                 "Unsupported File",
-                "Please select a PDF or PowerPoint file."
+                "Please select a PDF or PowerPoint (.pptx) file."
             )
 
     # ============================================================
@@ -742,7 +782,6 @@ class PresentationPage(QWidget):
             """)
 
             self.render_pdf_page()
-            self.create_pdf_thumbnails()
 
             self.update_status()
 
@@ -1031,6 +1070,10 @@ class PresentationPage(QWidget):
 
     def clear_thumbnails(self):
 
+        # Thumbnail strip was removed from the layout; keep this a safe no-op.
+        if not hasattr(self, "thumbnail_layout"):
+            return
+
         while self.thumbnail_layout.count():
 
             item = self.thumbnail_layout.takeAt(0)
@@ -1041,6 +1084,10 @@ class PresentationPage(QWidget):
                 widget.deleteLater()
 
     def create_pdf_thumbnails(self):
+
+        # Thumbnail strip was removed from the layout; keep this a safe no-op.
+        if not hasattr(self, "thumbnail_layout"):
+            return
 
         self.clear_thumbnails()
 
@@ -1186,54 +1233,58 @@ class PresentationPage(QWidget):
         # MEDIAPIPE
         # --------------------------------------------------------
 
-        rgb = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
-        )
-
-        rgb.flags.writeable = False
-
-        results = self.hands.process(
-            rgb
-        )
-
-        rgb.flags.writeable = True
-
         gesture = "None"
 
-        # --------------------------------------------------------
-        # DRAW LANDMARKS
-        # --------------------------------------------------------
+        # If MediaPipe is unavailable, just show the raw camera feed.
+        if self.hands is not None:
 
-        if results.multi_hand_landmarks:
-
-            hand = results.multi_hand_landmarks[0]
-
-            self.mp_drawing.draw_landmarks(
+            rgb = cv2.cvtColor(
                 frame,
-                hand,
-                self.mp_hands.HAND_CONNECTIONS
+                cv2.COLOR_BGR2RGB
             )
 
-            gesture = (
-                self.gesture_detector.detect(
+            rgb.flags.writeable = False
+
+            results = self.hands.process(
+                rgb
+            )
+
+            rgb.flags.writeable = True
+
+            # ----------------------------------------------------
+            # DRAW LANDMARKS
+            # ----------------------------------------------------
+
+            if results.multi_hand_landmarks:
+
+                hand = results.multi_hand_landmarks[0]
+
+                self.mp_drawing.draw_landmarks(
+                    frame,
+                    hand,
+                    self.mp_hands.HAND_CONNECTIONS
+                )
+
+                gesture = (
+                    self.gesture_detector.detect(
+                        hand
+                    )
+                )
+
+                self.process_gesture(
+                    gesture,
                     hand
                 )
-            )
 
-            self.process_gesture(
-                gesture
-            )
+                self.camera_status.setText(
+                    "● Hand Detected"
+                )
 
-            self.camera_status.setText(
-                "● Hand Detected"
-            )
+            else:
 
-        else:
-
-            self.camera_status.setText(
-                "● Camera Connected"
-            )
+                self.camera_status.setText(
+                    "● Camera Connected"
+                )
 
         self.detected_label.setText(
             "Detected: "
@@ -1283,7 +1334,7 @@ class PresentationPage(QWidget):
     # GESTURE PROCESSING
     # ============================================================
 
-    def process_gesture(self, gesture):
+    def process_gesture(self, gesture, hand=None):
 
         if gesture in [
             "None",
@@ -1292,42 +1343,54 @@ class PresentationPage(QWidget):
             return
 
         # Only act once the page has been opened at least once. This prevents
-        # the camera (which keeps running in the background so gestures still
-        # work while the user is in another app) from firing presentation
-        # actions during the splash screen or before the page is first shown.
+        # the camera (which keeps running in the background) from firing
+        # presentation actions during the splash screen.
         if not self._page_opened:
             return
 
+        # Presentation gestures are INACTIVE until Start Presentation is
+        # pressed. While inactive, no gesture performs any action.
+        if not self.gestures_enabled:
+            self.detected_label.setText(
+                "Detected: " + gesture + " (gestures inactive)"
+            )
+            return
+
         # --------------------------------------------------------
-        # PREVENT SAME GESTURE FROM FIRING EVERY FRAME
+        # INDEX FINGER -> move the presentation cursor.
+        #
+        # Handled BEFORE the "same gesture" guard so the cursor keeps
+        # following the hand smoothly while the finger stays extended.
+        # --------------------------------------------------------
+        if gesture == "Index Finger":
+
+            self.move_cursor_from_hand(hand)
+
+            self.current_action = "Cursor / Pointer"
+            self.status_gesture.setText(
+                "● Active — Index Finger"
+            )
+            self.status_action.setText(
+                "Cursor / Pointer"
+            )
+
+            self.detected_gesture = gesture
+            return
+
+        # --------------------------------------------------------
+        # PREVENT SAME (DISCRETE) GESTURE FROM FIRING EVERY FRAME
         # --------------------------------------------------------
 
         if gesture == self.detected_gesture:
-
-            # Don't repeatedly trigger.
             return
 
         self.detected_gesture = gesture
-
-        # --------------------------------------------------------
-        # EXECUTE
-        # --------------------------------------------------------
-
-        action_success = (
-            self.presentation_controller
-            .handle_gesture(
-                gesture
-            )
-        )
 
         # --------------------------------------------------------
         # ACTION TEXT
         # --------------------------------------------------------
 
         actions = {
-            "Fist":
-                "Start Presentation",
-
             "Peace Sign":
                 "Next Slide",
 
@@ -1339,9 +1402,6 @@ class PresentationPage(QWidget):
 
             "Open Hand":
                 "Exit Full Screen",
-
-            "Index Finger":
-                "Cursor / Pointer",
         }
 
         action = actions.get(
@@ -1350,10 +1410,6 @@ class PresentationPage(QWidget):
         )
 
         self.current_action = action
-
-        self.action_label.setText(
-            "Action: " + action
-        )
 
         self.status_gesture.setText(
             "● Active — " + gesture
@@ -1368,14 +1424,13 @@ class PresentationPage(QWidget):
         )
 
         # --------------------------------------------------------
-        # UPDATE PDF PREVIEW
+        # EXECUTE (in-app presentation only)
         # --------------------------------------------------------
 
         if gesture == "Peace Sign":
 
             self.next_pdf_preview()
 
-            # If fullscreen, move the slide there too.
             if self.fullscreen_window is not None:
                 self.refresh_fullscreen()
 
@@ -1386,25 +1441,87 @@ class PresentationPage(QWidget):
             if self.fullscreen_window is not None:
                 self.refresh_fullscreen()
 
-        elif gesture == "Fist":
-
-            # Start the in-app fullscreen presentation.
-            self.enter_fullscreen()
-
         elif gesture == "Thumb + Pinky":
 
+            # Full Screen: show the presentation fullscreen (does not restart).
             self.enter_fullscreen()
 
         elif gesture == "Open Hand":
 
+            # Exit Full Screen: close the fullscreen view but KEEP gesture
+            # control ACTIVE. This lets the user re-enter Full Screen or keep
+            # navigating with gestures without pressing Start again.
+            # (Gestures are only turned off by Stop Presentation or by
+            # switching to another sidebar page.)
             self.exit_fullscreen()
 
             self.current_action = "Exit Full Screen"
-            self.action_label.setText(
-                "Action: Exit Full Screen"
+            self.status_gesture.setText(
+                "● Active — Open Hand"
             )
 
         self.update_status()
+
+    # ============================================================
+    # INDEX FINGER CURSOR
+    # ============================================================
+
+    def move_cursor_from_hand(self, hand):
+
+        if (
+            hand is None
+            or pyautogui is None
+            or self.mp_hands is None
+        ):
+            return
+
+        try:
+
+            tip = hand.landmark[
+                self.mp_hands.HandLandmark.INDEX_FINGER_TIP
+            ]
+
+            # The camera feed is mirrored, so x already matches the user's
+            # on-screen left/right. Map normalized (0..1) to screen pixels.
+            target_x = int(tip.x * self._screen_w)
+            target_y = int(tip.y * self._screen_h)
+
+            if self._cursor_prev_x is None:
+                self._cursor_prev_x = target_x
+                self._cursor_prev_y = target_y
+
+            smooth_x = (
+                self._cursor_prev_x
+                + (target_x - self._cursor_prev_x)
+                * self._cursor_smoothing
+            )
+
+            smooth_y = (
+                self._cursor_prev_y
+                + (target_y - self._cursor_prev_y)
+                * self._cursor_smoothing
+            )
+
+            smooth_x = max(
+                0,
+                min(self._screen_w - 1, int(smooth_x))
+            )
+            smooth_y = max(
+                0,
+                min(self._screen_h - 1, int(smooth_y))
+            )
+
+            pyautogui.moveTo(
+                smooth_x,
+                smooth_y,
+                duration=0
+            )
+
+            self._cursor_prev_x = smooth_x
+            self._cursor_prev_y = smooth_y
+
+        except Exception:
+            pass
 
     # ============================================================
     # PDF NEXT
@@ -1412,7 +1529,12 @@ class PresentationPage(QWidget):
 
     def next_pdf_preview(self):
 
-        if not self.pdf_document:
+        # Works for both PDF and PowerPoint (PPTX) presentations.
+        if not self.pdf_document and not getattr(
+            self,
+            "ppt_slides",
+            None
+        ):
             return
 
         if (
@@ -1430,7 +1552,12 @@ class PresentationPage(QWidget):
 
     def previous_pdf_preview(self):
 
-        if not self.pdf_document:
+        # Works for both PDF and PowerPoint (PPTX) presentations.
+        if not self.pdf_document and not getattr(
+            self,
+            "ppt_slides",
+            None
+        ):
             return
 
         if self.current_page > 0:
@@ -1445,6 +1572,23 @@ class PresentationPage(QWidget):
 
     def manual_start(self):
 
+        # A presentation must be loaded before it can start.
+        if not self.pdf_document and not getattr(
+            self,
+            "ppt_slides",
+            None
+        ):
+            QMessageBox.information(
+                self,
+                "No Presentation",
+                "Upload a PDF or PowerPoint file first, "
+                "then press Start Presentation."
+            )
+            return
+
+        # Enable gesture control ONLY here (explicit user action).
+        self.gestures_enabled = True
+
         self.presentation_controller.start_presentation()
 
         self.enter_fullscreen()
@@ -1453,13 +1597,16 @@ class PresentationPage(QWidget):
             "Presentation Started"
         )
 
-        self.action_label.setText(
-            "Action: Presentation Started"
+        self.status_gesture.setText(
+            "● Active"
         )
 
         self.update_status()
 
     def manual_stop(self):
+
+        # Turn OFF hand-gesture control until Start is pressed again.
+        self.gestures_enabled = False
 
         self.presentation_controller.end_presentation()
 
@@ -1467,10 +1614,6 @@ class PresentationPage(QWidget):
 
         self.current_action = (
             "Presentation Stopped"
-        )
-
-        self.action_label.setText(
-            "Action: Presentation Stopped"
         )
 
         self.status_gesture.setText(
@@ -1492,10 +1635,6 @@ class PresentationPage(QWidget):
             "Next Slide"
         )
 
-        self.action_label.setText(
-            "Action: Next Slide"
-        )
-
         self.update_status()
 
     def manual_previous(self):
@@ -1509,10 +1648,6 @@ class PresentationPage(QWidget):
 
         self.current_action = (
             "Previous Slide"
-        )
-
-        self.action_label.setText(
-            "Action: Previous Slide"
         )
 
         self.update_status()
@@ -1749,3 +1884,10 @@ class FullscreenViewer(QDialog):
             self.close()
         else:
             super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        # Clear the page's reference so Full Screen can be re-opened cleanly
+        # (e.g. after the user closes the window directly).
+        if self.page is not None:
+            self.page.fullscreen_window = None
+        super().closeEvent(event)

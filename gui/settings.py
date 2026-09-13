@@ -60,18 +60,55 @@ class SettingsPage(QWidget):
 
         self.current_section = "Camera"
 
+        # Pull the current theme colors so this page follows light/dark mode.
+        from settings import theme as app_theme
+
+        c = app_theme.colors()
+
+        self.NAVY = c["text"]
+        self.NAVY_DARK = c["text"]
+        self.BACKGROUND = c["bg"]
+        self.CARD = c["card"]
+        self.BORDER = c["border"]
+        self.TEXT = c["text"]
+        self.SECONDARY = c["text_secondary"]
+        self.SELECTED = c["button_hover"]
+        self.LIGHT_BLUE = c["accent"]
+        self.WHITE = c["input_bg"]
+        self.HOVER = c["button_hover"]
+        self.INPUT_BORDER = c["input_border"]
+
+        self.setup_ui()
+
+    def apply_theme(self):
+        """Re-apply theme colors (called when the user switches theme)."""
+
+        from settings import theme as app_theme
+
+        c = app_theme.colors()
+
+        self.NAVY = c["text"]
+        self.NAVY_DARK = c["text"]
+        self.BACKGROUND = c["bg"]
+        self.CARD = c["card"]
+        self.BORDER = c["border"]
+        self.TEXT = c["text"]
+        self.SECONDARY = c["text_secondary"]
+        self.SELECTED = c["button_hover"]
+        self.LIGHT_BLUE = c["accent"]
+        self.WHITE = c["input_bg"]
+        self.HOVER = c["button_hover"]
+        self.INPUT_BORDER = c["input_border"]
+
         self.setup_ui()
 
     # ==========================================================
     # MAIN UI
     # ==========================================================
 
-    def setup_ui(self):
+    def _page_stylesheet(self):
 
-        self.setObjectName("SettingsPage")
-
-        self.setStyleSheet(
-            f"""
+        return f"""
             QWidget#SettingsPage {{
                 background-color: {self.BACKGROUND};
                 color: {self.TEXT};
@@ -90,7 +127,7 @@ class SettingsPage(QWidget):
 
             QComboBox {{
                 background-color: {self.WHITE};
-                border: 1px solid #C5D8EC;
+                border: 1px solid {self.INPUT_BORDER};
                 border-radius: 8px;
                 padding: 7px 12px;
                 color: {self.TEXT};
@@ -98,7 +135,13 @@ class SettingsPage(QWidget):
             }}
 
             QComboBox:hover {{
-                border: 1px solid #9CBCE0;
+                border: 1px solid {self.LIGHT_BLUE};
+            }}
+
+            QComboBox QAbstractItemView {{
+                background-color: {self.WHITE};
+                color: {self.TEXT};
+                selection-background-color: {self.SELECTED};
             }}
 
             QComboBox::drop-down {{
@@ -108,7 +151,7 @@ class SettingsPage(QWidget):
 
             QSlider::groove:horizontal {{
                 height: 4px;
-                background: #DCE8F3;
+                background: {self.BORDER};
                 border-radius: 2px;
             }}
 
@@ -124,14 +167,47 @@ class SettingsPage(QWidget):
                 background: {self.LIGHT_BLUE};
                 border-radius: 2px;
             }}
-            """
+        """
+
+    def _clear_layout(self, layout):
+
+        if layout is None:
+            return
+
+        while layout.count():
+
+            item = layout.takeAt(0)
+
+            widget = item.widget()
+
+            if widget is not None:
+                widget.deleteLater()
+
+            else:
+                child = item.layout()
+
+                if child is not None:
+                    self._clear_layout(child)
+
+    def setup_ui(self):
+
+        self.setObjectName("SettingsPage")
+
+        self.setStyleSheet(
+            self._page_stylesheet()
         )
 
-        # ======================================================
-        # ROOT LAYOUT
-        # ======================================================
+        # Reuse the root layout so setup_ui() can be called again by
+        # apply_theme() to rebuild the page in the new theme colors.
+        root_layout = self.layout()
 
-        root_layout = QVBoxLayout(self)
+        if root_layout is None:
+
+            root_layout = QVBoxLayout(self)
+
+        else:
+
+            self._clear_layout(root_layout)
 
         root_layout.setContentsMargins(
             42,
@@ -321,7 +397,16 @@ class SettingsPage(QWidget):
         # DEFAULT SECTION
         # ======================================================
 
-        self.show_camera_settings()
+        # Restore the current section (so re-theming keeps the user's tab).
+        if self.current_section:
+
+            self.change_section(
+                self.current_section
+            )
+
+        else:
+
+            self.show_camera_settings()
 
     # ==========================================================
     # NAVIGATION BUTTON
@@ -970,26 +1055,67 @@ class SettingsPage(QWidget):
             "Application Theme"
         )
 
-        combo = QComboBox()
+        self.theme_combo = QComboBox()
 
-        combo.setFixedWidth(
-            120
+        self.theme_combo.setFixedWidth(
+            150
         )
 
-        combo.addItems(
+        self.theme_combo.addItems(
             [
                 "Light",
+                "Dark",
                 "System Default"
             ]
         )
 
-        row_layout.addWidget(combo)
+        # Select the currently saved theme.
+        from settings import theme as app_theme
+
+        current_index = self.theme_combo.findText(
+            app_theme.current_name()
+        )
+
+        if current_index >= 0:
+
+            self.theme_combo.setCurrentIndex(
+                current_index
+            )
+
+        self.theme_combo.currentTextChanged.connect(
+            self.on_theme_changed
+        )
+
+        row_layout.addWidget(self.theme_combo)
 
         layout.addWidget(row)
 
         self.settings_content.addWidget(card)
 
         self.settings_content.addStretch()
+
+    # ==========================================================
+    # THEME CHANGE
+    # ==========================================================
+
+    def on_theme_changed(self, name):
+
+        from settings import theme as app_theme
+
+        app_theme.set_theme(name)
+
+        # Ask the main window to re-apply the theme across the app
+        # (shell + pages). Fall back to re-theming just this page.
+        if (
+            self.main_window is not None
+            and hasattr(self.main_window, "apply_theme")
+        ):
+
+            self.main_window.apply_theme()
+
+        else:
+
+            self.apply_theme()
 
     # ==========================================================
     # GESTURE

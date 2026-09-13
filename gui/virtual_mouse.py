@@ -43,16 +43,23 @@ class VirtualMousePage(QWidget):
         # MEDIAPIPE
         # ======================================================
 
-        self.mp_hands = mp.solutions.hands
-        self.mp_drawing = mp.solutions.drawing_utils
+        # MediaPipe is optional: if it failed to load, disable hand tracking
+        # but keep the page (and the rest of the app) fully functional.
+        if mp is not None:
+            self.mp_hands = mp.solutions.hands
+            self.mp_drawing = mp.solutions.drawing_utils
 
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            model_complexity=0,
-            min_detection_confidence=0.55,
-            min_tracking_confidence=0.55,
-        )
+            self.hands = self.mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=1,
+                model_complexity=0,
+                min_detection_confidence=0.55,
+                min_tracking_confidence=0.55,
+            )
+        else:
+            self.mp_hands = None
+            self.mp_drawing = None
+            self.hands = None
 
         # ======================================================
         # PYAutoGUI
@@ -1035,47 +1042,50 @@ class VirtualMousePage(QWidget):
         # MEDIAPIPE
         # ------------------------------------------------------
 
-        rgb = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
-        )
-
-        rgb.flags.writeable = False
-
-        results = self.hands.process(
-            rgb
-        )
-
-        rgb.flags.writeable = True
-
         gesture = "None"
 
-        # ------------------------------------------------------
-        # HAND DETECTED
-        # ------------------------------------------------------
+        # If MediaPipe is unavailable, just show the raw camera feed.
+        if self.hands is not None:
 
-        if results.multi_hand_landmarks:
-
-            hand = results.multi_hand_landmarks[0]
-
-            self.mp_drawing.draw_landmarks(
+            rgb = cv2.cvtColor(
                 frame,
-                hand,
-                self.mp_hands.HAND_CONNECTIONS
+                cv2.COLOR_BGR2RGB
             )
 
-            gesture = self.detect_gesture(
-                hand
+            rgb.flags.writeable = False
+
+            results = self.hands.process(
+                rgb
             )
 
-            self.perform_gesture(
-                gesture,
-                hand
-            )
+            rgb.flags.writeable = True
 
-        else:
+            # --------------------------------------------------
+            # HAND DETECTED
+            # --------------------------------------------------
 
-            self.reset_gesture_status()
+            if results.multi_hand_landmarks:
+
+                hand = results.multi_hand_landmarks[0]
+
+                self.mp_drawing.draw_landmarks(
+                    frame,
+                    hand,
+                    self.mp_hands.HAND_CONNECTIONS
+                )
+
+                gesture = self.detect_gesture(
+                    hand
+                )
+
+                self.perform_gesture(
+                    gesture,
+                    hand
+                )
+
+            else:
+
+                self.reset_gesture_status()
 
         # ------------------------------------------------------
         # FPS

@@ -24,48 +24,7 @@ class Sidebar(QFrame):
         self.setObjectName("sidebar")
         self.setFixedWidth(210)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.setStyleSheet("""
-            QFrame#sidebar {
-                background: #0E2F76;
-                border-right: 1px solid #AAC0E1;
-            }
-            QLabel { background: transparent; color: #F5FEFF; }
-            QLabel#brand { font-size: 16px; font-weight: 700; color: #F5FEFF; }
-            QLabel#brandIcon { font-size: 22px; }
-            QLabel#section { color: #AAC0E1; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
-            QLabel#statusLabel { color: #F5FEFF; font-size: 11px; }
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 8px;
-                color: #F5FEFF;
-                text-align: left;
-                padding: 10px 14px;
-                font-size: 13px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background: #1B4499;
-                color: #F5FEFF;
-            }
-            QPushButton#active {
-                background: #AAC0E1;
-                color: #0E2F76;
-                font-weight: 700;
-            }
-            QPushButton#active:hover {
-                background: #BFD1EB;
-                color: #0E2F76;
-            }
-            QFrame#statusSection {
-                background: transparent;
-                border-top: 1px solid #AAC0E1;
-                padding-top: 12px;
-                margin-top: 8px;
-            }
-            QLabel#statusDot { color: #AAC0E1; font-size: 10px; }
-            QLabel#fpsLabel { color: #AAC0E1; font-size: 10px; margin-top: 4px; }
-        """)
+        self.setStyleSheet(self._stylesheet())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 20, 16, 16)
@@ -74,17 +33,13 @@ class Sidebar(QFrame):
         # Brand
         brand_layout = QHBoxLayout()
         brand_layout.setSpacing(10)
-        brand_icon = QLabel("G")
-        brand_icon.setObjectName("brandIcon")
-        brand_icon.setFixedSize(28, 28)
-        brand_icon.setAlignment(Qt.AlignCenter)
-        brand_icon.setStyleSheet(
-            "background:#F5FEFF; color:#0E2F76; border-radius:14px;"
-            "font-size:16px; font-weight:800;"
-        )
+        self.brand_icon = QLabel("G")
+        self.brand_icon.setObjectName("brandIcon")
+        self.brand_icon.setFixedSize(28, 28)
+        self.brand_icon.setAlignment(Qt.AlignCenter)
         brand_text = QLabel("GestureBoard")
         brand_text.setObjectName("brand")
-        brand_layout.addWidget(brand_icon)
+        brand_layout.addWidget(self.brand_icon)
         brand_layout.addWidget(brand_text)
         brand_layout.addStretch()
         layout.addLayout(brand_layout)
@@ -143,6 +98,69 @@ class Sidebar(QFrame):
 
         layout.addWidget(status_section)
 
+    def _stylesheet(self):
+
+        from settings import theme as app_theme
+
+        c = app_theme.colors()
+
+        return f"""
+            QFrame#sidebar {{
+                background: {c['sidebar']};
+                border-right: 1px solid {c['border']};
+            }}
+            QLabel {{ background: transparent; color: {c['sidebar_text']}; }}
+            QLabel#brand {{ font-size: 16px; font-weight: 700; color: {c['sidebar_text']}; }}
+            QLabel#brandIcon {{ font-size: 22px; }}
+            QLabel#section {{ color: {c['muted']}; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }}
+            QLabel#statusLabel {{ color: {c['sidebar_text']}; font-size: 11px; }}
+            QPushButton {{
+                background: transparent;
+                border: none;
+                border-radius: 8px;
+                color: {c['sidebar_text']};
+                text-align: left;
+                padding: 10px 14px;
+                font-size: 13px;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+            QPushButton#active {{
+                background: {c['accent']};
+                color: {c['accent_text']};
+                font-weight: 700;
+            }}
+            QPushButton#active:hover {{
+                background: {c['accent']};
+                color: {c['accent_text']};
+            }}
+            QFrame#statusSection {{
+                background: transparent;
+                border-top: 1px solid {c['border']};
+                padding-top: 12px;
+                margin-top: 8px;
+            }}
+            QLabel#statusDot {{ color: {c['accent']}; font-size: 10px; }}
+            QLabel#fpsLabel {{ color: {c['muted']}; font-size: 10px; margin-top: 4px; }}
+        """
+
+    def apply_theme(self):
+
+        from settings import theme as app_theme
+
+        c = app_theme.colors()
+
+        self.setStyleSheet(self._stylesheet())
+
+        if hasattr(self, "brand_icon"):
+            self.brand_icon.setStyleSheet(
+                f"background:{c['sidebar_text']}; color:{c['sidebar']};"
+                "border-radius:14px; font-size:16px; font-weight:800;"
+            )
+
     def setActivePage(self, page_name):
         """Update active navigation item."""
         for key, btn in self.nav_buttons.items():
@@ -160,31 +178,7 @@ class TitleBar(QFrame):
         self.main_window = main_window
         self.setObjectName("titleBar")
         self.setFixedHeight(44)
-        self.setStyleSheet("""
-            QFrame#titleBar {
-                background: #0E2F76;
-                border-bottom: 1px solid #AAC0E1;
-            }
-            QLabel { background: transparent; color: #F5FEFF; }
-            QLabel#titleText { font-size: 15px; font-weight: 700; color: #F5FEFF; }
-            QLabel#statusReady { color: #F5FEFF; font-size: 11px; font-weight: 600; }
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 4px;
-                min-width: 36px;
-                min-height: 28px;
-                color: #F5FEFF;
-            }
-            QPushButton:hover {
-                background: #1B4499;
-                color: #F5FEFF;
-            }
-            QPushButton#closeBtn:hover {
-                background: #E81123;
-                color: #FFFFFF;
-            }
-        """)
+        self.setStyleSheet(self._stylesheet())
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 0, 12, 0)
@@ -193,16 +187,12 @@ class TitleBar(QFrame):
         # Left: Logo + Title
         title_layout = QHBoxLayout()
         title_layout.setSpacing(10)
-        logo = QLabel("G")
-        logo.setFixedSize(26, 26)
-        logo.setAlignment(Qt.AlignCenter)
-        logo.setStyleSheet(
-            "background:#F5FEFF; border-radius:13px; color:#0E2F76;"
-            "font-size:14px; font-weight:800;"
-        )
+        self.logo = QLabel("G")
+        self.logo.setFixedSize(26, 26)
+        self.logo.setAlignment(Qt.AlignCenter)
         title = QLabel("GestureBoard")
         title.setObjectName("titleText")
-        title_layout.addWidget(logo)
+        title_layout.addWidget(self.logo)
         title_layout.addWidget(title)
         layout.addLayout(title_layout)
 
@@ -235,6 +225,52 @@ class TitleBar(QFrame):
 
         # Track mouse for window dragging
         self._drag_pos = None
+
+    def _stylesheet(self):
+
+        from settings import theme as app_theme
+
+        c = app_theme.colors()
+
+        return f"""
+            QFrame#titleBar {{
+                background: {c['sidebar']};
+                border-bottom: 1px solid {c['border']};
+            }}
+            QLabel {{ background: transparent; color: {c['sidebar_text']}; }}
+            QLabel#titleText {{ font-size: 15px; font-weight: 700; color: {c['sidebar_text']}; }}
+            QLabel#statusReady {{ color: {c['sidebar_text']}; font-size: 11px; font-weight: 600; }}
+            QPushButton {{
+                background: transparent;
+                border: none;
+                border-radius: 4px;
+                min-width: 36px;
+                min-height: 28px;
+                color: {c['sidebar_text']};
+            }}
+            QPushButton:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+            QPushButton#closeBtn:hover {{
+                background: #E81123;
+                color: #FFFFFF;
+            }}
+        """
+
+    def apply_theme(self):
+
+        from settings import theme as app_theme
+
+        c = app_theme.colors()
+
+        self.setStyleSheet(self._stylesheet())
+
+        if hasattr(self, "logo"):
+            self.logo.setStyleSheet(
+                f"background:{c['sidebar_text']}; border-radius:13px;"
+                f"color:{c['sidebar']}; font-size:14px; font-weight:800;"
+            )
 
     def _toggle_maximize(self):
         if self.main_window.isMaximized():
