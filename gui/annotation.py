@@ -1,6 +1,6 @@
 import os
 
-from PyQt5.QtCore import Qt, QPoint
+from PyQt5.QtCore import Qt, QPoint, QStandardPaths
 from PyQt5.QtGui import (
     QPainter,
     QPen,
@@ -35,7 +35,7 @@ class AnnotationCanvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.setMinimumSize(600, 400)
+        self.setMinimumSize(320, 220)
         self.setSizePolicy(
             QSizePolicy.Expanding,
             QSizePolicy.Expanding
@@ -1371,15 +1371,33 @@ class AnnotationPage(QWidget):
 
     def save_annotation(self):
 
+        # Default to a normal computer location (the user's Pictures
+        # folder) instead of the application folder.
+        default_dir = (
+            QStandardPaths.writableLocation(
+                QStandardPaths.PicturesLocation
+            )
+            or os.path.expanduser("~")
+        )
+
+        default_path = os.path.join(
+            default_dir,
+            "annotation.png"
+        )
+
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Annotation",
-            "annotation.png",
+            default_path,
             "PNG Image (*.png)"
         )
 
         if not path:
             return
+
+        # Make sure the file keeps a .png extension.
+        if not path.lower().endswith(".png"):
+            path += ".png"
 
         try:
 
@@ -1392,7 +1410,8 @@ class AnnotationPage(QWidget):
                 QMessageBox.information(
                     self,
                     "Saved",
-                    "Annotation saved successfully."
+                    "Annotation saved to:\n\n"
+                    + path
                 )
 
             else:

@@ -435,8 +435,8 @@ class CameraSetupPage(QWidget):
         )
 
         preview_box.setMinimumSize(
-            420,
-            380
+            300,
+            220
         )
 
         preview_box.setSizePolicy(
@@ -545,8 +545,8 @@ class CameraSetupPage(QWidget):
         )
 
         self.preview_label.setMinimumSize(
-            400,
-            300
+            280,
+            200
         )
 
         placeholder_layout.addWidget(

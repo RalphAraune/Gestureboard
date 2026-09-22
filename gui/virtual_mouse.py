@@ -39,13 +39,28 @@ class VirtualMousePage(QWidget):
         self.camera_running = False
         self.camera_paused = False
 
+        # Remembers that the user wants tracking active, so we can resume
+        # after navigating away and back (the webcam is released while away).
+        self.camera_was_running = False
+
+        # Fixed camera resolution.
+        # Keeping this constant helps prevent the preview from
+        # changing size/framing when tracking starts.
+        self.camera_width = 640
+        self.camera_height = 480
+
+        # Fixed preview size.
+        self.preview_width = 480
+        self.preview_height = 320
+
         # ======================================================
         # MEDIAPIPE
         # ======================================================
 
-        # MediaPipe is optional: if it failed to load, disable hand tracking
-        # but keep the page (and the rest of the app) fully functional.
+        # MediaPipe is optional: if it failed to load, disable
+        # hand tracking but keep the page fully functional.
         if mp is not None:
+
             self.mp_hands = mp.solutions.hands
             self.mp_drawing = mp.solutions.drawing_utils
 
@@ -56,13 +71,15 @@ class VirtualMousePage(QWidget):
                 min_detection_confidence=0.55,
                 min_tracking_confidence=0.55,
             )
+
         else:
+
             self.mp_hands = None
             self.mp_drawing = None
             self.hands = None
 
         # ======================================================
-        # PYAutoGUI
+        # PYAUTOGUI
         # ======================================================
 
         pyautogui.PAUSE = 0.01
@@ -99,6 +116,7 @@ class VirtualMousePage(QWidget):
         # ======================================================
 
         self.timer = QTimer(self)
+
         self.timer.timeout.connect(
             self.update_camera
         )
@@ -253,9 +271,12 @@ class VirtualMousePage(QWidget):
 
         self.camera_label = QLabel()
 
-        self.camera_label.setMinimumSize(
-            650,
-            450
+        # IMPORTANT:
+        # Fixed preview size prevents the camera preview from
+        # changing its apparent size when tracking starts.
+        self.camera_label.setFixedSize(
+            self.preview_width,
+            self.preview_height
         )
 
         self.camera_label.setAlignment(
@@ -278,7 +299,8 @@ class VirtualMousePage(QWidget):
         )
 
         tracking_layout.addWidget(
-            self.camera_label
+            self.camera_label,
+            alignment=Qt.AlignCenter
         )
 
         # ------------------------------------------------------
@@ -889,21 +911,63 @@ class VirtualMousePage(QWidget):
 
             return False
 
+        # ------------------------------------------------------
+        # FIXED CAMERA RESOLUTION
+        # ------------------------------------------------------
+
         self.camera.set(
             cv2.CAP_PROP_FRAME_WIDTH,
-            640
+            self.camera_width
         )
 
         self.camera.set(
             cv2.CAP_PROP_FRAME_HEIGHT,
-            480
+            self.camera_height
         )
 
-        # Keep the camera label size fixed so the preview doesn't pop/zoom.
-        # The displayed frame is scaled to fit the label, not the label to frame.
-        self.camera_label.setMinimumSize(
-            650,
-            450
+        # ------------------------------------------------------
+        # CAMERA STABILITY
+        # ------------------------------------------------------
+
+        # Prevent automatic camera image resizing where supported.
+        # Some webcams/drivers ignore these settings, so failures
+        # are intentionally ignored.
+        try:
+
+            self.camera.set(
+                cv2.CAP_PROP_BUFFERSIZE,
+                1
+            )
+
+        except Exception:
+            pass
+
+        # Try to keep autofocus stable.
+        try:
+
+            self.camera.set(
+                cv2.CAP_PROP_AUTOFOCUS,
+                0
+            )
+
+        except Exception:
+            pass
+
+        # Keep exposure stable where supported.
+        try:
+
+            self.camera.set(
+                cv2.CAP_PROP_AUTO_EXPOSURE,
+                0.75
+            )
+
+        except Exception:
+            pass
+
+        # Keep preview size fixed.
+        self.camera_label.setFixedSize(
+            self.preview_width,
+            self.preview_height
         )
 
         return True
@@ -920,6 +984,16 @@ class VirtualMousePage(QWidget):
         self.camera_running = True
         self.camera_paused = False
 
+        # The user explicitly wants tracking active.
+        self.camera_was_running = True
+
+        # Reset cursor smoothing so the cursor does not jump
+        # from an old hand position when tracking starts.
+        self.previous_x = None
+        self.previous_y = None
+
+        self.frame_count = 0
+
         self.tracking_status.setText(
             "● Tracking Active"
         )
@@ -934,9 +1008,12 @@ class VirtualMousePage(QWidget):
             }
         """)
 
+        # 25 ms ≈ 40 FPS target.
+        # OpenCV/MediaPipe may naturally run below this depending
+        # on the computer and webcam.
         if not self.timer.isActive():
 
-            self.timer.start(30)
+            self.timer.start(25)
 
     # ==========================================================
     # PAUSE
@@ -971,6 +1048,9 @@ class VirtualMousePage(QWidget):
 
         self.camera_running = False
         self.camera_paused = False
+
+        # The user explicitly stopped tracking.
+        self.camera_was_running = False
 
         if self.timer.isActive():
             self.timer.stop()
@@ -1017,6 +1097,57 @@ class VirtualMousePage(QWidget):
         self.reset_gesture_status()
 
     # ==========================================================
+    # RELEASE CAMERA (on navigate away)
+    #
+    # Frees the single webcam so another page (e.g. Presentation
+    # Control) can use it. The user's intent is remembered so tracking
+    # resumes automatically when this page is shown again.
+    # ==========================================================
+
+    def release_camera(self):
+
+        if self.camera_running:
+            self.camera_was_running = True
+
+        if self.timer.isActive():
+            self.timer.stop()
+
+        if self.camera:
+            self.camera.release()
+            self.camera = None
+
+        self.camera_running = False
+        self.camera_paused = False
+
+        self.previous_x = None
+        self.previous_y = None
+
+    # ==========================================================
+    # ENSURE RUNNING (persistent mouse)
+    #
+    # Virtual Mouse acts as a system mouse: it should keep working on
+    # pages that do not use the webcam, and while the app is minimized.
+    # Called by MainWindow when navigating to a non-camera page.
+    # ==========================================================
+
+    def ensure_running(self):
+
+        # Only resume if the user had tracking on and it isn't already on.
+        if self.camera_was_running and not self.camera_running:
+            self.start_tracking()
+
+    # ==========================================================
+    # SHOW EVENT (resume after navigating back)
+    # ==========================================================
+
+    def showEvent(self, event):
+
+        super().showEvent(event)
+
+        if self.camera_was_running and self.camera is None:
+            self.start_tracking()
+
+    # ==========================================================
     # UPDATE CAMERA
     # ==========================================================
 
@@ -1033,6 +1164,10 @@ class VirtualMousePage(QWidget):
         if not success:
             return
 
+        # ------------------------------------------------------
+        # MIRROR CAMERA
+        # ------------------------------------------------------
+
         frame = cv2.flip(
             frame,
             1
@@ -1044,7 +1179,7 @@ class VirtualMousePage(QWidget):
 
         gesture = "None"
 
-        # If MediaPipe is unavailable, just show the raw camera feed.
+        # If MediaPipe is unavailable, just show raw camera feed.
         if self.hands is not None:
 
             rgb = cv2.cvtColor(
@@ -1094,7 +1229,7 @@ class VirtualMousePage(QWidget):
         self.frame_count += 1
 
         self.fps_label.setText(
-            "FPS: 30"
+            "FPS: 40"
         )
 
         # ------------------------------------------------------
@@ -1191,15 +1326,9 @@ class VirtualMousePage(QWidget):
         ) ** 0.5
 
         thumb_middle_distance = (
-            (
-                thumb_tip.x - middle_tip.x
-            ) ** 2
-            +
-            (
-                thumb_tip.y - middle_tip.y
-            ) ** 2
-        ) ** 0.5
-
+    (thumb_tip.x - middle_tip.x) ** 2
+    + (thumb_tip.y - middle_tip.y) ** 2
+) ** 0.5
         # ------------------------------------------------------
         # LEFT CLICK
         # ------------------------------------------------------
@@ -1380,27 +1509,39 @@ class VirtualMousePage(QWidget):
             self.mp_hands.HandLandmark.INDEX_FINGER_TIP
         ]
 
-        # Center of the visible tracking area. Normalized coordinates
-        # (0..1) are remapped around 0.5 with a gain, so you only need to
-        # move your hand a little to cover more of the screen — no need to
-        # fully extend your arm toward the edges.
         center = 0.5
         gain = 1.6
 
-        cx = (index_tip.x - center) * gain + center
-        cy = (index_tip.y - center) * gain + center
+        cx = (
+            index_tip.x - center
+        ) * gain + center
+
+        cy = (
+            index_tip.y - center
+        ) * gain + center
 
         target_x = int(
-            max(0.0, min(1.0, cx))
+            max(
+                0.0,
+                min(
+                    1.0,
+                    cx
+                )
+            )
             * self.screen_width
         )
 
         target_y = int(
-            max(0.0, min(1.0, cy))
+            max(
+                0.0,
+                min(
+                    1.0,
+                    cy
+                )
+            )
             * self.screen_height
         )
 
-        # Sensitivity adjustment
         sensitivity_factor = (
             self.sensitivity / 50
         )
@@ -1580,6 +1721,7 @@ class VirtualMousePage(QWidget):
         frame
     ):
 
+        # Convert BGR → RGB
         frame_rgb = cv2.cvtColor(
             frame,
             cv2.COLOR_BGR2RGB
@@ -1601,15 +1743,22 @@ class VirtualMousePage(QWidget):
             QImage.Format_RGB888
         )
 
+        # Make a copy so the QImage does not reference
+        # memory that OpenCV may reuse on the next frame.
+        image = image.copy()
+
         pixmap = QPixmap.fromImage(
             image
         )
 
-        # Use a fixed target and FastTransformation: cheaper than
-        # SmoothTransformation every frame (reduces lag) and stable size.
-        target = self.camera_label.size()
-        if target.width() < 40 or target.height() < 40:
-            target = QSize(650, 450)
+        # ------------------------------------------------------
+        # FIXED DISPLAY SIZE
+        # ------------------------------------------------------
+
+        target = QSize(
+            self.preview_width - 2,
+            self.preview_height - 2
+        )
 
         pixmap = pixmap.scaled(
             target,

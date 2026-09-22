@@ -22,13 +22,17 @@ class Sidebar(QFrame):
         self.main_window = main_window
         self.active_page = active_page
         self.setObjectName("sidebar")
-        self.setFixedWidth(210)
+        self._expanded_width = 212
+        self._collapsed_width = 64
+        self.collapsed = False
+        self.setFixedWidth(self._expanded_width)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.setStyleSheet(self._stylesheet())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 20, 16, 16)
         layout.setSpacing(0)
+        self._main_layout = layout
 
         # Brand
         brand_layout = QHBoxLayout()
@@ -37,23 +41,34 @@ class Sidebar(QFrame):
         self.brand_icon.setObjectName("brandIcon")
         self.brand_icon.setFixedSize(28, 28)
         self.brand_icon.setAlignment(Qt.AlignCenter)
-        brand_text = QLabel("GestureBoard")
-        brand_text.setObjectName("brand")
+        self.brand_text = QLabel("GestureBoard")
+        self.brand_text.setObjectName("brand")
+
+        # Sidebar collapse / expand button, beside the brand text.
+        self.sidebar_toggle = QPushButton("☰")
+        self.sidebar_toggle.setObjectName("sidebarToggle")
+        self.sidebar_toggle.setToolTip("Show / hide sidebar")
+        self.sidebar_toggle.setCursor(Qt.PointingHandCursor)
+        self.sidebar_toggle.setFixedSize(28, 28)
+        self.sidebar_toggle.clicked.connect(self.toggle_collapsed)
+
         brand_layout.addWidget(self.brand_icon)
-        brand_layout.addWidget(brand_text)
+        brand_layout.addWidget(self.brand_text)
         brand_layout.addStretch()
+        brand_layout.addWidget(self.sidebar_toggle)
         layout.addLayout(brand_layout)
 
         layout.addSpacing(24)
 
         # Navigation section
-        section_label = QLabel("NAVIGATION")
-        section_label.setObjectName("section")
-        layout.addWidget(section_label)
+        self.section_label = QLabel("NAVIGATION")
+        self.section_label.setObjectName("section")
+        layout.addWidget(self.section_label)
 
         layout.addSpacing(8)
 
         self.nav_buttons = {}
+        self._nav_icons = {}
         for key, icon, callback_name in self.NAV_ITEMS:
             btn = QPushButton(f"{icon}  {key}")
             btn.setCursor(Qt.PointingHandCursor)
@@ -63,6 +78,7 @@ class Sidebar(QFrame):
             if callback:
                 btn.clicked.connect(callback)
             self.nav_buttons[key] = btn
+            self._nav_icons[key] = icon
             layout.addWidget(btn)
 
         layout.addStretch()
@@ -78,10 +94,10 @@ class Sidebar(QFrame):
         camera_status.setSpacing(8)
         camera_dot = QLabel("●")
         camera_dot.setObjectName("statusDot")
-        camera_text = QLabel("Camera Connected")
-        camera_text.setObjectName("statusLabel")
+        self.camera_text = QLabel("Camera Connected")
+        self.camera_text.setObjectName("statusLabel")
         camera_status.addWidget(camera_dot)
-        camera_status.addWidget(camera_text)
+        camera_status.addWidget(self.camera_text)
         camera_status.addStretch()
         status_layout.addLayout(camera_status)
 
@@ -89,20 +105,73 @@ class Sidebar(QFrame):
         fps_layout.setSpacing(8)
         fps_dot = QLabel("●")
         fps_dot.setObjectName("fpsLabel")
-        fps_text = QLabel("FPS: 30")
-        fps_text.setObjectName("fpsLabel")
+        self.fps_text = QLabel("FPS: 30")
+        self.fps_text.setObjectName("fpsLabel")
         fps_layout.addWidget(fps_dot)
-        fps_layout.addWidget(fps_text)
+        fps_layout.addWidget(self.fps_text)
         fps_layout.addStretch()
         status_layout.addLayout(fps_layout)
 
         layout.addWidget(status_section)
+
+    # ==========================================================
+    # COLLAPSE / EXPAND (responsive)
+    # ==========================================================
+
+    def set_collapsed(self, collapsed):
+        """Collapse the sidebar to icon-only, or expand it back."""
+
+        collapsed = bool(collapsed)
+
+        if collapsed == self.collapsed:
+            return
+
+        self.collapsed = collapsed
+
+        self.setFixedWidth(
+            self._collapsed_width
+            if collapsed
+            else self._expanded_width
+        )
+
+        # Tighter margins when collapsed.
+        if collapsed:
+            self._main_layout.setContentsMargins(8, 16, 8, 12)
+        else:
+            self._main_layout.setContentsMargins(16, 20, 16, 16)
+
+        # Show/hide the text parts.
+        self.brand_icon.setVisible(not collapsed)
+        self.brand_text.setVisible(not collapsed)
+        self.section_label.setVisible(not collapsed)
+        self.camera_text.setVisible(not collapsed)
+        self.fps_text.setVisible(not collapsed)
+
+        # Show icon-only buttons (with tooltips) when collapsed.
+        for key, btn in self.nav_buttons.items():
+            icon = self._nav_icons.get(key, "")
+            if collapsed:
+                btn.setText(icon)
+                btn.setToolTip(key)
+            else:
+                btn.setText(f"{icon}  {key}")
+                btn.setToolTip("")
+
+        # Re-apply the stylesheet so alignment/padding update.
+        self.setStyleSheet(self._stylesheet())
+
+    def toggle_collapsed(self):
+        self.set_collapsed(not self.collapsed)
 
     def _stylesheet(self):
 
         from settings import theme as app_theme
 
         c = app_theme.colors()
+
+        align = "center" if self.collapsed else "left"
+        pad = "10px 0" if self.collapsed else "10px 14px"
+        btn_font = "16px" if self.collapsed else "13px"
 
         return f"""
             QFrame#sidebar {{
@@ -119,9 +188,9 @@ class Sidebar(QFrame):
                 border: none;
                 border-radius: 8px;
                 color: {c['sidebar_text']};
-                text-align: left;
-                padding: 10px 14px;
-                font-size: 13px;
+                text-align: {align};
+                padding: {pad};
+                font-size: {btn_font};
                 font-weight: 500;
             }}
             QPushButton:hover {{
@@ -136,6 +205,17 @@ class Sidebar(QFrame):
             QPushButton#active:hover {{
                 background: {c['accent']};
                 color: {c['accent_text']};
+            }}
+            QPushButton#sidebarToggle {{
+                background: transparent;
+                text-align: center;
+                padding: 0;
+                font-size: 15px;
+                border-radius: 6px;
+            }}
+            QPushButton#sidebarToggle:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
             }}
             QFrame#statusSection {{
                 background: transparent;
@@ -187,6 +267,7 @@ class TitleBar(QFrame):
         # Left: Logo + Title
         title_layout = QHBoxLayout()
         title_layout.setSpacing(10)
+
         self.logo = QLabel("G")
         self.logo.setFixedSize(26, 26)
         self.logo.setAlignment(Qt.AlignCenter)

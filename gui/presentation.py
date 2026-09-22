@@ -278,7 +278,7 @@ class PresentationPage(QWidget):
 
         self.preview_label = QLabel()
 
-        self.preview_label.setMinimumSize(700, 470)
+        self.preview_label.setMinimumSize(360, 240)
         self.preview_label.setAlignment(Qt.AlignCenter)
 
         self.preview_label.setStyleSheet("""
@@ -640,7 +640,16 @@ class PresentationPage(QWidget):
 
         right_panel.addStretch()
 
-        content_layout.addWidget(right_container)
+        # Wrap the right column in a scroll area so the page can shrink
+        # vertically (responsive) instead of forcing a tall minimum height.
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_scroll.setFixedWidth(390)
+        right_scroll.setWidget(right_container)
+
+        content_layout.addWidget(right_scroll)
 
         main_layout.addLayout(content_layout)
 
@@ -1171,12 +1180,18 @@ class PresentationPage(QWidget):
 
     def start_camera(self):
 
+        # Do not open a second handle to the same webcam.
+        if self.camera is not None:
+            return
+
         self.camera = cv2.VideoCapture(
             self.camera_index,
             cv2.CAP_DSHOW
         )
 
         if not self.camera.isOpened():
+
+            self.camera.release()
 
             self.camera = cv2.VideoCapture(
                 self.camera_index
@@ -1202,9 +1217,31 @@ class PresentationPage(QWidget):
 
         else:
 
+            # Release the failed handle and clear it so a later
+            # showEvent()/navigation can try again.
+            self.camera.release()
+            self.camera = None
+
             self.camera_status.setText(
                 "● Camera Not Available"
             )
+
+    # ============================================================
+    # RELEASE CAMERA
+    #
+    # Called by MainWindow when navigating away from this page so the
+    # single webcam is freed for other pages (e.g. Virtual Mouse). This
+    # prevents two pages from fighting over the same camera device.
+    # ============================================================
+
+    def release_camera(self):
+
+        if self.camera_timer.isActive():
+            self.camera_timer.stop()
+
+        if self.camera is not None:
+            self.camera.release()
+            self.camera = None
 
     # ============================================================
     # UPDATE CAMERA

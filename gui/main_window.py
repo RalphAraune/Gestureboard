@@ -40,7 +40,7 @@ class MainWindow(QMainWindow):
         # ==========================================================
 
         self.setWindowTitle("GestureBoard")
-        self.setMinimumSize(1100, 700)
+        self.setMinimumSize(860, 600)
 
         self.active_camera_index = None
         self.active_camera_name = "No camera selected"
@@ -372,12 +372,41 @@ class MainWindow(QMainWindow):
                     pass
 
     # ==============================================================
+    # SIDEBAR COLLAPSE / RESPONSIVE
+    # ==============================================================
+
+    def toggle_sidebar(self):
+
+        if hasattr(self, "sidebar"):
+            self.sidebar.toggle_collapsed()
+
+    def _apply_responsive_sidebar(self):
+        """Auto-collapse the sidebar on narrow windows.
+
+        Only reacts when the window crosses the threshold, so a manual
+        toggle by the user is respected in between.
+        """
+
+        if not hasattr(self, "sidebar"):
+            return
+
+        narrow = self.width() < 1000
+
+        if narrow != getattr(self, "_sidebar_auto_narrow", None):
+
+            self._sidebar_auto_narrow = narrow
+
+            self.sidebar.set_collapsed(narrow)
+
+    # ==============================================================
     # RESIZE EVENT
     # ==============================================================
 
     def resizeEvent(self, event):
 
         super().resizeEvent(event)
+
+        self._apply_responsive_sidebar()
 
         if hasattr(self, "size_grip"):
 
@@ -697,6 +726,72 @@ class MainWindow(QMainWindow):
                 print(
                     f"Presentation deactivate warning: {e}"
                 )
+
+        # ----------------------------------------------------------
+        # Single-webcam ownership:
+        #
+        # A webcam can only be owned by one page at a time. Only
+        # Presentation Control and Camera Setup actually need the webcam.
+        #
+        # Virtual Mouse is a PERSISTENT mouse controller: it keeps running
+        # on every other page (Annotation, Whiteboard, Settings, ...) and
+        # while the app is minimized. It only yields the webcam when the
+        # user opens a page that needs the camera itself.
+        # ----------------------------------------------------------
+
+        try:
+
+            presentation = getattr(
+                self, "presentation", None
+            )
+
+            virtual_mouse = getattr(
+                self, "virtual_mouse", None
+            )
+
+            # Pages that need exclusive use of the webcam.
+            camera_pages = (
+                "Presentation Control",
+                "Camera Setup",
+            )
+
+            target_needs_camera = (
+                page_name in camera_pages
+            )
+
+            # Presentation Control is a presentation tool, not a
+            # persistent mouse: release its camera whenever we leave it.
+            if (
+                page_name != "Presentation Control"
+                and presentation is not None
+                and hasattr(presentation, "release_camera")
+            ):
+
+                presentation.release_camera()
+
+            # Virtual Mouse keeps running everywhere EXCEPT on pages that
+            # need the webcam themselves.
+            if virtual_mouse is not None:
+
+                if target_needs_camera:
+
+                    if hasattr(
+                        virtual_mouse, "release_camera"
+                    ):
+                        virtual_mouse.release_camera()
+
+                else:
+
+                    if hasattr(
+                        virtual_mouse, "ensure_running"
+                    ):
+                        virtual_mouse.ensure_running()
+
+        except Exception as e:
+
+            print(
+                f"Camera ownership warning: {e}"
+            )
 
         # ----------------------------------------------------------
         # Tell Sidebar about the active page
