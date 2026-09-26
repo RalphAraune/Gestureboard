@@ -5,52 +5,51 @@ from typing import Optional
 
 class GestureDetector:
     """
-    Gesture recognition for GestureBoard Presentation Control.
+    Hand-gesture recognition for GestureBoard Presentation Control.
 
-    Supported gestures:
-        ✊ Fist              -> Start Presentation
-        ☝️ Index             -> Cursor / Pointer
-        ✌️ Peace             -> Next Slide
-        🖖 Three Fingers     -> Previous Slide
-        🤟 Thumb + Pinky     -> Full Screen
-        ✋ Open Hand         -> Exit Full Screen
+    Presentation gestures:
+        🤘 Rock & Roll   -> Start Presentation
+        👉 Point Right   -> Next Slide
+        👈 Point Left    -> Previous Slide
+        👍 Thumbs Up     -> Full Screen
+        👎 Thumbs Down   -> Exit Full Screen
+        ☝️ Index Finger  -> Cursor / Pointer
+
+    Annotation gestures:
+        🖖 Three Fingers            -> Toggle Annotation Mode
+        ☝️ + 🖕 Index + Middle together -> Draw
+        ✌️ Peace Sign (apart)        -> Stop Drawing
+        ✋ Open Hand                 -> Move Cursor / Select Tool
+        ✊ Fist                      -> Click
     """
+
+    # Distance (normalised) below which the index and middle tips are
+    # considered "together" (draw) vs "separated" (peace sign).
+    TOGETHER_DISTANCE = 0.045
 
     def __init__(self):
         self.last_gesture = "None"
 
+    # ============================================================
+    # HELPERS
+    # ============================================================
+
     @staticmethod
-    def _finger_extended(landmarks, tip, pip):
-        """
-        Determines whether a finger is extended.
-
-        MediaPipe landmark coordinates:
-            x -> horizontal
-            y -> vertical
-
-        For index/middle/ring/pinky:
-            fingertip above PIP = extended
-        """
+    def _finger_up(landmarks, tip, pip):
         return landmarks[tip].y < landmarks[pip].y
 
     @staticmethod
-    def _thumb_extended(landmarks):
-        """
-        Detects whether the thumb is extended.
+    def _dist(landmarks, a, b):
+        return (
+            (landmarks[a].x - landmarks[b].x) ** 2
+            + (landmarks[a].y - landmarks[b].y) ** 2
+        ) ** 0.5
 
-        This uses horizontal distance between thumb tip and thumb IP.
-        """
-        thumb_tip = landmarks[4]
-        thumb_ip = landmarks[3]
-
-        return abs(thumb_tip.x - thumb_ip.x) > 0.04
+    # ============================================================
+    # DETECT
+    # ============================================================
 
     def detect(self, hand_landmarks) -> str:
-        """
-        Detect gesture from MediaPipe hand landmarks.
-
-        Returns a readable gesture name.
-        """
 
         if hand_landmarks is None:
             self.last_gesture = "None"
@@ -58,72 +57,81 @@ class GestureDetector:
 
         lm = hand_landmarks.landmark
 
-        # MediaPipe finger landmarks
-        INDEX_TIP = 8
-        INDEX_PIP = 6
+        index_up = self._finger_up(lm, 8, 6)
+        middle_up = self._finger_up(lm, 12, 10)
+        ring_up = self._finger_up(lm, 16, 14)
+        pinky_up = self._finger_up(lm, 20, 18)
 
-        MIDDLE_TIP = 12
-        MIDDLE_PIP = 10
+        # Thumb: extended and pointing up (tip above the MCP).
+        thumb_tip_up = lm[4].y < lm[2].y
+        thumb_extended = self._dist(lm, 4, 5) > 0.08
 
-        RING_TIP = 16
-        RING_PIP = 14
+        index_middle = self._dist(lm, 8, 12)
 
-        PINKY_TIP = 20
-        PINKY_PIP = 18
+        # ------------------------------------------------------
+        # 🤘 ROCK & ROLL  (index + pinky up)  ->  START
+        # ------------------------------------------------------
+        if index_up and pinky_up and not middle_up and not ring_up:
+            gesture = "Rock & Roll"
 
-        index = self._finger_extended(lm, INDEX_TIP, INDEX_PIP)
-        middle = self._finger_extended(lm, MIDDLE_TIP, MIDDLE_PIP)
-        ring = self._finger_extended(lm, RING_TIP, RING_PIP)
-        pinky = self._finger_extended(lm, PINKY_TIP, PINKY_PIP)
-        thumb = self._thumb_extended(lm)
-
-        # ---------------------------------------------------------
-        # PEACE SIGN
-        # Index + Middle extended
-        # Ring + Pinky closed
-        # ---------------------------------------------------------
-        if index and middle and not ring and not pinky:
-            gesture = "Peace Sign"
-
-        # ---------------------------------------------------------
-        # THREE FINGERS
-        # Index + Middle + Ring extended
-        # Pinky closed
-        #
-        # Thumb is ignored because the user's preferred gesture
-        # is specifically index + middle + ring.
-        # ---------------------------------------------------------
-        elif index and middle and ring and not pinky:
+        # ------------------------------------------------------
+        # 🖖 THREE FINGERS (index + middle + ring)  ->  ANNOTATION
+        # ------------------------------------------------------
+        elif index_up and middle_up and ring_up and not pinky_up:
             gesture = "Three Fingers"
 
-        # ---------------------------------------------------------
-        # THUMB + PINKY
-        # Used for Full Screen
-        # ---------------------------------------------------------
-        elif thumb and pinky and not index and not middle and not ring:
-            gesture = "Thumb + Pinky"
-
-        # ---------------------------------------------------------
-        # OPEN HAND
-        # All four fingers extended
-        # ---------------------------------------------------------
-        elif index and middle and ring and pinky:
+        # ------------------------------------------------------
+        # ✋ OPEN HAND (all four)  ->  MOVE CURSOR
+        # ------------------------------------------------------
+        elif index_up and middle_up and ring_up and pinky_up:
             gesture = "Open Hand"
 
-        # ---------------------------------------------------------
-        # INDEX ONLY
-        # ---------------------------------------------------------
-        elif index and not middle and not ring and not pinky:
-            gesture = "Index Finger"
+        # ------------------------------------------------------
+        # ☝️/✌️  INDEX + MIDDLE
+        #   together -> DRAW, separated -> PEACE (stop drawing)
+        # ------------------------------------------------------
+        elif index_up and middle_up and not ring_up and not pinky_up:
 
-        # ---------------------------------------------------------
-        # FIST
-        # ---------------------------------------------------------
-        elif not index and not middle and not ring and not pinky:
-            gesture = "Fist"
+            if index_middle < self.TOGETHER_DISTANCE:
+                gesture = "Index + Middle"
+            else:
+                gesture = "Peace Sign"
+
+        # ------------------------------------------------------
+        # ☝️ INDEX ONLY  ->  POINT RIGHT / LEFT / UP
+        # ------------------------------------------------------
+        elif index_up and not middle_up and not ring_up and not pinky_up:
+
+            # Use the index direction from the wrist to the tip (more stable
+            # than tip-vs-knuckle) to decide left / right / up.
+            index_dx = lm[8].x - lm[0].x
+
+            if index_dx > 0.10:
+                gesture = "Point Right"
+            elif index_dx < -0.10:
+                gesture = "Point Left"
+            else:
+                gesture = "Index Finger"
+
+        # ------------------------------------------------------
+        # 👍 THUMBS UP / 👎 THUMBS DOWN / ✊ FIST
+        # ------------------------------------------------------
+        elif (
+            not index_up
+            and not middle_up
+            and not ring_up
+            and not pinky_up
+        ):
+
+            if thumb_extended and thumb_tip_up:
+                gesture = "Thumbs Up"
+            elif thumb_extended and not thumb_tip_up:
+                gesture = "Thumbs Down"
+            else:
+                gesture = "Fist"
 
         else:
-            gesture = "Unknown"
+            gesture = "None"
 
         self.last_gesture = gesture
         return gesture

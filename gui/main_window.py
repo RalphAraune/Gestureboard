@@ -21,7 +21,6 @@ from gui.dashboard import DashboardPage
 from gui.presentation import PresentationPage
 from gui.virtual_mouse import VirtualMousePage
 from gui.whiteboard import WhiteboardPage
-from gui.annotation import AnnotationPage
 from gui.saved_files import SavedFilesPage
 from gui.settings import SettingsPage
 
@@ -218,8 +217,6 @@ class MainWindow(QMainWindow):
 
         self.whiteboard = WhiteboardPage(self)
 
-        self.annotation = AnnotationPage(self)
-
         self.saved_files = SavedFilesPage(self)
 
         self.settings = SettingsPage(self)
@@ -254,10 +251,6 @@ class MainWindow(QMainWindow):
 
         self.stack.addWidget(
             self.whiteboard
-        )
-
-        self.stack.addWidget(
-            self.annotation
         )
 
         self.stack.addWidget(
@@ -728,15 +721,18 @@ class MainWindow(QMainWindow):
                 )
 
         # ----------------------------------------------------------
-        # Single-webcam ownership:
+        # Single-webcam / single-gesture ownership:
         #
-        # A webcam can only be owned by one page at a time. Only
-        # Presentation Control and Camera Setup actually need the webcam.
+        # A webcam can only be owned by one page at a time, and only one
+        # page may drive the system cursor/gestures at a time.
+        #
+        # Presentation Control, Camera Setup and the Whiteboard all use the
+        # webcam + hand gestures, so they take exclusive ownership.
         #
         # Virtual Mouse is a PERSISTENT mouse controller: it keeps running
-        # on every other page (Annotation, Whiteboard, Settings, ...) and
-        # while the app is minimized. It only yields the webcam when the
-        # user opens a page that needs the camera itself.
+        # on every other page (Annotation, Settings, ...) and while the app
+        # is minimized. It only yields the webcam/cursor when the user opens
+        # a page that itself uses the camera.
         # ----------------------------------------------------------
 
         try:
@@ -745,13 +741,20 @@ class MainWindow(QMainWindow):
                 self, "presentation", None
             )
 
+            whiteboard = getattr(
+                self, "whiteboard", None
+            )
+
             virtual_mouse = getattr(
                 self, "virtual_mouse", None
             )
 
-            # Pages that need exclusive use of the webcam.
+            # Pages that need exclusive use of the webcam + gestures.
+            #
+            # Presentation Control is NOT here: it mirrors the Virtual Mouse
+            # camera (frame + hand) so the same single camera powers both the
+            # presentation gestures and the annotation cursor/clicks.
             camera_pages = (
-                "Presentation Control",
                 "Camera Setup",
             )
 
@@ -769,8 +772,18 @@ class MainWindow(QMainWindow):
 
                 presentation.release_camera()
 
+            # Whiteboard also runs hand gestures: stop its camera whenever
+            # we leave it so it never fights the Virtual Mouse.
+            if (
+                page_name != "Whiteboard"
+                and whiteboard is not None
+                and hasattr(whiteboard, "stop_camera")
+            ):
+
+                whiteboard.stop_camera()
+
             # Virtual Mouse keeps running everywhere EXCEPT on pages that
-            # need the webcam themselves.
+            # need the camera/gestures themselves.
             if virtual_mouse is not None:
 
                 if target_needs_camera:
@@ -1106,45 +1119,14 @@ class MainWindow(QMainWindow):
         self.stack.raise_()
 
     # ==============================================================
-    # ANNOTATION
+    # ANNOTATION  (now integrated into Presentation Control)
     # ==============================================================
 
     def showAnnotation(self):
 
-        print(
-            "Opening Annotation..."
-        )
-
-        # Keep sidebar visible
-        self.showSidebar()
-
-        # IMPORTANT:
-        # Annotation is now the active page
-        self.setActivePage(
-            "Annotation"
-        )
-
-        # Update camera if supported
-        try:
-
-            if hasattr(
-                self.annotation,
-                "updateCameraName"
-            ):
-
-                self.annotation.updateCameraName(
-                    self.active_camera_name
-                )
-
-        except Exception:
-            pass
-
-        # Show annotation page
-        self.stack.setCurrentWidget(
-            self.annotation
-        )
-
-        self.stack.raise_()
+        # Annotation is no longer a separate page — it lives inside
+        # Presentation Control as a temporary overlay.
+        self.showPresentation()
 
     # ==============================================================
     # SAVED FILES
@@ -1309,28 +1291,6 @@ class MainWindow(QMainWindow):
 
             print(
                 f"Whiteboard camera warning: {e}"
-            )
-
-        # ----------------------------------------------------------
-        # Annotation
-        # ----------------------------------------------------------
-
-        try:
-
-            if hasattr(
-                self.annotation,
-                "setActiveCamera"
-            ):
-
-                self.annotation.setActiveCamera(
-                    index,
-                    name
-                )
-
-        except Exception as e:
-
-            print(
-                f"Annotation camera warning: {e}"
             )
 
         # ----------------------------------------------------------

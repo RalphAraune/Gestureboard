@@ -12,7 +12,6 @@ class Sidebar(QFrame):
         ("Presentation Control", "🎞", "showPresentation"),
         ("Virtual Mouse", "🖱", "showVirtualMouse"),
         ("Whiteboard", "🖥", "showWhiteboard"),
-        ("Annotation", "✎", "showAnnotation"),
         ("Saved Files", "📁", "showSavedFiles"),
         ("Settings", "⚙", "showSettings"),
     ]

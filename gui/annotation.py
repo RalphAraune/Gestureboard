@@ -862,42 +862,6 @@ class AnnotationPage(QWidget):
                 button
             )
 
-        # ----------------------------------------------------
-        # Save
-        # ----------------------------------------------------
-
-        separator4 = QFrame()
-
-        separator4.setFrameShape(
-            QFrame.VLine
-        )
-
-        separator4.setStyleSheet(
-            "color: #D7E4F1;"
-        )
-
-        toolbar_layout.addWidget(
-            separator4
-        )
-
-        self.save_button = QPushButton(
-            "▣"
-        )
-
-        self.save_button.setFixedWidth(40)
-
-        self.save_button.setToolTip(
-            "Save Annotation"
-        )
-
-        self.save_button.clicked.connect(
-            self.save_annotation
-        )
-
-        toolbar_layout.addWidget(
-            self.save_button
-        )
-
         toolbar_layout.addStretch()
 
         self.main_layout.addWidget(
@@ -1368,68 +1332,6 @@ class AnnotationPage(QWidget):
     # ========================================================
     # SAVE ANNOTATION
     # ========================================================
-
-    def save_annotation(self):
-
-        # Default to a normal computer location (the user's Pictures
-        # folder) instead of the application folder.
-        default_dir = (
-            QStandardPaths.writableLocation(
-                QStandardPaths.PicturesLocation
-            )
-            or os.path.expanduser("~")
-        )
-
-        default_path = os.path.join(
-            default_dir,
-            "annotation.png"
-        )
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Annotation",
-            default_path,
-            "PNG Image (*.png)"
-        )
-
-        if not path:
-            return
-
-        # Make sure the file keeps a .png extension.
-        if not path.lower().endswith(".png"):
-            path += ".png"
-
-        try:
-
-            success = self.canvas.save_image(
-                path
-            )
-
-            if success:
-
-                QMessageBox.information(
-                    self,
-                    "Saved",
-                    "Annotation saved to:\n\n"
-                    + path
-                )
-
-            else:
-
-                QMessageBox.warning(
-                    self,
-                    "Save Failed",
-                    "Could not save the annotation."
-                )
-
-        except Exception as e:
-
-            QMessageBox.critical(
-                self,
-                "Save Error",
-                f"Could not save annotation.\n\n{e}"
-            )
-
 
     # ========================================================
     # CAMERA FUNCTIONS

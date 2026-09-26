@@ -3,15 +3,16 @@ import math
 import time
 
 import cv2
-import numpy as np
+import pyautogui
 
+# MediaPipe may fail to load its DLL on some Python setups. Make it optional
+# so the rest of the app still starts.
 try:
     import mediapipe as mp
 except Exception:
     mp = None
 
 from PyQt5.QtWidgets import (
-    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -23,14 +24,13 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QFrame,
     QMenu,
-    QAction,
 )
 from PyQt5.QtCore import (
     Qt,
     QPoint,
+    QRect,
     QTimer,
     QStandardPaths,
-    QRect,
 )
 from PyQt5.QtGui import (
     QPainter,
@@ -38,35 +38,50 @@ from PyQt5.QtGui import (
     QColor,
     QPixmap,
     QCursor,
-    QImage,
     QPolygon,
+    QBrush,
 )
-from PyQt5.QtTest import QTest
 
 
 # ============================================================
-# CUSTOM CURSORS
+# SETTINGS
+# ============================================================
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
+
+CAMERA_PREVIEW_WIDTH = 140
+CAMERA_PREVIEW_HEIGHT = 105
+
+# Cursor smoothing.
+# Smaller = smoother/slower.
+# Larger = faster/more responsive.
+CURSOR_SMOOTHING = 0.12
+
+# Ignore tiny hand movements.
+CURSOR_DEADZONE = 0.008
+
+# Closed-palm click cooldown.
+CLICK_COOLDOWN = 0.65
+
+# Index + middle finger distance.
+# Smaller = must be more tightly together.
+DRAW_FINGER_DISTANCE = 0.055
+
+# Minimum points required before automatic shape recognition.
+MIN_SHAPE_POINTS = 12
+
+
+# ============================================================
+# CURSOR HELPERS
 # ============================================================
 
 def create_pen_cursor():
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.transparent)
 
-    pixmap = QPixmap(
-        32,
-        32
-    )
-
-    pixmap.fill(
-        Qt.transparent
-    )
-
-    painter = QPainter(
-        pixmap
-    )
-
-    painter.setRenderHint(
-        QPainter.Antialiasing,
-        True
-    )
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
 
     painter.setPen(
         QPen(
@@ -81,9 +96,9 @@ def create_pen_cursor():
 
     painter.drawPolygon(
         QPolygon([
-            QPoint(6, 23),
-            QPoint(10, 27),
-            QPoint(25, 12),
+            QPoint(7, 22),
+            QPoint(10, 25),
+            QPoint(24, 11),
             QPoint(21, 8),
         ])
     )
@@ -94,9 +109,9 @@ def create_pen_cursor():
 
     painter.drawPolygon(
         QPolygon([
-            QPoint(6, 23),
-            QPoint(10, 27),
-            QPoint(4, 29),
+            QPoint(7, 22),
+            QPoint(10, 25),
+            QPoint(5, 27),
         ])
     )
 
@@ -107,8 +122,8 @@ def create_pen_cursor():
     painter.drawPolygon(
         QPolygon([
             QPoint(21, 8),
-            QPoint(25, 12),
-            QPoint(28, 9),
+            QPoint(24, 11),
+            QPoint(27, 8),
             QPoint(24, 5),
         ])
     )
@@ -118,90 +133,94 @@ def create_pen_cursor():
     return QCursor(
         pixmap,
         5,
-        28
+        27
     )
 
 
-def create_highlighter_cursor():
+def create_hand_cursor():
+    """
+    Open-hand style cursor.
+    """
 
-    pixmap = QPixmap(
-        32,
-        32
-    )
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.transparent)
 
-    pixmap.fill(
-        Qt.transparent
-    )
-
-    painter = QPainter(
-        pixmap
-    )
-
-    painter.setRenderHint(
-        QPainter.Antialiasing,
-        True
-    )
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
 
     painter.setPen(
         QPen(
-            QColor("#172033"),
-            1
+            QColor("#0E2F76"),
+            2
         )
     )
 
     painter.setBrush(
-        QColor("#FFE36E")
+        QColor("#FFFFFF")
+    )
+
+    # Palm
+    painter.drawRoundedRect(
+        9,
+        10,
+        14,
+        15,
+        5,
+        5
+    )
+
+    # Fingers
+    painter.drawRoundedRect(
+        7,
+        3,
+        4,
+        12,
+        2,
+        2
     )
 
     painter.drawRoundedRect(
-        6,
-        6,
-        21,
-        10,
+        12,
+        2,
+        4,
+        13,
+        2,
+        2
+    )
+
+    painter.drawRoundedRect(
+        17,
         3,
-        3
+        4,
+        12,
+        2,
+        2
     )
 
-    painter.setBrush(
-        QColor("#E8D3B0")
-    )
-
-    painter.drawPolygon(
-        QPolygon([
-            QPoint(7, 16),
-            QPoint(16, 16),
-            QPoint(11, 24),
-        ])
+    painter.drawRoundedRect(
+        22,
+        6,
+        4,
+        10,
+        2,
+        2
     )
 
     painter.end()
 
     return QCursor(
         pixmap,
-        11,
-        24
+        16,
+        16
     )
 
 
 def create_eraser_cursor():
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.transparent)
 
-    pixmap = QPixmap(
-        32,
-        32
-    )
-
-    pixmap.fill(
-        Qt.transparent
-    )
-
-    painter = QPainter(
-        pixmap
-    )
-
-    painter.setRenderHint(
-        QPainter.Antialiasing,
-        True
-    )
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
 
     painter.setPen(
         QPen(
@@ -215,23 +234,23 @@ def create_eraser_cursor():
     )
 
     painter.drawRoundedRect(
-        5,
-        8,
-        22,
-        14,
+        6,
+        9,
+        20,
+        12,
         4,
         4
     )
 
     painter.setBrush(
-        QColor("#FFFFFF")
+        QColor("#F5F7FA")
     )
 
     painter.drawRect(
         17,
-        9,
+        10,
         8,
-        12
+        10
     )
 
     painter.end()
@@ -244,24 +263,11 @@ def create_eraser_cursor():
 
 
 def create_select_cursor():
+    pixmap = QPixmap(28, 28)
+    pixmap.fill(Qt.transparent)
 
-    pixmap = QPixmap(
-        24,
-        24
-    )
-
-    pixmap.fill(
-        Qt.transparent
-    )
-
-    painter = QPainter(
-        pixmap
-    )
-
-    painter.setRenderHint(
-        QPainter.Antialiasing,
-        True
-    )
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
 
     painter.setPen(
         QPen(
@@ -277,12 +283,12 @@ def create_select_cursor():
     painter.drawPolygon(
         QPolygon([
             QPoint(3, 2),
-            QPoint(3, 20),
-            QPoint(8, 15),
-            QPoint(12, 22),
-            QPoint(15, 20),
-            QPoint(11, 14),
-            QPoint(19, 14),
+            QPoint(3, 22),
+            QPoint(9, 16),
+            QPoint(13, 24),
+            QPoint(17, 22),
+            QPoint(13, 15),
+            QPoint(21, 15),
         ])
     )
 
@@ -295,108 +301,15 @@ def create_select_cursor():
     )
 
 
-def create_hand_cursor():
-
-    pixmap = QPixmap(
-        28,
-        28
-    )
-
-    pixmap.fill(
-        Qt.transparent
-    )
-
-    painter = QPainter(
-        pixmap
-    )
-
-    painter.setRenderHint(
-        QPainter.Antialiasing,
-        True
-    )
-
-    painter.setPen(
-        QPen(
-            QColor("#0E2F76"),
-            2
-        )
-    )
-
-    painter.setBrush(
-        Qt.NoBrush
-    )
-
-    painter.drawEllipse(
-        4,
-        4,
-        20,
-        20
-    )
-
-    painter.drawLine(
-        14,
-        7,
-        14,
-        21
-    )
-
-    painter.drawLine(
-        7,
-        14,
-        21,
-        14
-    )
-
-    painter.end()
-
-    return QCursor(
-        pixmap,
-        14,
-        14
-    )
-
-
 # ============================================================
 # DRAWING CANVAS
 # ============================================================
 
 class DrawingCanvas(QWidget):
 
-    def __init__(
-        self,
-        parent=None
-    ):
+    def __init__(self, parent=None):
 
-        super().__init__(
-            parent
-        )
-
-        # ====================================================
-        # CANVAS
-        # ====================================================
-
-        self.canvas = QPixmap(
-            1200,
-            650
-        )
-
-        self.canvas.fill(
-            QColor("#FFFFFF")
-        )
-
-        self.setMinimumSize(
-            700,
-            450
-        )
-
-        self.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Expanding
-        )
-
-        # ====================================================
-        # DRAWING SETTINGS
-        # ====================================================
+        super().__init__(parent)
 
         self.tool = "pen"
 
@@ -408,86 +321,106 @@ class DrawingCanvas(QWidget):
 
         self.opacity = 100
 
-        # ====================================================
-        # DRAWING STATE
-        # ====================================================
-
         self.drawing = False
 
+        self.mouse_drawing = False
+
         self.last_point = QPoint()
-
-        self.stroke_points = []
-
-        # ====================================================
-        # UNDO / REDO
-        # ====================================================
 
         self.undo_stack = []
 
         self.redo_stack = []
 
+        # Gesture drawing cursor.
+        self.gesture_cursor_pos = None
+
+        self.show_gesture_cursor = False
+
+        # Circle (brush) cursor that follows the pointer. Its size matches
+        # the current tool width.
+        self.mouse_pos = None
+
+        self.cursor_visible = False
+
+        # Points of the current mouse stroke (used for auto-shape).
+        self.stroke_points = []
+
+        # Callback set by the page to auto-correct a finished stroke.
+        self.on_stroke_finished = None
+
+        # Shape mode: "auto" recognises the shape, otherwise it forces the
+        # chosen shape (line / circle / rectangle / triangle / arrow).
+        self.shape_mode = "auto"
+
+        # Rubber-band shape drag (drag to set the size of the shape).
+        self._shape_dragging = False
+        self._shape_start = None
+        self._shape_current = None
+
+        # ====================================================
+        # PIXMAP
+        # ====================================================
+
+        self.canvas = QPixmap(
+            1200,
+            700
+        )
+
+        self.canvas.fill(
+            QColor("#FFFFFF")
+        )
+
+        self.setMinimumSize(
+            400,
+            300
+        )
+
+        self.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Expanding
+        )
+
+        self.setMouseTracking(True)
+
         # ====================================================
         # CURSORS
         # ====================================================
 
-        self.pen_cursor = (
-            create_pen_cursor()
-        )
+        self.pen_cursor = create_pen_cursor()
 
-        self.highlighter_cursor = (
-            create_highlighter_cursor()
-        )
+        self.eraser_cursor = create_eraser_cursor()
 
-        self.eraser_cursor = (
-            create_eraser_cursor()
-        )
+        self.select_cursor = create_select_cursor()
 
-        self.select_cursor = (
-            create_select_cursor()
-        )
+        self.hand_cursor = create_hand_cursor()
 
-        self.hand_cursor = (
-            create_hand_cursor()
-        )
-
-        self.setMouseTracking(
-            True
-        )
-
-        self.set_tool(
-            "pen"
+        self.setCursor(
+            self.pen_cursor
         )
 
     # ========================================================
     # RESIZE
     # ========================================================
 
-    def resizeEvent(
-        self,
-        event
-    ):
+    def resizeEvent(self, event):
 
         new_width = max(
-            1,
+            400,
             self.width()
         )
 
         new_height = max(
-            1,
+            300,
             self.height()
         )
 
-        if (
-            self.canvas.width()
-            != new_width
-            or
-            self.canvas.height()
-            != new_height
-        ):
+        old_canvas = self.canvas
 
-            old_canvas = (
-                self.canvas
-            )
+        if (
+            old_canvas.width() != new_width
+            or
+            old_canvas.height() != new_height
+        ):
 
             new_canvas = QPixmap(
                 new_width,
@@ -502,32 +435,15 @@ class DrawingCanvas(QWidget):
                 new_canvas
             )
 
-            painter.setRenderHint(
-                QPainter.SmoothPixmapTransform,
-                True
-            )
-
             painter.drawPixmap(
-                QRect(
-                    0,
-                    0,
-                    new_width,
-                    new_height
-                ),
-                old_canvas,
-                QRect(
-                    0,
-                    0,
-                    old_canvas.width(),
-                    old_canvas.height()
-                )
+                0,
+                0,
+                old_canvas
             )
 
             painter.end()
 
-            self.canvas = (
-                new_canvas
-            )
+            self.canvas = new_canvas
 
         super().resizeEvent(
             event
@@ -544,22 +460,12 @@ class DrawingCanvas(QWidget):
 
         self.tool = tool
 
-        if tool == "pen":
+        # Draw tools use the drawn circle cursor (blank system cursor).
+        # Select mode keeps a normal arrow.
+        if tool in ("pen", "highlighter", "eraser"):
 
             self.setCursor(
-                self.pen_cursor
-            )
-
-        elif tool == "highlighter":
-
-            self.setCursor(
-                self.highlighter_cursor
-            )
-
-        elif tool == "eraser":
-
-            self.setCursor(
-                self.eraser_cursor
+                Qt.BlankCursor
             )
 
         elif tool == "select":
@@ -568,17 +474,30 @@ class DrawingCanvas(QWidget):
                 self.select_cursor
             )
 
-        elif tool == "shape":
-
-            self.setCursor(
-                self.pen_cursor
-            )
-
         else:
 
             self.setCursor(
                 Qt.ArrowCursor
             )
+
+        self.update()
+
+    # ========================================================
+    # TOOL WIDTH
+    # ========================================================
+
+    def current_width(self):
+        """Stroke width for the active tool (also the cursor size)."""
+
+        if self.tool == "eraser":
+
+            return int(self.brush_size * 4)
+
+        if self.tool == "highlighter":
+
+            return int(max(10, self.brush_size * 3))
+
+        return int(self.brush_size)
 
     # ========================================================
     # COLOR
@@ -593,6 +512,12 @@ class DrawingCanvas(QWidget):
             color
         )
 
+        if self.tool == "eraser":
+
+            self.set_tool(
+                "pen"
+            )
+
     # ========================================================
     # BRUSH SIZE
     # ========================================================
@@ -602,9 +527,7 @@ class DrawingCanvas(QWidget):
         value
     ):
 
-        self.brush_size = int(
-            value
-        )
+        self.brush_size = value
 
     # ========================================================
     # OPACITY
@@ -615,9 +538,23 @@ class DrawingCanvas(QWidget):
         value
     ):
 
-        self.opacity = int(
-            value
-        )
+        self.opacity = value
+
+    # ========================================================
+    # GESTURE CURSOR
+    # ========================================================
+
+    def set_gesture_cursor(
+        self,
+        point,
+        visible=True
+    ):
+
+        self.gesture_cursor_pos = point
+
+        self.show_gesture_cursor = visible
+
+        self.update()
 
     # ========================================================
     # SAVE STATE
@@ -629,13 +566,9 @@ class DrawingCanvas(QWidget):
             self.canvas.copy()
         )
 
-        if len(
-            self.undo_stack
-        ) > 30:
+        if len(self.undo_stack) > 30:
 
-            self.undo_stack.pop(
-                0
-            )
+            self.undo_stack.pop(0)
 
         self.redo_stack.clear()
 
@@ -694,7 +627,7 @@ class DrawingCanvas(QWidget):
         self.update()
 
     # ========================================================
-    # MOUSE DRAWING
+    # MOUSE PRESS
     # ========================================================
 
     def mousePressEvent(
@@ -702,40 +635,61 @@ class DrawingCanvas(QWidget):
         event
     ):
 
-        if (
-            event.button()
-            != Qt.LeftButton
-        ):
+        if event.button() != Qt.LeftButton:
 
             return
 
         if self.tool not in [
             "pen",
             "highlighter",
-            "eraser",
-            "shape"
+            "eraser"
         ]:
+
+            return
+
+        # Explicit shape mode: drag to draw the shape (rubber-band),
+        # instead of free-hand drawing.
+        if self.tool == "pen" and self.shape_mode != "auto":
+
+            self.save_state()
+
+            point = self.clamp_point(
+                event.pos()
+            )
+
+            self._shape_dragging = True
+
+            self._shape_start = point
+
+            self._shape_current = point
+
+            self.update()
+
+            event.accept()
 
             return
 
         self.save_state()
 
-        self.drawing = True
+        self.mouse_drawing = True
 
-        self.stroke_points = [
-            event.pos()
-        ]
-
-        self.last_point = (
+        point = self.clamp_point(
             event.pos()
         )
 
-        if self.tool != "shape":
+        self.last_point = point
 
-            self.draw_segment(
-                event.pos(),
-                event.pos()
-            )
+        self.mouse_pos = point
+
+        self.cursor_visible = True
+
+        # Start a new stroke (used for auto-shape recognition).
+        self.stroke_points = [point]
+
+        self.draw_line(
+            point,
+            point
+        )
 
         event.accept()
 
@@ -748,47 +702,53 @@ class DrawingCanvas(QWidget):
         event
     ):
 
-        if not self.drawing:
+        current_point = self.clamp_point(
+            event.pos()
+        )
+
+        # Keep the circle cursor following the pointer.
+        self.mouse_pos = current_point
+
+        self.cursor_visible = True
+
+        # Live shape preview while dragging.
+        if self._shape_dragging:
+
+            self._shape_current = current_point
+
+            self.update()
+
+            event.accept()
+
+            return
+
+        self.update()
+
+        if not self.mouse_drawing:
+
+            event.accept()
 
             return
 
         if not (
             event.buttons()
-            & Qt.LeftButton
+            &
+            Qt.LeftButton
         ):
 
             return
 
-        point = QPoint(
-            max(
-                0,
-                min(
-                    self.width() - 1,
-                    event.pos().x()
-                )
-            ),
-            max(
-                0,
-                min(
-                    self.height() - 1,
-                    event.pos().y()
-                )
-            )
+        self.draw_line(
+            self.last_point,
+            current_point
+        )
+
+        self.last_point = (
+            current_point
         )
 
         self.stroke_points.append(
-            point
-        )
-
-        if self.tool != "shape":
-
-            self.draw_segment(
-                self.last_point,
-                point
-            )
-
-        self.last_point = (
-            point
+            current_point
         )
 
         event.accept()
@@ -802,46 +762,121 @@ class DrawingCanvas(QWidget):
         event
     ):
 
-        if (
-            event.button()
-            != Qt.LeftButton
-        ):
+        if event.button() == Qt.LeftButton:
 
-            return
+            # Commit a dragged shape.
+            if self._shape_dragging:
 
-        if self.drawing:
+                start = self._shape_start
 
-            self.drawing = False
+                end = self._shape_current
 
+                self._shape_dragging = False
+
+                self._shape_start = None
+
+                self._shape_current = None
+
+                if (
+                    start is not None
+                    and end is not None
+                    and self.on_stroke_finished is not None
+                ):
+
+                    try:
+
+                        self.on_stroke_finished(
+                            [start, end]
+                        )
+
+                    except Exception:
+
+                        pass
+
+                self.update()
+
+                event.accept()
+
+                return
+
+            was_drawing = self.mouse_drawing
+
+            self.mouse_drawing = False
+
+            # Auto-shape: let the page "perfect" the finished pen stroke.
             if (
-                self.tool == "shape"
-                and
-                len(self.stroke_points) >= 4
+                was_drawing
+                and self.tool == "pen"
+                and self.on_stroke_finished is not None
+                and len(self.stroke_points) >= MIN_SHAPE_POINTS
             ):
 
-                self.draw_auto_shape(
-                    self.stroke_points
-                )
+                try:
 
-            elif (
-                self.tool == "pen"
-                and
-                len(self.stroke_points) >= 5
-            ):
+                    self.on_stroke_finished(
+                        list(self.stroke_points)
+                    )
 
-                self.auto_correct_pen_stroke(
-                    self.stroke_points
-                )
+                except Exception:
 
-        self.stroke_points = []
+                    pass
 
-        event.accept()
+            self.stroke_points = []
+
+            event.accept()
 
     # ========================================================
-    # DRAW SEGMENT
+    # LEAVE (hide the circle cursor)
     # ========================================================
 
-    def draw_segment(
+    def leaveEvent(
+        self,
+        event
+    ):
+
+        self.cursor_visible = False
+
+        self.update()
+
+        super().leaveEvent(
+            event
+        )
+
+    # ========================================================
+    # CLAMP
+    # ========================================================
+
+    def clamp_point(
+        self,
+        point
+    ):
+
+        x = max(
+            0,
+            min(
+                self.width() - 1,
+                point.x()
+            )
+        )
+
+        y = max(
+            0,
+            min(
+                self.height() - 1,
+                point.y()
+            )
+        )
+
+        return QPoint(
+            x,
+            y
+        )
+
+    # ========================================================
+    # DRAW LINE
+    # ========================================================
+
+    def draw_line(
         self,
         start,
         end
@@ -856,26 +891,18 @@ class DrawingCanvas(QWidget):
             True
         )
 
-        # ----------------------------------------------------
-        # ERASER
-        # ----------------------------------------------------
-
         if self.tool == "eraser":
 
             pen = QPen(
                 QColor("#FFFFFF"),
                 max(
-                    8,
+                    10,
                     self.brush_size * 4
                 ),
                 Qt.SolidLine,
                 Qt.RoundCap,
                 Qt.RoundJoin
             )
-
-        # ----------------------------------------------------
-        # HIGHLIGHTER
-        # ----------------------------------------------------
 
         elif self.tool == "highlighter":
 
@@ -886,9 +913,12 @@ class DrawingCanvas(QWidget):
             color.setAlpha(
                 int(
                     self.opacity
-                    * 255
-                    / 100
-                    * 0.35
+                    *
+                    255
+                    /
+                    100
+                    *
+                    0.35
                 )
             )
 
@@ -903,10 +933,6 @@ class DrawingCanvas(QWidget):
                 Qt.RoundJoin
             )
 
-        # ----------------------------------------------------
-        # PEN
-        # ----------------------------------------------------
-
         else:
 
             color = QColor(
@@ -916,8 +942,10 @@ class DrawingCanvas(QWidget):
             color.setAlpha(
                 int(
                     self.opacity
-                    * 255
-                    / 100
+                    *
+                    255
+                    /
+                    100
                 )
             )
 
@@ -946,861 +974,22 @@ class DrawingCanvas(QWidget):
         self.update()
 
     # ========================================================
-    # PEN
+    # DRAW GESTURE LINE
     # ========================================================
 
-    def create_pen(self):
-
-        color = QColor(
-            self.color
-        )
-
-        color.setAlpha(
-            int(
-                self.opacity
-                * 255
-                / 100
-            )
-        )
-
-        return QPen(
-            color,
-            max(
-                1,
-                self.brush_size
-            ),
-            Qt.SolidLine,
-            Qt.RoundCap,
-            Qt.RoundJoin
-        )
-
-    # ========================================================
-    # STROKE GEOMETRY
-    # ========================================================
-
-    def get_stroke_geometry(
-        self,
-        points
-    ):
-
-        if len(points) < 4:
-
-            return None
-
-        array = np.array(
-            [
-                [
-                    point.x(),
-                    point.y()
-                ]
-                for point in points
-            ],
-            dtype=np.float32
-        )
-
-        x_min = float(
-            array[:, 0].min()
-        )
-
-        x_max = float(
-            array[:, 0].max()
-        )
-
-        y_min = float(
-            array[:, 1].min()
-        )
-
-        y_max = float(
-            array[:, 1].max()
-        )
-
-        width = max(
-            1.0,
-            x_max - x_min
-        )
-
-        height = max(
-            1.0,
-            y_max - y_min
-        )
-
-        diagonal = math.hypot(
-            width,
-            height
-        )
-
-        differences = np.diff(
-            array,
-            axis=0
-        )
-
-        segment_lengths = (
-            np.linalg.norm(
-                differences,
-                axis=1
-            )
-        )
-
-        path_length = float(
-            segment_lengths.sum()
-        )
-
-        direct_distance = float(
-            np.linalg.norm(
-                array[-1]
-                -
-                array[0]
-            )
-        )
-
-        closed = (
-            direct_distance
-            <=
-            max(
-                12.0,
-                diagonal * 0.22
-            )
-        )
-
-        contour = array.reshape(
-            -1,
-            1,
-            2
-        )
-
-        area = abs(
-            float(
-                cv2.contourArea(
-                    contour
-                )
-            )
-        )
-
-        approximation = cv2.approxPolyDP(
-            contour,
-            max(
-                2.0,
-                path_length * 0.035
-            ),
-            True
-        )
-
-        return {
-            "array": array,
-            "x": x_min,
-            "y": y_min,
-            "width": width,
-            "height": height,
-            "diagonal": diagonal,
-            "path": path_length,
-            "direct": direct_distance,
-            "closed": closed,
-            "area": area,
-            "approx": approximation,
-        }
-
-    # ========================================================
-    # RESTORE BEFORE AUTO SHAPE
-    # ========================================================
-
-    def restore_before_stroke(self):
-
-        if self.undo_stack:
-
-            self.canvas = (
-                self.undo_stack[-1].copy()
-            )
-
-    # ========================================================
-    # PERFECT LINE
-    # ========================================================
-
-    def draw_perfect_line(
+    def draw_gesture_line(
         self,
         start,
         end
     ):
 
-        self.restore_before_stroke()
-
-        painter = QPainter(
-            self.canvas
-        )
-
-        painter.setRenderHint(
-            QPainter.Antialiasing,
-            True
-        )
-
-        painter.setPen(
-            self.create_pen()
-        )
-
-        painter.drawLine(
+        self.draw_line(
             start,
             end
         )
 
-        painter.end()
-
-        self.update()
-
     # ========================================================
-    # PERFECT CIRCLE
-    # ========================================================
-
-    def draw_perfect_circle(
-        self,
-        center,
-        radius
-    ):
-
-        self.restore_before_stroke()
-
-        radius = max(
-            2,
-            int(radius)
-        )
-
-        painter = QPainter(
-            self.canvas
-        )
-
-        painter.setRenderHint(
-            QPainter.Antialiasing,
-            True
-        )
-
-        painter.setPen(
-            self.create_pen()
-        )
-
-        painter.setBrush(
-            Qt.NoBrush
-        )
-
-        painter.drawEllipse(
-            center.x() - radius,
-            center.y() - radius,
-            radius * 2,
-            radius * 2
-        )
-
-        painter.end()
-
-        self.update()
-
-    # ========================================================
-    # RECTANGLE
-    # ========================================================
-
-    def draw_rectangle(
-        self,
-        rect,
-        square=False
-    ):
-
-        self.restore_before_stroke()
-
-        if square:
-
-            side = min(
-                rect.width(),
-                rect.height()
-            )
-
-            rect = QRect(
-                rect.left(),
-                rect.top(),
-                side,
-                side
-            )
-
-        painter = QPainter(
-            self.canvas
-        )
-
-        painter.setRenderHint(
-            QPainter.Antialiasing,
-            True
-        )
-
-        painter.setPen(
-            self.create_pen()
-        )
-
-        painter.setBrush(
-            Qt.NoBrush
-        )
-
-        painter.drawRect(
-            rect
-        )
-
-        painter.end()
-
-        self.update()
-
-    # ========================================================
-    # TRIANGLE
-    # ========================================================
-
-    def draw_triangle(
-        self,
-        points
-    ):
-
-        self.restore_before_stroke()
-
-        painter = QPainter(
-            self.canvas
-        )
-
-        painter.setRenderHint(
-            QPainter.Antialiasing,
-            True
-        )
-
-        painter.setPen(
-            self.create_pen()
-        )
-
-        painter.setBrush(
-            Qt.NoBrush
-        )
-
-        painter.drawPolygon(
-            QPolygon(
-                points
-            )
-        )
-
-        painter.end()
-
-        self.update()
-
-    # ========================================================
-    # ARROW
-    # ========================================================
-
-    def draw_arrow(
-        self,
-        start,
-        end
-    ):
-
-        self.restore_before_stroke()
-
-        painter = QPainter(
-            self.canvas
-        )
-
-        painter.setRenderHint(
-            QPainter.Antialiasing,
-            True
-        )
-
-        painter.setPen(
-            self.create_pen()
-        )
-
-        painter.drawLine(
-            start,
-            end
-        )
-
-        angle = math.atan2(
-            end.y() - start.y(),
-            end.x() - start.x()
-        )
-
-        head = max(
-            10,
-            self.brush_size * 3
-        )
-
-        point1 = QPoint(
-            int(
-                end.x()
-                -
-                head
-                *
-                math.cos(
-                    angle - math.pi / 6
-                )
-            ),
-            int(
-                end.y()
-                -
-                head
-                *
-                math.sin(
-                    angle - math.pi / 6
-                )
-            )
-        )
-
-        point2 = QPoint(
-            int(
-                end.x()
-                -
-                head
-                *
-                math.cos(
-                    angle + math.pi / 6
-                )
-            ),
-            int(
-                end.y()
-                -
-                head
-                *
-                math.sin(
-                    angle + math.pi / 6
-                )
-            )
-        )
-
-        painter.drawLine(
-            end,
-            point1
-        )
-
-        painter.drawLine(
-            end,
-            point2
-        )
-
-        painter.end()
-
-        self.update()
-
-    # ========================================================
-    # AUTOMATIC SHAPE RECOGNITION
-    # ========================================================
-
-    def auto_correct_pen_stroke(
-        self,
-        points
-    ):
-
-        geometry = (
-            self.get_stroke_geometry(
-                points
-            )
-        )
-
-        if not geometry:
-
-            return
-
-        width = geometry[
-            "width"
-        ]
-
-        height = geometry[
-            "height"
-        ]
-
-        diagonal = geometry[
-            "diagonal"
-        ]
-
-        approximation = geometry[
-            "approx"
-        ]
-
-        # ----------------------------------------------------
-        # VERY SMALL MARK
-        # ----------------------------------------------------
-
-        if diagonal < 18:
-
-            return
-
-        # ----------------------------------------------------
-        # STRAIGHT LINE
-        # ----------------------------------------------------
-
-        if (
-            geometry["direct"]
-            /
-            max(
-                geometry["path"],
-                1.0
-            )
-            >=
-            0.93
-        ):
-
-            self.draw_perfect_line(
-                points[0],
-                points[-1]
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # MUST BE CLOSED FOR SHAPES
-        # ----------------------------------------------------
-
-        if not geometry[
-            "closed"
-        ]:
-
-            return
-
-        # ----------------------------------------------------
-        # CIRCLE FIRST
-        #
-        # IMPORTANT:
-        # Circle is checked BEFORE 3/4 corner detection.
-        #
-        # This prevents a small circle from becoming a square.
-        # ----------------------------------------------------
-
-        perimeter = max(
-            geometry["path"],
-            1.0
-        )
-
-        circularity = (
-            4.0
-            *
-            math.pi
-            *
-            geometry["area"]
-            /
-            (
-                perimeter
-                *
-                perimeter
-            )
-        )
-
-        aspect_ratio = (
-            min(
-                width,
-                height
-            )
-            /
-            max(
-                width,
-                height
-            )
-        )
-
-        if (
-            circularity >= 0.68
-            and
-            aspect_ratio >= 0.72
-        ):
-
-            center = QPoint(
-                int(
-                    geometry["x"]
-                    +
-                    width / 2
-                ),
-                int(
-                    geometry["y"]
-                    +
-                    height / 2
-                )
-            )
-
-            radius = int(
-                min(
-                    width,
-                    height
-                )
-                /
-                2
-            )
-
-            self.draw_perfect_circle(
-                center,
-                radius
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # TRIANGLE
-        # ----------------------------------------------------
-
-        corners = len(
-            approximation
-        )
-
-        if corners == 3:
-
-            triangle_points = [
-                QPoint(
-                    int(point[0][0]),
-                    int(point[0][1])
-                )
-                for point in approximation
-            ]
-
-            self.draw_triangle(
-                triangle_points
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # RECTANGLE / SQUARE
-        # ----------------------------------------------------
-
-        if corners == 4:
-
-            rectangle = QRect(
-                int(
-                    geometry["x"]
-                ),
-                int(
-                    geometry["y"]
-                ),
-                max(
-                    2,
-                    int(
-                        width
-                    )
-                ),
-                max(
-                    2,
-                    int(
-                        height
-                    )
-                )
-            )
-
-            is_square = (
-                aspect_ratio >= 0.78
-            )
-
-            self.draw_rectangle(
-                rectangle,
-                is_square
-            )
-
-    # ========================================================
-    # SHAPE MODE
-    # ========================================================
-
-    def draw_auto_shape(
-        self,
-        points
-    ):
-
-        geometry = (
-            self.get_stroke_geometry(
-                points
-            )
-        )
-
-        if not geometry:
-
-            return
-
-        approximation = geometry[
-            "approx"
-        ]
-
-        corners = len(
-            approximation
-        )
-
-        # ----------------------------------------------------
-        # CIRCLE
-        # ----------------------------------------------------
-
-        if geometry[
-            "closed"
-        ]:
-
-            perimeter = max(
-                geometry["path"],
-                1.0
-            )
-
-            circularity = (
-                4
-                *
-                math.pi
-                *
-                geometry["area"]
-                /
-                (
-                    perimeter
-                    *
-                    perimeter
-                )
-            )
-
-            aspect_ratio = (
-                min(
-                    geometry["width"],
-                    geometry["height"]
-                )
-                /
-                max(
-                    geometry["width"],
-                    geometry["height"]
-                )
-            )
-
-            if (
-                circularity >= 0.62
-                and
-                aspect_ratio >= 0.70
-            ):
-
-                center = QPoint(
-                    int(
-                        geometry["x"]
-                        +
-                        geometry["width"]
-                        /
-                        2
-                    ),
-                    int(
-                        geometry["y"]
-                        +
-                        geometry["height"]
-                        /
-                        2
-                    )
-                )
-
-                radius = int(
-                    min(
-                        geometry["width"],
-                        geometry["height"]
-                    )
-                    /
-                    2
-                )
-
-                self.draw_perfect_circle(
-                    center,
-                    radius
-                )
-
-                return
-
-        # ----------------------------------------------------
-        # TRIANGLE
-        # ----------------------------------------------------
-
-        if (
-            corners == 3
-            and
-            geometry["closed"]
-        ):
-
-            points3 = [
-                QPoint(
-                    int(point[0][0]),
-                    int(point[0][1])
-                )
-                for point in approximation
-            ]
-
-            self.draw_triangle(
-                points3
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # RECTANGLE / SQUARE
-        # ----------------------------------------------------
-
-        if (
-            corners == 4
-            and
-            geometry["closed"]
-        ):
-
-            rectangle = QRect(
-                int(
-                    geometry["x"]
-                ),
-                int(
-                    geometry["y"]
-                ),
-                max(
-                    2,
-                    int(
-                        geometry["width"]
-                    )
-                ),
-                max(
-                    2,
-                    int(
-                        geometry["height"]
-                    )
-                )
-            )
-
-            is_square = (
-                min(
-                    geometry["width"],
-                    geometry["height"]
-                )
-                /
-                max(
-                    geometry["width"],
-                    geometry["height"]
-                )
-                >=
-                0.78
-            )
-
-            self.draw_rectangle(
-                rectangle,
-                is_square
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # IF NOT RECOGNIZED
-        # ----------------------------------------------------
-
-        self.restore_before_stroke()
-
-        painter = QPainter(
-            self.canvas
-        )
-
-        painter.setRenderHint(
-            QPainter.Antialiasing,
-            True
-        )
-
-        painter.setPen(
-            self.create_pen()
-        )
-
-        for start, end in zip(
-            points[:-1],
-            points[1:]
-        ):
-
-            painter.drawLine(
-                start,
-                end
-            )
-
-        painter.end()
-
-        self.update()
-
-    # ========================================================
-    # PAINT EVENT
+    # PAINT
     # ========================================================
 
     def paintEvent(
@@ -1822,9 +1011,9 @@ class DrawingCanvas(QWidget):
             QColor("#FFFFFF")
         )
 
-        # ----------------------------------------------------
-        # LIGHT GRID
-        # ----------------------------------------------------
+        # ====================================================
+        # SUBTLE GRID
+        # ====================================================
 
         grid_size = 40
 
@@ -1835,11 +1024,9 @@ class DrawingCanvas(QWidget):
             )
         )
 
-        for x in range(
-            0,
-            self.width(),
-            grid_size
-        ):
+        x = 0
+
+        while x < self.width():
 
             painter.drawLine(
                 x,
@@ -1848,11 +1035,11 @@ class DrawingCanvas(QWidget):
                 self.height()
             )
 
-        for y in range(
-            0,
-            self.height(),
-            grid_size
-        ):
+            x += grid_size
+
+        y = 0
+
+        while y < self.height():
 
             painter.drawLine(
                 0,
@@ -1861,11 +1048,237 @@ class DrawingCanvas(QWidget):
                 y
             )
 
+            y += grid_size
+
+        # ====================================================
+        # DRAWING
+        # ====================================================
+
         painter.drawPixmap(
             0,
             0,
             self.canvas
         )
+
+        # ====================================================
+        # GESTURE DRAWING CURSOR
+        # ====================================================
+
+        if (
+            self.show_gesture_cursor
+            and
+            self.gesture_cursor_pos
+        ):
+
+            center = (
+                self.gesture_cursor_pos
+            )
+
+            radius = max(
+                8,
+                int(
+                    self.brush_size * 1.8
+                )
+            )
+
+            painter.setBrush(
+                QColor(
+                    14,
+                    47,
+                    118,
+                    25
+                )
+            )
+
+            painter.setPen(
+                QPen(
+                    QColor(
+                        "#0E2F76"
+                    ),
+                    2
+                )
+            )
+
+            painter.drawEllipse(
+                center,
+                radius,
+                radius
+            )
+
+            painter.setPen(
+                QPen(
+                    QColor(
+                        "#0E2F76"
+                    ),
+                    1
+                )
+            )
+
+            painter.drawLine(
+                center.x() - radius - 4,
+                center.y(),
+                center.x() + radius + 4,
+                center.y()
+            )
+
+            painter.drawLine(
+                center.x(),
+                center.y() - radius - 4,
+                center.x(),
+                center.y() + radius + 4
+            )
+
+        # ====================================================
+        # LIVE SHAPE PREVIEW (rubber-band while dragging a shape)
+        # ====================================================
+
+        if (
+            self._shape_dragging
+            and self._shape_start is not None
+            and self._shape_current is not None
+        ):
+
+            shape_start = self._shape_start
+
+            shape_end = self._shape_current
+
+            preview_color = QColor(
+                self.color
+            )
+
+            preview_color.setAlpha(170)
+
+            painter.setBrush(
+                Qt.NoBrush
+            )
+
+            painter.setPen(
+                QPen(
+                    preview_color,
+                    2,
+                    Qt.DashLine
+                )
+            )
+
+            mode = self.shape_mode
+
+            if mode == "circle":
+
+                painter.drawEllipse(
+                    QRect(
+                        shape_start,
+                        shape_end
+                    ).normalized()
+                )
+
+            elif mode == "rectangle":
+
+                painter.drawRect(
+                    QRect(
+                        shape_start,
+                        shape_end
+                    ).normalized()
+                )
+
+            elif mode == "triangle":
+
+                rect = QRect(
+                    shape_start,
+                    shape_end
+                ).normalized()
+
+                icon_points = QPolygon(
+                    [
+                        QPoint(
+                            rect.center().x(),
+                            rect.top()
+                        ),
+                        QPoint(
+                            rect.right(),
+                            rect.bottom()
+                        ),
+                        QPoint(
+                            rect.left(),
+                            rect.bottom()
+                        ),
+                    ]
+                )
+
+                painter.drawPolygon(
+                    icon_points
+                )
+
+            else:
+
+                painter.drawLine(
+                    shape_start,
+                    shape_end
+                )
+
+        # ====================================================
+        # CIRCLE (BRUSH) CURSOR
+        # Size follows the current tool width. Drawn as a large,
+        # semi-transparent ring so it never looks like a black blob.
+        # ====================================================
+
+        if (
+            self.cursor_visible
+            and self.mouse_pos is not None
+            and self.tool in ("pen", "highlighter", "eraser")
+        ):
+
+            radius = max(
+                8,
+                int(self.current_width() / 2) + 5
+            )
+
+            ring_color = QColor(
+                self.color
+            )
+
+            if self.tool == "eraser":
+
+                ring_color = QColor("#5A6B93")
+
+            ring_color.setAlpha(170)
+
+            painter.setBrush(
+                Qt.NoBrush
+            )
+
+            painter.setPen(
+                QPen(
+                    ring_color,
+                    2
+                )
+            )
+
+            painter.drawEllipse(
+                self.mouse_pos,
+                radius,
+                radius
+            )
+
+            # Semi-transparent centre marker (not a solid dot).
+            marker = QColor(
+                ring_color
+            )
+
+            marker.setAlpha(110)
+
+            painter.setBrush(
+                marker
+            )
+
+            painter.setPen(
+                Qt.NoPen
+            )
+
+            painter.drawEllipse(
+                self.mouse_pos,
+                2,
+                2
+            )
 
         painter.end()
 
@@ -1874,9 +1287,7 @@ class DrawingCanvas(QWidget):
 # WHITEBOARD PAGE
 # ============================================================
 
-class WhiteboardPage(
-    QWidget
-):
+class WhiteboardPage(QWidget):
 
     def __init__(
         self,
@@ -1887,41 +1298,13 @@ class WhiteboardPage(
             parent
         )
 
-        self.parent_window = (
-            parent
-        )
-
-        # ====================================================
-        # CAMERA COMPATIBILITY
-        # ====================================================
-
-        self.active_camera_index = None
-
-        self.active_camera_name = (
-            "No camera selected"
-        )
-
-        # ====================================================
-        # CURRENT TOOL
-        # ====================================================
-
-        self.current_tool = "pen"
-
-        self.current_color = (
-            "#172033"
-        )
-
-        self.selected_shape = (
-            "Line"
-        )
+        self.parent_window = parent
 
         # ====================================================
         # CAMERA
         # ====================================================
 
         self.camera = None
-
-        self.camera_running = False
 
         self.camera_timer = QTimer(
             self
@@ -1931,68 +1314,261 @@ class WhiteboardPage(
             self.update_camera
         )
 
+        self.camera_running = False
+
+        self.camera_index = 0
+
+        self.active_camera_index = None
+
+        self.active_camera_name = (
+            "No camera selected"
+        )
+
         # ====================================================
         # MEDIAPIPE
         # ====================================================
 
-        self.mp_hands = None
+        if mp is not None:
 
-        self.mp_drawing = None
+            self.mp_hands = (
+                mp.solutions.hands
+            )
 
-        self.hands = None
+            self.mp_drawing = (
+                mp.solutions.drawing_utils
+            )
+
+            self.hands = (
+                self.mp_hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=1,
+                    min_detection_confidence=0.65,
+                    min_tracking_confidence=0.65,
+                    model_complexity=1
+                )
+            )
+
+        else:
+
+            self.mp_hands = None
+            self.mp_drawing = None
+            self.hands = None
 
         # ====================================================
         # GESTURE STATE
         # ====================================================
 
-        self.last_gesture = (
-            "None"
-        )
+        self.current_gesture = "None"
 
-        self.gesture_candidate = (
-            "None"
-        )
+        self.previous_gesture = "None"
 
-        self.gesture_candidate_since = (
-            0.0
-        )
-
-        self.last_click_time = (
-            0.0
-        )
+        self.last_click_time = 0
 
         # ====================================================
-        # CURSOR SMOOTHING
+        # CURSOR
         # ====================================================
 
-        self.cursor_x = None
+        pyautogui.FAILSAFE = False
 
-        self.cursor_y = None
-
-        self.cursor_smoothing = (
-            0.35
+        screen_width, screen_height = (
+            pyautogui.size()
         )
 
+        self.screen_width = (
+            screen_width
+        )
+
+        self.screen_height = (
+            screen_height
+        )
+
+        self.cursor_x = (
+            screen_width / 2
+        )
+
+        self.cursor_y = (
+            screen_height / 2
+        )
+
+        self.last_hand_x = None
+
+        self.last_hand_y = None
+
         # ====================================================
-        # GESTURE DRAWING
+        # DRAWING
         # ====================================================
 
         self.gesture_drawing = False
 
+        self.gesture_points = []
+
         self.last_draw_point = None
 
         # ====================================================
-        # BUILD
+        # TOOL
+        # ====================================================
+
+        self.current_tool = "pen"
+
+        self.current_color = (
+            "#172033"
+        )
+
+        # ====================================================
+        # CAMERA LABEL
+        # ====================================================
+
+        self.camera_label = QLabel(
+            self
+        )
+
+        # The preview is only decorative now (the Virtual Mouse shows the
+        # real camera). Make it transparent to mouse events so it never
+        # blocks drawing on the canvas underneath.
+        self.camera_label.setAttribute(
+            Qt.WA_TransparentForMouseEvents,
+            True
+        )
+
+        self.camera_label.setFixedSize(
+            CAMERA_PREVIEW_WIDTH,
+            CAMERA_PREVIEW_HEIGHT
+        )
+
+        self.camera_label.setStyleSheet("""
+            QLabel {
+                background-color: #10264E;
+                border: 2px solid #FFFFFF;
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 9px;
+            }
+        """)
+
+        self.camera_label.setAlignment(
+            Qt.AlignCenter
+        )
+
+        self.camera_label.setText(
+            "Camera"
+        )
+
+        self.camera_label.raise_()
+
+        # ====================================================
+        # BUILD UI
         # ====================================================
 
         self.setup_ui()
 
-        self.setup_mediapipe()
+    # ========================================================
+    # SHOW EVENT
+    # ========================================================
 
-        QTimer.singleShot(
-            250,
-            self.start_camera
+    def showEvent(
+        self,
+        event
+    ):
+
+        super().showEvent(
+            event
         )
+
+        # The Whiteboard does not open the webcam any more: the Virtual
+        # Mouse provides the cursor and the index+middle "draw" gesture, so
+        # both features can be used together (no camera conflict).
+
+        self.update_camera_status()
+
+        # Place the small camera feed in the lower-right corner.
+        self.position_camera_preview()
+
+        # Run the (shared) preview refresh loop.
+        if not self.camera_timer.isActive():
+
+            self.camera_timer.start(40)
+
+    def update_camera_status(self):
+        """Reflect the Virtual Mouse camera state in the header pill."""
+
+        if not hasattr(self, "camera_status"):
+            return
+
+        vmouse = getattr(
+            self.parent_window, "virtual_mouse", None
+        )
+
+        running = (
+            vmouse is not None
+            and getattr(vmouse, "camera_running", False)
+        )
+
+        self.camera_status.setText(
+            "● Camera ON" if running else "● Camera OFF"
+        )
+
+    # ========================================================
+    # HIDE EVENT
+    # ========================================================
+
+    def hideEvent(
+        self,
+        event
+    ):
+
+        super().hideEvent(
+            event
+        )
+
+        # Release the webcam when leaving so it never fights the
+        # Virtual Mouse or other camera pages.
+        self.stop_camera()
+
+    # ========================================================
+    # RESIZE EVENT
+    # ========================================================
+
+    def resizeEvent(
+        self,
+        event
+    ):
+
+        super().resizeEvent(
+            event
+        )
+
+        self.position_camera_preview()
+
+    # ========================================================
+    # POSITION CAMERA
+    # ========================================================
+
+    def position_camera_preview(self):
+
+        margin = 12
+
+        x = (
+            self.width()
+            -
+            CAMERA_PREVIEW_WIDTH
+            -
+            margin
+        )
+
+        y = (
+            self.height()
+            -
+            CAMERA_PREVIEW_HEIGHT
+            -
+            margin
+        )
+
+        self.camera_label.move(
+            max(0, x),
+            max(0, y)
+        )
+
+        self.camera_label.raise_()
 
     # ========================================================
     # SETUP UI
@@ -2014,7 +1590,7 @@ class WhiteboardPage(
             }
 
             QPushButton {
-                background-color: transparent;
+                background: transparent;
                 border: none;
                 color: #0E2F76;
             }
@@ -2039,16 +1615,18 @@ class WhiteboardPage(
                 border-radius: 10px;
             }
 
+            QFrame#controlBar {
+                background-color: #F8FDFF;
+                border: 1px solid #D7E5F3;
+                border-radius: 10px;
+            }
+
             QFrame#canvasFrame {
                 background-color: #FFFFFF;
                 border: 1px solid #D7E5F3;
                 border-radius: 12px;
             }
         """)
-
-        # ====================================================
-        # MAIN
-        # ====================================================
 
         main_layout = QVBoxLayout(
             self
@@ -2062,7 +1640,7 @@ class WhiteboardPage(
         )
 
         main_layout.setSpacing(
-            8
+            10
         )
 
         # ====================================================
@@ -2070,7 +1648,7 @@ class WhiteboardPage(
         # ====================================================
 
         title = QLabel(
-            "Virtual Whiteboard"
+            "GestureBoard Whiteboard"
         )
 
         title.setStyleSheet("""
@@ -2082,23 +1660,48 @@ class WhiteboardPage(
         """)
 
         subtitle = QLabel(
-            "Draw, write, highlight, create shapes, and control the whiteboard using hand gestures."
+            "Move the cursor with the Virtual Mouse (open palm) and draw with "
+            "your index + middle fingers held together."
         )
 
         subtitle.setStyleSheet("""
             QLabel {
-                font-size: 12px;
+                font-size: 13px;
                 color: #6482B1;
             }
         """)
 
-        main_layout.addWidget(
-            title
+        # Header row: title + camera/gesture status pill.
+        header_row = QHBoxLayout()
+        header_row.setSpacing(12)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+
+        header_row.addLayout(title_col)
+        header_row.addStretch()
+
+        self.camera_status = QLabel("● Camera ON")
+
+        self.camera_status.setStyleSheet("""
+            QLabel {
+                background-color: #0E2F76;
+                color: #F5FEFF;
+                border-radius: 13px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 700;
+            }
+        """)
+
+        header_row.addWidget(
+            self.camera_status,
+            alignment=Qt.AlignTop
         )
 
-        main_layout.addWidget(
-            subtitle
-        )
+        main_layout.addLayout(header_row)
 
         # ====================================================
         # TOOLBAR
@@ -2119,32 +1722,30 @@ class WhiteboardPage(
         )
 
         toolbar_layout.setContentsMargins(
-            8,
-            5,
-            8,
-            5
+            10,
+            6,
+            10,
+            6
         )
 
         toolbar_layout.setSpacing(
-            4
+            5
         )
 
         # ====================================================
-        # SELECT / CURSOR
+        # SELECT
         # ====================================================
 
         self.select_button = (
             self.create_tool_button(
                 "↖",
-                "Select / Cursor"
+                "Select"
             )
         )
 
         self.select_button.clicked.connect(
             lambda:
-            self.set_tool(
-                "select"
-            )
+            self.set_tool("select")
         )
 
         toolbar_layout.addWidget(
@@ -2158,15 +1759,13 @@ class WhiteboardPage(
         self.pen_button = (
             self.create_tool_button(
                 "✎",
-                "Pen / Automatic Shape Recognition"
+                "Pen"
             )
         )
 
         self.pen_button.clicked.connect(
             lambda:
-            self.set_tool(
-                "pen"
-            )
+            self.set_tool("pen")
         )
 
         toolbar_layout.addWidget(
@@ -2186,9 +1785,7 @@ class WhiteboardPage(
 
         self.highlighter_button.clicked.connect(
             lambda:
-            self.set_tool(
-                "highlighter"
-            )
+            self.set_tool("highlighter")
         )
 
         toolbar_layout.addWidget(
@@ -2208,13 +1805,15 @@ class WhiteboardPage(
 
         self.eraser_button.clicked.connect(
             lambda:
-            self.set_tool(
-                "eraser"
-            )
+            self.set_tool("eraser")
         )
 
         toolbar_layout.addWidget(
             self.eraser_button
+        )
+
+        toolbar_layout.addWidget(
+            self.create_separator()
         )
 
         # ====================================================
@@ -2223,7 +1822,7 @@ class WhiteboardPage(
 
         self.shape_button = (
             self.create_tool_button(
-                "△",
+                "□",
                 "Shape"
             )
         )
@@ -2234,10 +1833,6 @@ class WhiteboardPage(
 
         toolbar_layout.addWidget(
             self.shape_button
-        )
-
-        toolbar_layout.addWidget(
-            self.create_separator()
         )
 
         # ====================================================
@@ -2320,130 +1915,41 @@ class WhiteboardPage(
             color_button = QPushButton()
 
             color_button.setFixedSize(
-                21,
-                21
+                28,
+                28
             )
 
             color_button.setToolTip(
-                f"Color {color}"
+                f"Color: {color}"
             )
 
             color_button.setStyleSheet(
                 f"""
                 QPushButton {{
                     background-color: {color};
-                    border: 2px solid #FFFFFF;
-                    border-radius: 10px;
+                    border: 3px solid #FFFFFF;
+                    border-radius: 14px;
                 }}
 
                 QPushButton:hover {{
-                    border: 2px solid #8FAED5;
+                    border: 3px solid #8FAED5;
                 }}
 
                 QPushButton:pressed {{
-                    border: 2px solid #0E2F76;
+                    border: 3px solid #0E2F76;
                 }}
                 """
             )
 
             color_button.clicked.connect(
-                lambda
-                checked=False,
+                lambda checked=False,
                 c=color:
-                self.set_color(
-                    c
-                )
+                self.set_color(c)
             )
 
             toolbar_layout.addWidget(
                 color_button
             )
-
-        toolbar_layout.addWidget(
-            self.create_separator()
-        )
-
-        # ====================================================
-        # SIZE
-        # ====================================================
-
-        size_label = QLabel(
-            "Size"
-        )
-
-        size_label.setStyleSheet(
-            "font-size:11px;color:#6682AC;"
-        )
-
-        toolbar_layout.addWidget(
-            size_label
-        )
-
-        self.brush_slider = QSlider(
-            Qt.Horizontal
-        )
-
-        self.brush_slider.setRange(
-            1,
-            20
-        )
-
-        self.brush_slider.setValue(
-            4
-        )
-
-        self.brush_slider.setFixedWidth(
-            80
-        )
-
-        self.brush_slider.valueChanged.connect(
-            self.change_brush_size
-        )
-
-        toolbar_layout.addWidget(
-            self.brush_slider
-        )
-
-        # ====================================================
-        # OPACITY
-        # ====================================================
-
-        opacity_label = QLabel(
-            "Opacity"
-        )
-
-        opacity_label.setStyleSheet(
-            "font-size:11px;color:#6682AC;"
-        )
-
-        toolbar_layout.addWidget(
-            opacity_label
-        )
-
-        self.opacity_slider = QSlider(
-            Qt.Horizontal
-        )
-
-        self.opacity_slider.setRange(
-            10,
-            100
-        )
-
-        self.opacity_slider.setValue(
-            100
-        )
-
-        self.opacity_slider.setFixedWidth(
-            80
-        )
-
-        self.opacity_slider.valueChanged.connect(
-            self.change_opacity
-        )
-
-        toolbar_layout.addWidget(
-            self.opacity_slider
-        )
 
         # ====================================================
         # SPACER
@@ -2484,27 +1990,181 @@ class WhiteboardPage(
         )
 
         # ====================================================
+        # CONTROL BAR
+        # ====================================================
+
+        control_bar = QFrame()
+
+        control_bar.setObjectName(
+            "controlBar"
+        )
+
+        control_bar.setFixedHeight(
+            48
+        )
+
+        controls = QHBoxLayout(
+            control_bar
+        )
+
+        controls.setContentsMargins(
+            12,
+            4,
+            12,
+            4
+        )
+
+        controls.setSpacing(
+            10
+        )
+
+        # ====================================================
+        # SIZE
+        # ====================================================
+
+        brush_label = QLabel(
+            "Size"
+        )
+
+        brush_label.setStyleSheet("""
+            QLabel {
+                color: #6682AC;
+                font-size: 12px;
+            }
+        """)
+
+        controls.addWidget(
+            brush_label
+        )
+
+        self.brush_slider = QSlider(
+            Qt.Horizontal
+        )
+
+        self.brush_slider.setRange(
+            1,
+            20
+        )
+
+        self.brush_slider.setValue(
+            4
+        )
+
+        self.brush_slider.setFixedWidth(
+            120
+        )
+
+        self.brush_slider.valueChanged.connect(
+            self.change_brush_size
+        )
+
+        controls.addWidget(
+            self.brush_slider
+        )
+
+        # ====================================================
+        # OPACITY
+        # ====================================================
+
+        opacity_label = QLabel(
+            "Opacity"
+        )
+
+        opacity_label.setStyleSheet("""
+            QLabel {
+                color: #6682AC;
+                font-size: 12px;
+            }
+        """)
+
+        controls.addWidget(
+            opacity_label
+        )
+
+        self.opacity_slider = QSlider(
+            Qt.Horizontal
+        )
+
+        self.opacity_slider.setRange(
+            10,
+            100
+        )
+
+        self.opacity_slider.setValue(
+            100
+        )
+
+        self.opacity_slider.setFixedWidth(
+            120
+        )
+
+        self.opacity_slider.valueChanged.connect(
+            self.change_opacity
+        )
+
+        controls.addWidget(
+            self.opacity_slider
+        )
+
+        # ----------------------------------------------------
+        # GESTURE GUIDE (aligned with the tools / size row)
+        # ----------------------------------------------------
+
+        self.guide_label = QLabel(
+            "🖐️ Open hand: cursor    •    "
+            "✊ Fist: click    •    "
+            "✌️ Peace: draw cursor    •    "
+            "✌️ Together: draw"
+        )
+
+        self.guide_label.setStyleSheet("""
+            QLabel {
+                color: #46638F;
+                font-size: 12px;
+                padding-left: 6px;
+            }
+        """)
+
+        controls.addWidget(
+            self.guide_label
+        )
+
+        controls_spacer = QWidget()
+
+        controls_spacer.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Preferred
+        )
+
+        controls.addWidget(
+            controls_spacer
+        )
+
+        # ====================================================
         # GESTURE STATUS
         # ====================================================
 
         self.gesture_status = QLabel(
-            "● Open Palm — Cursor"
+            "● Open Palm = Cursor"
         )
 
         self.gesture_status.setStyleSheet("""
             QLabel {
-                background: #EEF5FF;
-                border: 1px solid #D7E5F3;
-                border-radius: 12px;
-                color: #5574A8;
-                padding: 5px 10px;
+                background-color: #E5F0FA;
+                color: #5474A8;
+                border-radius: 14px;
+                padding: 6px 14px;
                 font-size: 11px;
                 font-weight: 600;
             }
         """)
 
-        main_layout.addWidget(
+        controls.addWidget(
             self.gesture_status
+        )
+
+        main_layout.addWidget(
+            control_bar
         )
 
         # ====================================================
@@ -2533,10 +2193,15 @@ class WhiteboardPage(
         )
 
         # ====================================================
-        # NO QSCROLLAREA
+        # CANVAS
         # ====================================================
 
         self.canvas = DrawingCanvas()
+
+        # Auto-shape: when a pen stroke finishes, "perfect" it.
+        self.canvas.on_stroke_finished = (
+            self.on_canvas_stroke_finished
+        )
 
         canvas_layout.addWidget(
             self.canvas
@@ -2548,72 +2213,14 @@ class WhiteboardPage(
         )
 
         # ====================================================
-        # CAMERA OVERLAY
+        # DEFAULT
         # ====================================================
-
-        self.camera_overlay = QLabel(
-            self
-        )
-
-        self.camera_overlay.setFixedSize(
-            140,
-            105
-        )
-
-        self.camera_overlay.setAlignment(
-            Qt.AlignCenter
-        )
-
-        self.camera_overlay.setStyleSheet("""
-            QLabel {
-                background: #101820;
-                border: 2px solid #FFFFFF;
-                border-radius: 8px;
-                color: #FFFFFF;
-                font-size: 9px;
-            }
-        """)
-
-        self.camera_overlay.setText(
-            "Camera"
-        )
-
-        self.camera_overlay.raise_()
 
         self.set_tool(
             "pen"
         )
 
-    # ========================================================
-    # RESIZE
-    # ========================================================
-
-    def resizeEvent(
-        self,
-        event
-    ):
-
-        super().resizeEvent(
-            event
-        )
-
-        margin = 8
-
-        self.camera_overlay.move(
-            self.width()
-            -
-            self.camera_overlay.width()
-            -
-            margin,
-
-            self.height()
-            -
-            self.camera_overlay.height()
-            -
-            margin
-        )
-
-        self.camera_overlay.raise_()
+        self.position_camera_preview()
 
     # ========================================================
     # TOOL BUTTON
@@ -2630,8 +2237,8 @@ class WhiteboardPage(
         )
 
         button.setFixedSize(
-            40,
-            38
+            48,
+            44
         )
 
         button.setToolTip(
@@ -2640,21 +2247,21 @@ class WhiteboardPage(
 
         button.setStyleSheet("""
             QPushButton {
-                background: transparent;
+                background-color: transparent;
                 border: none;
-                border-radius: 8px;
-                color: #5474A8;
-                font-size: 19px;
-                font-weight: 500;
+                border-radius: 9px;
+                color: #3D5A8A;
+                font-size: 24px;
+                font-weight: 600;
             }
 
             QPushButton:hover {
-                background: #E7F0FA;
+                background-color: #E7F0FA;
                 color: #0E2F76;
             }
 
             QPushButton:pressed {
-                background: #D5E4F5;
+                background-color: #D5E4F5;
             }
         """)
 
@@ -2689,7 +2296,103 @@ class WhiteboardPage(
         return separator
 
     # ========================================================
-    # SET TOOL
+    # SHAPE MENU
+    # ========================================================
+
+    def show_shape_menu(self):
+
+        menu = QMenu(
+            self
+        )
+
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border: 1px solid #D7E5F3;
+                padding: 5px;
+            }
+
+            QMenu::item {
+                padding: 8px 25px;
+                color: #0E2F76;
+            }
+
+            QMenu::item:selected {
+                background-color: #E7F0FA;
+            }
+        """)
+
+        auto_action = menu.addAction(
+            "Automatic Shape"
+        )
+
+        line_action = menu.addAction(
+            "Line"
+        )
+
+        circle_action = menu.addAction(
+            "Circle"
+        )
+
+        rectangle_action = menu.addAction(
+            "Rectangle"
+        )
+
+        triangle_action = menu.addAction(
+            "Triangle"
+        )
+
+        arrow_action = menu.addAction(
+            "Arrow"
+        )
+
+        action = menu.exec_(
+            self.shape_button.mapToGlobal(
+                QPoint(
+                    0,
+                    self.shape_button.height()
+                )
+            )
+        )
+
+        if action == auto_action:
+
+            self.canvas.shape_mode = "auto"
+
+        elif action == line_action:
+
+            self.canvas.shape_mode = "line"
+
+        elif action == circle_action:
+
+            self.canvas.shape_mode = "circle"
+
+        elif action == rectangle_action:
+
+            self.canvas.shape_mode = "rectangle"
+
+        elif action == triangle_action:
+
+            self.canvas.shape_mode = "triangle"
+
+        elif action == arrow_action:
+
+            self.canvas.shape_mode = "arrow"
+
+        else:
+
+            return
+
+        self.set_tool(
+            "pen"
+        )
+
+        self.gesture_status.setText(
+            f"Shape Mode: {self.canvas.shape_mode.title()}"
+        )
+
+    # ========================================================
+    # TOOL
     # ========================================================
 
     def set_tool(
@@ -2697,34 +2400,21 @@ class WhiteboardPage(
         tool
     ):
 
-        self.current_tool = (
-            tool
-        )
+        self.current_tool = tool
 
         self.canvas.set_tool(
             tool
         )
 
         buttons = {
-            "pen":
-                self.pen_button,
-
-            "highlighter":
-                self.highlighter_button,
-
-            "eraser":
-                self.eraser_button,
-
-            "select":
-                self.select_button,
-
-            "shape":
-                self.shape_button,
+            "pen": self.pen_button,
+            "highlighter": self.highlighter_button,
+            "eraser": self.eraser_button,
         }
 
         normal_style = """
             QPushButton {
-                background: transparent;
+                background-color: transparent;
                 border: none;
                 border-radius: 8px;
                 color: #5474A8;
@@ -2733,14 +2423,14 @@ class WhiteboardPage(
             }
 
             QPushButton:hover {
-                background: #E7F0FA;
+                background-color: #E7F0FA;
                 color: #0E2F76;
             }
         """
 
         active_style = """
             QPushButton {
-                background: #B7CCEA;
+                background-color: #B7CCEA;
                 border: none;
                 border-radius: 8px;
                 color: #0E2F76;
@@ -2749,9 +2439,7 @@ class WhiteboardPage(
             }
         """
 
-        for button in (
-            buttons.values()
-        ):
+        for button in buttons.values():
 
             button.setStyleSheet(
                 normal_style
@@ -2765,120 +2453,6 @@ class WhiteboardPage(
                 active_style
             )
 
-        if tool == "pen":
-
-            self.gesture_status.setText(
-                "● Open Palm — Cursor   |   Closed Palm — Click   |   Index + Middle Together — Draw"
-            )
-
-        elif tool == "highlighter":
-
-            self.gesture_status.setText(
-                "● Open Palm — Cursor   |   Closed Palm — Click   |   Index + Middle Together — Highlight"
-            )
-
-        elif tool == "eraser":
-
-            self.gesture_status.setText(
-                "● Open Palm — Cursor   |   Closed Palm — Click   |   Index + Middle Together — Erase"
-            )
-
-        elif tool == "shape":
-
-            self.gesture_status.setText(
-                f"● Shape Mode: {self.selected_shape}   |   Open Palm — Cursor   |   Closed Palm — Click"
-            )
-
-        else:
-
-            self.gesture_status.setText(
-                "● Open Palm — Cursor   |   Closed Palm — Click"
-            )
-
-    # ========================================================
-    # SHAPE MENU
-    # ========================================================
-
-    def show_shape_menu(
-        self
-    ):
-
-        menu = QMenu(
-            self
-        )
-
-        menu.setStyleSheet("""
-            QMenu {
-                background: #FFFFFF;
-                border: 1px solid #D7E5F3;
-                padding: 5px;
-            }
-
-            QMenu::item {
-                padding: 7px 25px 7px 10px;
-                color: #0E2F76;
-            }
-
-            QMenu::item:selected {
-                background: #E7F0FA;
-            }
-        """)
-
-        shapes = [
-            "Line",
-            "Circle",
-            "Rectangle",
-            "Square",
-            "Triangle",
-            "Arrow",
-        ]
-
-        for shape in shapes:
-
-            action = QAction(
-                shape,
-                self
-            )
-
-            action.triggered.connect(
-                lambda
-                checked=False,
-                s=shape:
-                self.select_shape(
-                    s
-                )
-            )
-
-            menu.addAction(
-                action
-            )
-
-        menu.exec_(
-            self.shape_button.mapToGlobal(
-                QPoint(
-                    0,
-                    self.shape_button.height()
-                )
-            )
-        )
-
-    # ========================================================
-    # SELECT SHAPE
-    # ========================================================
-
-    def select_shape(
-        self,
-        shape
-    ):
-
-        self.selected_shape = (
-            shape
-        )
-
-        self.set_tool(
-            "shape"
-        )
-
     # ========================================================
     # COLOR
     # ========================================================
@@ -2888,9 +2462,7 @@ class WhiteboardPage(
         color
     ):
 
-        self.current_color = (
-            color
-        )
+        self.current_color = color
 
         self.canvas.set_color(
             color
@@ -2900,8 +2472,12 @@ class WhiteboardPage(
             "pen"
         )
 
+        self.gesture_status.setText(
+            "Color Selected • Open Palm = Cursor"
+        )
+
     # ========================================================
-    # BRUSH
+    # SIZE
     # ========================================================
 
     def change_brush_size(
@@ -2958,254 +2534,54 @@ class WhiteboardPage(
             self,
             "Clear Whiteboard",
             "Are you sure you want to clear the whiteboard?",
-            QMessageBox.Yes
-            |
+            QMessageBox.Yes |
             QMessageBox.No,
             QMessageBox.No
         )
 
-        if (
-            reply
-            ==
-            QMessageBox.Yes
-        ):
+        if reply == QMessageBox.Yes:
 
             self.canvas.clear_canvas()
 
     # ========================================================
-    # MEDIAPIPE
-    # ========================================================
-
-    def setup_mediapipe(
-        self
-    ):
-
-        if mp is None:
-
-            return
-
-        try:
-
-            self.mp_hands = (
-                mp.solutions.hands
-            )
-
-            self.mp_drawing = (
-                mp.solutions.drawing_utils
-            )
-
-            self.hands = (
-                self.mp_hands.Hands(
-                    static_image_mode=False,
-                    max_num_hands=1,
-                    model_complexity=0,
-                    min_detection_confidence=0.55,
-                    min_tracking_confidence=0.55
-                )
-            )
-
-        except Exception:
-
-            self.hands = None
-
-    # ========================================================
-    # FINGER DETECTION
-    # ========================================================
-
-    def finger_extended(
-        self,
-        landmarks,
-        tip,
-        pip
-    ):
-
-        return (
-            landmarks[tip].y
-            <
-            landmarks[pip].y
-            -
-            0.015
-        )
-
-    # ========================================================
-    # GESTURE DETECTION
-    # ========================================================
-
-    def detect_gesture(
-        self,
-        hand
-    ):
-
-        landmarks = (
-            hand.landmark
-        )
-
-        index_up = (
-            self.finger_extended(
-                landmarks,
-                self.mp_hands.HandLandmark.INDEX_FINGER_TIP,
-                self.mp_hands.HandLandmark.INDEX_FINGER_PIP
-            )
-        )
-
-        middle_up = (
-            self.finger_extended(
-                landmarks,
-                self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP,
-                self.mp_hands.HandLandmark.MIDDLE_FINGER_PIP
-            )
-        )
-
-        ring_up = (
-            self.finger_extended(
-                landmarks,
-                self.mp_hands.HandLandmark.RING_FINGER_TIP,
-                self.mp_hands.HandLandmark.RING_FINGER_PIP
-            )
-        )
-
-        pinky_up = (
-            self.finger_extended(
-                landmarks,
-                self.mp_hands.HandLandmark.PINKY_TIP,
-                self.mp_hands.HandLandmark.PINKY_PIP
-            )
-        )
-
-        index_tip = landmarks[
-            self.mp_hands.HandLandmark.INDEX_FINGER_TIP
-        ]
-
-        middle_tip = landmarks[
-            self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP
-        ]
-
-        wrist = landmarks[
-            self.mp_hands.HandLandmark.WRIST
-        ]
-
-        index_mcp = landmarks[
-            self.mp_hands.HandLandmark.INDEX_FINGER_MCP
-        ]
-
-        hand_scale = math.hypot(
-            index_mcp.x
-            -
-            wrist.x,
-
-            index_mcp.y
-            -
-            wrist.y
-        )
-
-        hand_scale = max(
-            hand_scale,
-            0.05
-        )
-
-        finger_distance = math.hypot(
-            index_tip.x
-            -
-            middle_tip.x,
-
-            index_tip.y
-            -
-            middle_tip.y
-        )
-
-        # ====================================================
-        # INDEX + MIDDLE TOGETHER
-        # ====================================================
-
-        if (
-            index_up
-            and
-            middle_up
-            and
-            not ring_up
-            and
-            not pinky_up
-            and
-            finger_distance
-            <=
-            hand_scale * 0.55
-        ):
-
-            return "DRAW"
-
-        # ====================================================
-        # CLOSED PALM
-        # ====================================================
-
-        if (
-            not index_up
-            and
-            not middle_up
-            and
-            not ring_up
-            and
-            not pinky_up
-        ):
-
-            return "CLICK"
-
-        # ====================================================
-        # OPEN PALM
-        # ====================================================
-
-        if (
-            index_up
-            and
-            middle_up
-            and
-            ring_up
-            and
-            pinky_up
-        ):
-
-            return "CURSOR"
-
-        return "IDLE"
-
-    # ========================================================
-    # START CAMERA
+    # CAMERA
     # ========================================================
 
     def start_camera(
         self
     ):
 
+        # The Whiteboard no longer opens the webcam directly. Drawing is done
+        # with the Virtual Mouse (move cursor + index+middle together to
+        # draw), so opening the camera here would fight the Virtual Mouse.
+        # Returning immediately keeps the webcam free for the mouse.
+        return
+
         if self.camera_running:
 
             return
 
-        camera_indices = []
+        indexes = []
 
-        if (
-            self.active_camera_index
-            is not None
-        ):
+        if self.active_camera_index is not None:
 
-            camera_indices.append(
+            indexes.append(
                 self.active_camera_index
             )
 
-        camera_indices.extend([
-            0,
-            1,
-            2,
-            3
-        ])
+        indexes.extend(
+            [0, 1, 2, 3]
+        )
 
-        checked = set()
+        tested = set()
 
-        for index in camera_indices:
+        for index in indexes:
 
-            if index in checked:
+            if index in tested:
 
                 continue
 
-            checked.add(
+            tested.add(
                 index
             )
 
@@ -3224,40 +2600,44 @@ class WhiteboardPage(
 
             if camera.isOpened():
 
-                camera.set(
-                    cv2.CAP_PROP_FRAME_WIDTH,
-                    640
-                )
+                self.camera = camera
 
-                camera.set(
-                    cv2.CAP_PROP_FRAME_HEIGHT,
-                    480
-                )
+                self.camera_index = index
 
-                camera.set(
-                    cv2.CAP_PROP_FPS,
-                    30
-                )
-
-                self.camera = (
-                    camera
-                )
-
-                self.camera_running = (
-                    True
-                )
-
-                self.camera_timer.start(
-                    30
-                )
-
-                return
+                break
 
             camera.release()
 
-        self.camera_overlay.setText(
-            "Camera unavailable"
+        if self.camera is None:
+
+            self.camera_label.setText(
+                "Camera unavailable"
+            )
+
+            return
+
+        self.camera.set(
+            cv2.CAP_PROP_FRAME_WIDTH,
+            CAMERA_WIDTH
         )
+
+        self.camera.set(
+            cv2.CAP_PROP_FRAME_HEIGHT,
+            CAMERA_HEIGHT
+        )
+
+        self.camera.set(
+            cv2.CAP_PROP_FPS,
+            30
+        )
+
+        self.camera_running = True
+
+        self.camera_timer.start(
+            30
+        )
+
+        self.camera_label.raise_()
 
     # ========================================================
     # STOP CAMERA
@@ -3267,307 +2647,600 @@ class WhiteboardPage(
         self
     ):
 
-        self.camera_running = (
-            False
-        )
+        self.camera_running = False
 
-        if self.camera_timer.isActive():
+        self.camera_timer.stop()
 
-            self.camera_timer.stop()
-
-        if self.camera is not None:
+        if self.camera:
 
             self.camera.release()
 
             self.camera = None
 
+        self.finish_gesture_drawing()
+
+        self.camera_label.setText(
+            "Camera"
+        )
+
     # ========================================================
-    # CAMERA → SCREEN
+    # CAMERA UPDATE
     # ========================================================
 
-    def camera_to_screen(
-        self,
-        x,
-        y
+    def update_camera(
+        self
     ):
 
-        screen = (
-            QApplication.primaryScreen()
+        # The Whiteboard does not open its own webcam. It mirrors the
+        # Virtual Mouse's camera feed into the small preview, so both
+        # features share one camera and never conflict.
+        if not self.camera:
+
+            self.update_shared_preview()
+            return
+
+        success, frame = (
+            self.camera.read()
         )
 
-        if screen is None:
-
-            return None
-
-        geometry = (
-            screen.geometry()
-        )
-
-        x = max(
-            0.0,
-            min(
-                1.0,
-                x
-            )
-        )
-
-        y = max(
-            0.0,
-            min(
-                1.0,
-                y
-            )
-        )
-
-        screen_x = (
-            geometry.left()
-            +
-            int(
-                x
-                *
-                (
-                    geometry.width()
-                    -
-                    1
-                )
-            )
-        )
-
-        screen_y = (
-            geometry.top()
-            +
-            int(
-                y
-                *
-                (
-                    geometry.height()
-                    -
-                    1
-                )
-            )
-        )
-
-        return QPoint(
-            screen_x,
-            screen_y
-        )
-
-    # ========================================================
-    # OPEN PALM = SYSTEM CURSOR
-    # ========================================================
-
-    def move_system_cursor(
-        self,
-        hand
-    ):
-
-        index_tip = hand.landmark[
-            self.mp_hands.HandLandmark.INDEX_FINGER_TIP
-        ]
-
-        target = (
-            self.camera_to_screen(
-                index_tip.x,
-                index_tip.y
-            )
-        )
-
-        if target is None:
+        if not success:
 
             return
 
-        if (
-            self.cursor_x
-            is None
-        ):
+        frame = cv2.flip(
+            frame,
+            1
+        )
 
-            self.cursor_x = (
-                target.x()
+        gesture = "None"
+
+        hand = None
+
+        if self.hands is not None:
+
+            rgb = cv2.cvtColor(
+                frame,
+                cv2.COLOR_BGR2RGB
             )
 
-            self.cursor_y = (
-                target.y()
+            rgb.flags.writeable = False
+
+            results = self.hands.process(
+                rgb
+            )
+
+            rgb.flags.writeable = True
+
+            if results.multi_hand_landmarks:
+
+                hand = (
+                    results.multi_hand_landmarks[0]
+                )
+
+                self.mp_drawing.draw_landmarks(
+                    frame,
+                    hand,
+                    self.mp_hands.HAND_CONNECTIONS
+                )
+
+                gesture = (
+                    self.detect_gesture(
+                        hand
+                    )
+                )
+
+        self.current_gesture = gesture
+
+        if hand:
+
+            self.process_gesture(
+                gesture,
+                hand
             )
 
         else:
 
-            self.cursor_x = (
-                self.cursor_x
-                *
-                (
-                    1
-                    -
-                    self.cursor_smoothing
-                )
-                +
-                target.x()
-                *
-                self.cursor_smoothing
+            self.finish_gesture_drawing()
+
+            self.gesture_status.setText(
+                "No Hand Detected"
             )
 
-            self.cursor_y = (
-                self.cursor_y
-                *
-                (
-                    1
-                    -
-                    self.cursor_smoothing
-                )
-                +
-                target.y()
-                *
-                self.cursor_smoothing
-            )
-
-        QCursor.setPos(
-            int(
-                self.cursor_x
-            ),
-            int(
-                self.cursor_y
-            )
+        self.display_camera(
+            frame
         )
 
     # ========================================================
-    # CLOSED PALM = REAL LEFT CLICK
+    # SHARED PREVIEW (from the Virtual Mouse)
     # ========================================================
 
-    def click_under_cursor(
-        self
-    ):
+    def update_shared_preview(self):
 
-        current_time = (
-            time.monotonic()
+        vmouse = getattr(
+            self.parent_window, "virtual_mouse", None
         )
 
-        if (
-            current_time
-            -
-            self.last_click_time
-            <
-            0.65
+        frame = None
+
+        if vmouse is not None and hasattr(
+            vmouse, "get_latest_frame"
         ):
+
+            frame = vmouse.get_latest_frame()
+
+        if frame is None:
+
+            if hasattr(self, "camera_label"):
+
+                self.camera_label.setText(
+                    "Camera off  (start Virtual Mouse)"
+                )
 
             return
 
-        self.last_click_time = (
-            current_time
-        )
-
-        screen_position = (
-            QCursor.pos()
-        )
-
-        widget = (
-            QApplication.widgetAt(
-                screen_position
-            )
-        )
-
-        if widget is None:
-
-            return
-
-        # ----------------------------------------------------
-        # FIND BUTTON
-        # ----------------------------------------------------
-
-        target = widget
-
-        while target is not None:
-
-            if isinstance(
-                target,
-                QPushButton
-            ):
-
-                local_position = (
-                    target.mapFromGlobal(
-                        screen_position
-                    )
-                )
-
-                QTest.mouseClick(
-                    target,
-                    Qt.LeftButton,
-                    Qt.NoModifier,
-                    local_position
-                )
-
-                return
-
-            target = (
-                target.parentWidget()
-            )
-
-        # ----------------------------------------------------
-        # SLIDER
-        # ----------------------------------------------------
-
-        if isinstance(
-            widget,
-            QSlider
-        ):
-
-            local_position = (
-                widget.mapFromGlobal(
-                    screen_position
-                )
-            )
-
-            QTest.mouseClick(
-                widget,
-                Qt.LeftButton,
-                Qt.NoModifier,
-                local_position
-            )
-
-    # ========================================================
-    # SCREEN → CANVAS
-    # ========================================================
-
-    def screen_to_canvas(
-        self,
-        screen_point
-    ):
-
-        local_point = (
-            self.canvas.mapFromGlobal(
-                screen_point
-            )
-        )
-
-        if not (
-            self.canvas.rect().contains(
-                local_point
-            )
-        ):
-
-            return None
-
-        return QPoint(
-            local_point.x(),
-            local_point.y()
+        self.display_camera(
+            frame
         )
 
     # ========================================================
-    # INDEX + MIDDLE = DRAW
+    # GESTURE DETECTION
     # ========================================================
 
-    def draw_gesture_segment(
+    def detect_gesture(
         self,
         hand
     ):
 
-        index_tip = hand.landmark[
+        landmarks = hand.landmark
+
+        thumb_tip = landmarks[
+            self.mp_hands.HandLandmark.THUMB_TIP
+        ]
+
+        thumb_ip = landmarks[
+            self.mp_hands.HandLandmark.THUMB_IP
+        ]
+
+        index_tip = landmarks[
             self.mp_hands.HandLandmark.INDEX_FINGER_TIP
         ]
 
-        middle_tip = hand.landmark[
+        index_pip = landmarks[
+            self.mp_hands.HandLandmark.INDEX_FINGER_PIP
+        ]
+
+        middle_tip = landmarks[
             self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP
         ]
 
-        # Midpoint between the two fingers.
+        middle_pip = landmarks[
+            self.mp_hands.HandLandmark.MIDDLE_FINGER_PIP
+        ]
+
+        ring_tip = landmarks[
+            self.mp_hands.HandLandmark.RING_FINGER_TIP
+        ]
+
+        ring_pip = landmarks[
+            self.mp_hands.HandLandmark.RING_FINGER_PIP
+        ]
+
+        pinky_tip = landmarks[
+            self.mp_hands.HandLandmark.PINKY_TIP
+        ]
+
+        pinky_pip = landmarks[
+            self.mp_hands.HandLandmark.PINKY_PIP
+        ]
+
+        # ====================================================
+        # FINGER STATES
+        # ====================================================
+
+        index_up = (
+            index_tip.y
+            <
+            index_pip.y
+            - 0.015
+        )
+
+        middle_up = (
+            middle_tip.y
+            <
+            middle_pip.y
+            - 0.015
+        )
+
+        ring_up = (
+            ring_tip.y
+            <
+            ring_pip.y
+            - 0.015
+        )
+
+        pinky_up = (
+            pinky_tip.y
+            <
+            pinky_pip.y
+            - 0.015
+        )
+
+        # ====================================================
+        # INDEX + MIDDLE DISTANCE
+        # ====================================================
+
+        index_middle_distance = math.sqrt(
+            (
+                index_tip.x
+                -
+                middle_tip.x
+            ) ** 2
+            +
+            (
+                index_tip.y
+                -
+                middle_tip.y
+            ) ** 2
+        )
+
+        # ====================================================
+        # DRAW
+        # MUST BE CHECKED BEFORE OPEN PALM
+        # ====================================================
+
+        if (
+            index_up
+            and
+            middle_up
+            and
+            not ring_up
+            and
+            not pinky_up
+            and
+            index_middle_distance
+            <
+            DRAW_FINGER_DISTANCE
+        ):
+
+            return "Draw"
+
+        # ====================================================
+        # CLOSED PALM
+        # ====================================================
+
+        fingers_closed = (
+            not index_up
+            and
+            not middle_up
+            and
+            not ring_up
+            and
+            not pinky_up
+        )
+
+        thumb_closed_distance = math.sqrt(
+            (
+                thumb_tip.x
+                -
+                thumb_ip.x
+            ) ** 2
+            +
+            (
+                thumb_tip.y
+                -
+                thumb_ip.y
+            ) ** 2
+        )
+
+        if fingers_closed:
+
+            return "Closed Palm"
+
+        # ====================================================
+        # OPEN PALM
+        # ====================================================
+
+        if (
+            index_up
+            and
+            middle_up
+            and
+            ring_up
+            and
+            pinky_up
+        ):
+
+            return "Open Palm"
+
+        return "None"
+
+    # ========================================================
+    # PROCESS GESTURE
+    # ========================================================
+
+    def process_gesture(
+        self,
+        gesture,
+        hand
+    ):
+
+        # ====================================================
+        # OPEN PALM
+        # MOVE ONLY
+        # ====================================================
+
+        if gesture == "Open Palm":
+
+            self.finish_gesture_drawing()
+
+            self.move_cursor(
+                hand
+            )
+
+            self.gesture_status.setText(
+                "● Open Palm = Cursor"
+            )
+
+            self.gesture_status.setStyleSheet("""
+                QLabel {
+                    background-color: #EAF8EF;
+                    color: #2A9561;
+                    border-radius: 14px;
+                    padding: 6px 14px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+            """)
+
+        # ====================================================
+        # CLOSED PALM
+        # CLICK ONLY
+        #
+        # IMPORTANT:
+        # No move_cursor() here.
+        # ====================================================
+
+        elif gesture == "Closed Palm":
+
+            self.finish_gesture_drawing()
+
+            self.closed_palm_click()
+
+            self.gesture_status.setText(
+                "● Closed Palm = Left Click"
+            )
+
+            self.gesture_status.setStyleSheet("""
+                QLabel {
+                    background-color: #FFF2E2;
+                    color: #B56C19;
+                    border-radius: 14px;
+                    padding: 6px 14px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+            """)
+
+        # ====================================================
+        # DRAW
+        # ====================================================
+
+        elif gesture == "Draw":
+
+            self.draw_from_gesture(
+                hand
+            )
+
+            self.gesture_status.setText(
+                "● Index + Middle Together = Draw"
+            )
+
+            self.gesture_status.setStyleSheet("""
+                QLabel {
+                    background-color: #EAF2FF;
+                    color: #0E2F76;
+                    border-radius: 14px;
+                    padding: 6px 14px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+            """)
+
+        # ====================================================
+        # NONE
+        # ====================================================
+
+        else:
+
+            self.finish_gesture_drawing()
+
+            self.gesture_status.setText(
+                "Open Palm = Cursor • Closed Palm = Click"
+            )
+
+            self.gesture_status.setStyleSheet("""
+                QLabel {
+                    background-color: #E5F0FA;
+                    color: #5474A8;
+                    border-radius: 14px;
+                    padding: 6px 14px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+            """)
+
+        self.previous_gesture = gesture
+
+    # ========================================================
+    # MOVE CURSOR
+    # ========================================================
+
+    def move_cursor(
+        self,
+        hand
+    ):
+
+        landmarks = hand.landmark
+
+        index_tip = landmarks[
+            self.mp_hands.HandLandmark.INDEX_FINGER_TIP
+        ]
+
+        target_x = (
+            index_tip.x
+            *
+            self.screen_width
+        )
+
+        target_y = (
+            index_tip.y
+            *
+            self.screen_height
+        )
+
+        # ====================================================
+        # DEADZONE
+        # ====================================================
+
+        if (
+            self.last_hand_x is not None
+            and
+            self.last_hand_y is not None
+        ):
+
+            if (
+                abs(
+                    index_tip.x
+                    -
+                    self.last_hand_x
+                )
+                <
+                CURSOR_DEADZONE
+                and
+                abs(
+                    index_tip.y
+                    -
+                    self.last_hand_y
+                )
+                <
+                CURSOR_DEADZONE
+            ):
+
+                return
+
+        self.last_hand_x = index_tip.x
+
+        self.last_hand_y = index_tip.y
+
+        # ====================================================
+        # SMOOTHING
+        # ====================================================
+
+        self.cursor_x += (
+            target_x
+            -
+            self.cursor_x
+        ) * CURSOR_SMOOTHING
+
+        self.cursor_y += (
+            target_y
+            -
+            self.cursor_y
+        ) * CURSOR_SMOOTHING
+
+        self.cursor_x = max(
+            1,
+            min(
+                self.screen_width - 2,
+                self.cursor_x
+            )
+        )
+
+        self.cursor_y = max(
+            1,
+            min(
+                self.screen_height - 2,
+                self.cursor_y
+            )
+        )
+
+        try:
+
+            pyautogui.moveTo(
+                int(self.cursor_x),
+                int(self.cursor_y),
+                duration=0
+            )
+
+        except Exception:
+
+            pass
+
+    # ========================================================
+    # CLOSED PALM CLICK
+    # ========================================================
+
+    def closed_palm_click(
+        self
+    ):
+
+        now = time.monotonic()
+
+        # ====================================================
+        # ONLY CLICK ON NEW CLOSED-PALM EVENT
+        # ====================================================
+
+        if (
+            self.previous_gesture
+            ==
+            "Closed Palm"
+        ):
+
+            return
+
+        if (
+            now
+            -
+            self.last_click_time
+            <
+            CLICK_COOLDOWN
+        ):
+
+            return
+
+        self.last_click_time = now
+
+        try:
+
+            pyautogui.click()
+
+        except Exception:
+
+            pass
+
+    # ========================================================
+    # GET DRAW POINT
+    # ========================================================
+
+    def get_draw_point(
+        self,
+        hand
+    ):
+
+        landmarks = hand.landmark
+
+        index_tip = landmarks[
+            self.mp_hands.HandLandmark.INDEX_FINGER_TIP
+        ]
+
+        middle_tip = landmarks[
+            self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP
+        ]
+
+        # ====================================================
+        # MIDPOINT BETWEEN INDEX + MIDDLE
+        # ====================================================
+
         x = (
             index_tip.x
             +
@@ -3580,92 +3253,241 @@ class WhiteboardPage(
             middle_tip.y
         ) / 2.0
 
-        screen_point = (
-            self.camera_to_screen(
-                x,
-                y
+        canvas_width = (
+            self.canvas.width()
+        )
+
+        canvas_height = (
+            self.canvas.height()
+        )
+
+        px = int(
+            x
+            *
+            canvas_width
+        )
+
+        py = int(
+            y
+            *
+            canvas_height
+        )
+
+        px = max(
+            0,
+            min(
+                canvas_width - 1,
+                px
             )
         )
 
-        if screen_point is None:
-
-            return
-
-        canvas_point = (
-            self.screen_to_canvas(
-                screen_point
+        py = max(
+            0,
+            min(
+                canvas_height - 1,
+                py
             )
         )
 
-        # ====================================================
-        # OUTSIDE WHITEBOARD
-        # ====================================================
+        return QPoint(
+            px,
+            py
+        )
 
-        if canvas_point is None:
+    # ========================================================
+    # DRAW FROM GESTURE
+    # ========================================================
 
-            if self.gesture_drawing:
+    def draw_from_gesture(
+        self,
+        hand
+    ):
 
-                self.gesture_drawing = (
-                    False
-                )
-
-                self.last_draw_point = (
-                    None
-                )
-
-                self.canvas.stroke_points = []
-
-            return
+        point = self.get_draw_point(
+            hand
+        )
 
         # ====================================================
-        # START DRAWING
+        # SHOW CIRCLE CURSOR
+        # ====================================================
+
+        self.canvas.set_gesture_cursor(
+            point,
+            True
+        )
+
+        # ====================================================
+        # START NEW STROKE
         # ====================================================
 
         if not self.gesture_drawing:
 
-            self.canvas.save_state()
+            self.gesture_drawing = True
 
-            self.gesture_drawing = (
-                True
-            )
-
-            self.last_draw_point = (
-                canvas_point
-            )
-
-            self.canvas.stroke_points = [
-                canvas_point
+            self.gesture_points = [
+                point
             ]
 
-            if self.current_tool == "shape":
+            self.last_draw_point = point
 
-                return
-
-            self.canvas.draw_segment(
-                canvas_point,
-                canvas_point
-            )
+            self.canvas.save_state()
 
             return
 
         # ====================================================
-        # CONTINUE DRAWING
+        # DRAW
         # ====================================================
 
-        self.canvas.stroke_points.append(
-            canvas_point
-        )
+        if self.last_draw_point:
 
-        if self.current_tool != "shape":
-
-            self.canvas.draw_segment(
-                self.last_draw_point,
-                canvas_point
+            distance = math.sqrt(
+                (
+                    point.x()
+                    -
+                    self.last_draw_point.x()
+                ) ** 2
+                +
+                (
+                    point.y()
+                    -
+                    self.last_draw_point.y()
+                ) ** 2
             )
 
-        self.last_draw_point = (
-            canvas_point
+            # Ignore tiny jitter.
+            if distance >= 1:
+
+                self.canvas.draw_gesture_line(
+                    self.last_draw_point,
+                    point
+                )
+
+                self.gesture_points.append(
+                    point
+                )
+
+                self.last_draw_point = (
+                    point
+                )
+
+    # ========================================================
+    # FINISH DRAWING
+    # ========================================================
+
+    def on_canvas_stroke_finished(
+        self,
+        points
+    ):
+        """Auto-shape a finished mouse (Virtual Mouse) pen stroke."""
+
+        if len(points) < 2:
+
+            return
+
+        mode = getattr(
+            self.canvas,
+            "shape_mode",
+            "auto"
         )
+
+        if mode == "auto":
+
+            if len(points) < MIN_SHAPE_POINTS:
+
+                return
+
+            self.auto_correct_shape(
+                points
+            )
+
+        else:
+
+            self.force_shape(
+                points,
+                mode
+            )
+
+    # ========================================================
+    # FORCE A CHOSEN SHAPE
+    #
+    # Used when the user picks a specific shape in the Shape menu.
+    # The shape size follows the stroke's bounding box.
+    # ========================================================
+
+    def force_shape(
+        self,
+        points,
+        mode
+    ):
+
+        xs = [p.x() for p in points]
+        ys = [p.y() for p in points]
+
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
+        if (max_x - min_x) < 8 and (max_y - min_y) < 8:
+
+            return
+
+        if mode == "line":
+
+            self.replace_with_line(
+                points[0],
+                points[-1]
+            )
+
+            return
+
+        if mode == "circle":
+
+            self.replace_with_circle(
+                points
+            )
+
+            return
+
+        if mode == "rectangle":
+
+            polygon = [
+                QPoint(min_x, min_y),
+                QPoint(max_x, min_y),
+                QPoint(max_x, max_y),
+                QPoint(min_x, max_y),
+            ]
+
+            self.replace_with_polygon(
+                polygon,
+                "rectangle"
+            )
+
+            return
+
+        if mode == "triangle":
+
+            center_x = (min_x + max_x) // 2
+
+            polygon = [
+                QPoint(center_x, min_y),
+                QPoint(max_x, max_y),
+                QPoint(min_x, max_y),
+            ]
+
+            self.replace_with_polygon(
+                polygon,
+                "triangle"
+            )
+
+            return
+
+        if mode == "arrow":
+
+            self.replace_with_line(
+                points[0],
+                points[-1]
+            )
+
+            return
 
     # ========================================================
     # FINISH GESTURE DRAWING
@@ -3677,304 +3499,916 @@ class WhiteboardPage(
 
         if not self.gesture_drawing:
 
+            self.canvas.set_gesture_cursor(
+                None,
+                False
+            )
+
             return
 
-        self.gesture_drawing = (
+        points = list(
+            self.gesture_points
+        )
+
+        self.gesture_drawing = False
+
+        self.gesture_points = []
+
+        self.last_draw_point = None
+
+        self.canvas.set_gesture_cursor(
+            None,
             False
         )
 
-        self.last_draw_point = (
-            None
-        )
-
-        points = list(
-            self.canvas.stroke_points
-        )
-
-        self.canvas.stroke_points = []
-
-        if len(points) < 2:
-
-            return
-
         # ====================================================
-        # SHAPE MODE
+        # AUTO SHAPE
         # ====================================================
 
-        if self.current_tool == "shape":
-
-            self.canvas.draw_auto_shape(
-                points
-            )
-
-        # ====================================================
-        # PEN AUTO SHAPE
-        # ====================================================
-
-        elif (
+        if (
             self.current_tool
             ==
             "pen"
             and
             len(points)
             >=
-            5
+            MIN_SHAPE_POINTS
         ):
 
-            self.canvas.auto_correct_pen_stroke(
+            self.auto_correct_shape(
                 points
             )
 
     # ========================================================
-    # CAMERA UPDATE
+    # AUTO SHAPE RECOGNITION
     # ========================================================
 
-    def update_camera(
-        self
+    def auto_correct_shape(
+        self,
+        points
     ):
 
-        if (
-            not self.camera_running
-            or
-            self.camera is None
+        if len(points) < MIN_SHAPE_POINTS:
+
+            return
+
+        # ====================================================
+        # REMOVE DUPLICATES
+        # ====================================================
+
+        clean = []
+
+        for point in points:
+
+            if not clean:
+
+                clean.append(
+                    point
+                )
+
+                continue
+
+            previous = clean[-1]
+
+            distance = math.sqrt(
+                (
+                    point.x()
+                    -
+                    previous.x()
+                ) ** 2
+                +
+                (
+                    point.y()
+                    -
+                    previous.y()
+                ) ** 2
+            )
+
+            if distance >= 2:
+
+                clean.append(
+                    point
+                )
+
+        points = clean
+
+        if len(points) < MIN_SHAPE_POINTS:
+
+            return
+
+        # ====================================================
+        # BOUNDING BOX
+        # ====================================================
+
+        xs = [
+            p.x()
+            for p in points
+        ]
+
+        ys = [
+            p.y()
+            for p in points
+        ]
+
+        min_x = min(xs)
+
+        max_x = max(xs)
+
+        min_y = min(ys)
+
+        max_y = max(ys)
+
+        width = (
+            max_x
+            -
+            min_x
+        )
+
+        height = (
+            max_y
+            -
+            min_y
+        )
+
+        if width < 8 or height < 8:
+
+            return
+
+        # ====================================================
+        # PATH LENGTH
+        # ====================================================
+
+        path_length = 0.0
+
+        for i in range(
+            1,
+            len(points)
         ):
 
-            return
-
-        success, frame = (
-            self.camera.read()
-        )
-
-        if not success:
-
-            return
-
-        # Mirror camera.
-        frame = cv2.flip(
-            frame,
-            1
-        )
-
-        gesture = "IDLE"
-
-        hand = None
-
-        # ====================================================
-        # MEDIAPIPE
-        # ====================================================
-
-        if self.hands is not None:
-
-            rgb = cv2.cvtColor(
-                frame,
-                cv2.COLOR_BGR2RGB
+            dx = (
+                points[i].x()
+                -
+                points[i - 1].x()
             )
 
-            rgb.flags.writeable = (
-                False
+            dy = (
+                points[i].y()
+                -
+                points[i - 1].y()
             )
 
-            results = (
-                self.hands.process(
-                    rgb
+            path_length += math.sqrt(
+                dx * dx
+                +
+                dy * dy
+            )
+
+        if path_length <= 0:
+
+            return
+
+        # ====================================================
+        # END DISTANCE
+        # ====================================================
+
+        start = points[0]
+
+        end = points[-1]
+
+        end_distance = math.sqrt(
+            (
+                end.x()
+                -
+                start.x()
+            ) ** 2
+            +
+            (
+                end.y()
+                -
+                start.y()
+            ) ** 2
+        )
+
+        # ====================================================
+        # CLOSEDNESS
+        # ====================================================
+
+        diagonal = math.sqrt(
+            width * width
+            +
+            height * height
+        )
+
+        if diagonal <= 0:
+
+            return
+
+        closed_ratio = (
+            end_distance
+            /
+            diagonal
+        )
+
+        is_closed = (
+            closed_ratio
+            <
+            0.30
+        )
+
+        # ====================================================
+        # STRAIGHT LINE (open strokes)
+        # ====================================================
+
+        direct_ratio = (
+            end_distance
+            /
+            path_length
+        )
+
+        if (
+            not is_closed
+            and
+            direct_ratio >= 0.90
+        ):
+
+            self.replace_with_line(
+                points[0],
+                points[-1]
+            )
+
+            return
+
+        # ====================================================
+        # POLYGON TEST (triangle / square / rectangle)
+        #
+        # IMPORTANT: polygons are tested BEFORE the circle so a drawn
+        # square / rectangle is NOT mis-detected as a circle.
+        # ====================================================
+
+        polygon = self.approximate_polygon(
+            points
+        )
+
+        corner_count = len(
+            polygon
+        )
+
+        # ----------------------------------------------------
+        # TRIANGLE
+        # ----------------------------------------------------
+
+        if (
+            is_closed
+            and
+            corner_count == 3
+        ):
+
+            self.replace_with_polygon(
+                polygon,
+                "triangle"
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # SQUARE / RECTANGLE
+        # ----------------------------------------------------
+
+        if (
+            is_closed
+            and
+            corner_count == 4
+            and
+            self.is_rectangle(
+                polygon
+            )
+        ):
+
+            self.replace_with_polygon(
+                polygon,
+                "rectangle"
+            )
+
+            return
+
+        # ====================================================
+        # CIRCLE
+        # ====================================================
+
+        circle_score = (
+            self.calculate_circle_score(
+                points,
+                min_x,
+                max_x,
+                min_y,
+                max_y
+            )
+        )
+
+        if (
+            is_closed
+            and
+            circle_score >= 0.72
+        ):
+
+            self.replace_with_circle(
+                points
+            )
+
+            return
+
+    # ========================================================
+    # CIRCLE SCORE
+    # ========================================================
+
+    def calculate_circle_score(
+        self,
+        points,
+        min_x,
+        max_x,
+        min_y,
+        max_y
+    ):
+
+        width = (
+            max_x
+            -
+            min_x
+        )
+
+        height = (
+            max_y
+            -
+            min_y
+        )
+
+        if width <= 0 or height <= 0:
+
+            return 0.0
+
+        aspect_ratio = (
+            min(width, height)
+            /
+            max(width, height)
+        )
+
+        # Circle should be reasonably round.
+        if aspect_ratio < 0.65:
+
+            return 0.0
+
+        # ====================================================
+        # CENTER
+        # ====================================================
+
+        center_x = (
+            min_x
+            +
+            max_x
+        ) / 2.0
+
+        center_y = (
+            min_y
+            +
+            max_y
+        ) / 2.0
+
+        radii = []
+
+        for point in points:
+
+            dx = (
+                point.x()
+                -
+                center_x
+            )
+
+            dy = (
+                point.y()
+                -
+                center_y
+            )
+
+            radius = math.sqrt(
+                dx * dx
+                +
+                dy * dy
+            )
+
+            radii.append(
+                radius
+            )
+
+        if not radii:
+
+            return 0.0
+
+        average_radius = (
+            sum(radii)
+            /
+            len(radii)
+        )
+
+        if average_radius <= 2:
+
+            return 0.0
+
+        variance = sum(
+            (
+                radius
+                -
+                average_radius
+            ) ** 2
+            for radius in radii
+        ) / len(radii)
+
+        standard_deviation = math.sqrt(
+            variance
+        )
+
+        radial_consistency = max(
+            0.0,
+            1.0
+            -
+            (
+                standard_deviation
+                /
+                average_radius
+            )
+        )
+
+        # ====================================================
+        # CIRCULARITY
+        # ====================================================
+
+        contour = []
+
+        for point in points:
+
+            contour.append([
+                [
+                    point.x(),
+                    point.y()
+                ]
+            ])
+
+        contour = (
+            cv2.UMat(
+                cv2.array(
+                    contour
                 )
             )
+            if False
+            else None
+        )
 
-            rgb.flags.writeable = (
+        # Use polygon perimeter/area manually.
+        area = (
+            math.pi
+            *
+            (
+                average_radius
+                ** 2
+            )
+        )
+
+        perimeter = (
+            2
+            *
+            math.pi
+            *
+            average_radius
+        )
+
+        circularity = (
+            (
+                4
+                *
+                math.pi
+                *
+                area
+            )
+            /
+            (
+                perimeter
+                *
+                perimeter
+            )
+        )
+
+        # The theoretical value is 1.
+        # Radial consistency carries more weight
+        # for small hand-drawn circles.
+        score = (
+            aspect_ratio
+            *
+            0.35
+            +
+            radial_consistency
+            *
+            0.65
+        )
+
+        return score
+
+    # ========================================================
+    # APPROXIMATE POLYGON
+    # ========================================================
+
+    def approximate_polygon(
+        self,
+        points
+    ):
+
+        contour = []
+
+        for point in points:
+
+            contour.append([
+                float(point.x()),
+                float(point.y())
+            ])
+
+        contour = (
+            np_array(contour)
+        )
+
+        epsilon = max(
+            2.0,
+            cv2.arcLength(
+                contour,
                 True
             )
-
-            if results.multi_hand_landmarks:
-
-                hand = (
-                    results.multi_hand_landmarks[0]
-                )
-
-                gesture = (
-                    self.detect_gesture(
-                        hand
-                    )
-                )
-
-                if (
-                    self.mp_drawing
-                    is not None
-                ):
-
-                    self.mp_drawing.draw_landmarks(
-                        frame,
-                        hand,
-                        self.mp_hands.HAND_CONNECTIONS
-                    )
-
-        current_time = (
-            time.monotonic()
-        )
-
-        # ====================================================
-        # GESTURE STABILIZATION
-        # ====================================================
-
-        if (
-            gesture
-            !=
-            self.gesture_candidate
-        ):
-
-            self.gesture_candidate = (
-                gesture
-            )
-
-            self.gesture_candidate_since = (
-                current_time
-            )
-
-        stable = (
-            current_time
-            -
-            self.gesture_candidate_since
-            >=
-            0.08
-        )
-
-        if stable:
-
-            active_gesture = (
-                self.gesture_candidate
-            )
-
-        else:
-
-            active_gesture = (
-                self.last_gesture
-            )
-
-        # ====================================================
-        # OPEN PALM
-        # ====================================================
-
-        if (
-            hand is not None
-            and
-            active_gesture
-            ==
-            "CURSOR"
-        ):
-
-            self.finish_gesture_drawing()
-
-            self.move_system_cursor(
-                hand
-            )
-
-            self.gesture_status.setText(
-                "● Open Palm — Cursor"
-            )
-
-        # ====================================================
-        # CLOSED PALM
-        # ====================================================
-
-        elif (
-            hand is not None
-            and
-            active_gesture
-            ==
-            "CLICK"
-        ):
-
-            self.finish_gesture_drawing()
-
-            self.click_under_cursor()
-
-            self.gesture_status.setText(
-                "● Closed Palm — LEFT CLICK"
-            )
-
-        # ====================================================
-        # INDEX + MIDDLE
-        # ====================================================
-
-        elif (
-            hand is not None
-            and
-            active_gesture
-            ==
-            "DRAW"
-        ):
-
-            self.draw_gesture_segment(
-                hand
-            )
-
-            self.gesture_status.setText(
-                "● Index + Middle Together — DRAW"
-            )
-
-        # ====================================================
-        # SEPARATED FINGERS
-        # ====================================================
-
-        else:
-
-            self.finish_gesture_drawing()
-
-            if hand is None:
-
-                self.gesture_status.setText(
-                    "● No Hand Detected"
-                )
-
-            else:
-
-                self.gesture_status.setText(
-                    "● Fingers Separate — Drawing OFF"
-                )
-
-        self.last_gesture = (
-            active_gesture
-        )
-
-        # ====================================================
-        # CAMERA DISPLAY
-        # ====================================================
-
-        rgb_frame = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
-        )
-
-        height, width, channels = (
-            rgb_frame.shape
-        )
-
-        bytes_per_line = (
-            channels
             *
-            width
+            0.035
         )
 
-        image = QImage(
-            rgb_frame.data,
-            width,
-            height,
-            bytes_per_line,
-            QImage.Format_RGB888
-        ).copy()
+        approximation = cv2.approxPolyDP(
+            contour,
+            epsilon,
+            True
+        )
 
-        pixmap = (
-            QPixmap.fromImage(
-                image
-            ).scaled(
-                self.camera_overlay.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
+        return [
+            QPoint(
+                int(point[0][0]),
+                int(point[0][1])
+            )
+            for point in approximation
+        ]
+
+    # ========================================================
+    # RECTANGLE CHECK
+    # ========================================================
+
+    def is_rectangle(
+        self,
+        polygon
+    ):
+
+        if len(polygon) != 4:
+
+            return False
+
+        angles = []
+
+        for i in range(4):
+
+            p1 = polygon[
+                i - 1
+            ]
+
+            p2 = polygon[
+                i
+            ]
+
+            p3 = polygon[
+                (i + 1) % 4
+            ]
+
+            v1x = (
+                p1.x()
+                -
+                p2.x()
+            )
+
+            v1y = (
+                p1.y()
+                -
+                p2.y()
+            )
+
+            v2x = (
+                p3.x()
+                -
+                p2.x()
+            )
+
+            v2y = (
+                p3.y()
+                -
+                p2.y()
+            )
+
+            mag1 = math.sqrt(
+                v1x * v1x
+                +
+                v1y * v1y
+            )
+
+            mag2 = math.sqrt(
+                v2x * v2x
+                +
+                v2y * v2y
+            )
+
+            if mag1 == 0 or mag2 == 0:
+
+                return False
+
+            cosine = (
+                (
+                    v1x * v2x
+                    +
+                    v1y * v2y
+                )
+                /
+                (
+                    mag1
+                    *
+                    mag2
+                )
+            )
+
+            cosine = max(
+                -1,
+                min(
+                    1,
+                    cosine
+                )
+            )
+
+            angle = math.degrees(
+                math.acos(
+                    cosine
+                )
+            )
+
+            angles.append(
+                angle
+            )
+
+        # Allow hand-drawn imperfections.
+        for angle in angles:
+
+            if not (
+                70
+                <=
+                angle
+                <=
+                110
+            ):
+
+                return False
+
+        return True
+
+    # ========================================================
+    # REPLACE WITH LINE
+    # ========================================================
+
+    def replace_with_line(
+        self,
+        start,
+        end
+    ):
+
+        self.canvas.undo()
+
+        painter = QPainter(
+            self.canvas.canvas
+            if hasattr(
+                self.canvas,
+                "canvas"
+            )
+            else self.canvas.canvas
+        )
+
+        painter.setRenderHint(
+            QPainter.Antialiasing,
+            True
+        )
+
+        color = QColor(
+            self.current_color
+        )
+
+        color.setAlpha(
+            int(
+                self.opacity_slider.value()
+                *
+                255
+                /
+                100
             )
         )
 
-        self.camera_overlay.setPixmap(
-            pixmap
+        pen = QPen(
+            color,
+            self.brush_slider.value(),
+            Qt.SolidLine,
+            Qt.RoundCap,
+            Qt.RoundJoin
         )
+
+        painter.setPen(
+            pen
+        )
+
+        painter.drawLine(
+            start,
+            end
+        )
+
+        painter.end()
+
+        self.canvas.update()
+
+    # ========================================================
+    # REPLACE WITH CIRCLE
+    # ========================================================
+
+    def replace_with_circle(
+        self,
+        points
+    ):
+
+        self.canvas.undo()
+
+        xs = [
+            p.x()
+            for p in points
+        ]
+
+        ys = [
+            p.y()
+            for p in points
+        ]
+
+        min_x = min(xs)
+
+        max_x = max(xs)
+
+        min_y = min(ys)
+
+        max_y = max(ys)
+
+        width = (
+            max_x
+            -
+            min_x
+        )
+
+        height = (
+            max_y
+            -
+            min_y
+        )
+
+        center_x = (
+            min_x
+            +
+            max_x
+        ) / 2.0
+
+        center_y = (
+            min_y
+            +
+            max_y
+        ) / 2.0
+
+        radius = (
+            min(
+                width,
+                height
+            )
+            /
+            2.0
+        )
+
+        painter = QPainter(
+            self.canvas.canvas
+        )
+
+        painter.setRenderHint(
+            QPainter.Antialiasing,
+            True
+        )
+
+        color = QColor(
+            self.current_color
+        )
+
+        color.setAlpha(
+            int(
+                self.opacity_slider.value()
+                *
+                255
+                /
+                100
+            )
+        )
+
+        painter.setPen(
+            QPen(
+                color,
+                self.brush_slider.value(),
+                Qt.SolidLine,
+                Qt.RoundCap
+            )
+        )
+
+        painter.setBrush(
+            Qt.NoBrush
+        )
+
+        painter.drawEllipse(
+            QPoint(
+                int(center_x),
+                int(center_y)
+            ),
+            int(radius),
+            int(radius)
+        )
+
+        painter.end()
+
+        self.canvas.update()
+
+    # ========================================================
+    # REPLACE WITH POLYGON
+    # ========================================================
+
+    def replace_with_polygon(
+        self,
+        polygon,
+        shape
+    ):
+
+        if len(polygon) < 3:
+
+            return
+
+        self.canvas.undo()
+
+        painter = QPainter(
+            self.canvas.canvas
+        )
+
+        painter.setRenderHint(
+            QPainter.Antialiasing,
+            True
+        )
+
+        color = QColor(
+            self.current_color
+        )
+
+        color.setAlpha(
+            int(
+                self.opacity_slider.value()
+                *
+                255
+                /
+                100
+            )
+        )
+
+        painter.setPen(
+            QPen(
+                color,
+                self.brush_slider.value(),
+                Qt.SolidLine,
+                Qt.RoundCap,
+                Qt.RoundJoin
+            )
+        )
+
+        painter.setBrush(
+            Qt.NoBrush
+        )
+
+        qpolygon = QPolygon(
+            polygon
+        )
+
+        painter.drawPolygon(
+            qpolygon
+        )
+
+        painter.end()
+
+        self.canvas.update()
 
     # ========================================================
     # SAVE
@@ -3989,9 +4423,7 @@ class WhiteboardPage(
                 QStandardPaths.PicturesLocation
             )
             or
-            os.path.expanduser(
-                "~"
-            )
+            os.path.expanduser("~")
         )
 
         default_path = os.path.join(
@@ -4025,12 +4457,60 @@ class WhiteboardPage(
                 "PNG"
             )
 
+            # Also keep a copy in the app's Saved Files folder so the file
+            # shows up in the side-bar "Saved Files" page.
+            try:
+
+                from pathlib import Path
+
+                import shutil
+
+                saved_dir = (
+                    Path(os.getcwd())
+                    / "saved_files"
+                    / "whiteboards"
+                )
+
+                saved_dir.mkdir(
+                    parents=True,
+                    exist_ok=True
+                )
+
+                destination = (
+                    saved_dir
+                    / Path(file_path).name
+                )
+
+                shutil.copyfile(
+                    file_path,
+                    str(destination)
+                )
+
+                # Refresh the Saved Files page so the new file appears.
+                page = getattr(
+                    self.parent_window,
+                    "saved_files",
+                    None
+                )
+
+                if page is not None and hasattr(
+                    page, "refresh_files"
+                ):
+
+                    page.refresh_files()
+
+            except Exception:
+
+                pass
+
             QMessageBox.information(
                 self,
                 "Whiteboard Saved",
                 "Your whiteboard has been saved to:\n\n"
                 +
                 file_path
+                +
+                "\n\nIt also appears in the Saved Files page."
             )
 
         except Exception as e:
@@ -4042,6 +4522,57 @@ class WhiteboardPage(
             )
 
     # ========================================================
+    # CAMERA DISPLAY
+    # ========================================================
+
+    def display_camera(
+        self,
+        frame
+    ):
+
+        frame_rgb = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2RGB
+        )
+
+        height, width, channels = (
+            frame_rgb.shape
+        )
+
+        bytes_per_line = (
+            channels
+            *
+            width
+        )
+
+        from PyQt5.QtGui import QImage
+
+        image = QImage(
+            frame_rgb.data,
+            width,
+            height,
+            bytes_per_line,
+            QImage.Format_RGB888
+        )
+
+        pixmap = QPixmap.fromImage(
+            image
+        )
+
+        pixmap = pixmap.scaled(
+            CAMERA_PREVIEW_WIDTH - 4,
+            CAMERA_PREVIEW_HEIGHT - 4,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+
+        self.camera_label.setPixmap(
+            pixmap
+        )
+
+        self.camera_label.raise_()
+
+    # ========================================================
     # CAMERA COMPATIBILITY
     # ========================================================
 
@@ -4051,20 +4582,22 @@ class WhiteboardPage(
         name
     ):
 
-        self.active_camera_index = (
-            index
-        )
+        self.active_camera_index = index
 
-        self.active_camera_name = (
-            name
-        )
+        self.active_camera_name = name
 
-        if self.isVisible():
+        if (
+            index is not None
+            and
+            index != self.camera_index
+        ):
 
             self.stop_camera()
 
+            self.camera_index = index
+
             QTimer.singleShot(
-                100,
+                200,
                 self.start_camera
             )
 
@@ -4077,51 +4610,10 @@ class WhiteboardPage(
         name
     ):
 
-        self.active_camera_name = (
-            name
-        )
+        self.active_camera_name = name
 
     # ========================================================
-    # SHOW EVENT
-    # ========================================================
-
-    def showEvent(
-        self,
-        event
-    ):
-
-        super().showEvent(
-            event
-        )
-
-        self.camera_overlay.raise_()
-
-        if not self.camera_running:
-
-            QTimer.singleShot(
-                150,
-                self.start_camera
-            )
-
-    # ========================================================
-    # HIDE EVENT
-    # ========================================================
-
-    def hideEvent(
-        self,
-        event
-    ):
-
-        self.finish_gesture_drawing()
-
-        self.stop_camera()
-
-        super().hideEvent(
-            event
-        )
-
-    # ========================================================
-    # CLOSE EVENT
+    # CLOSE
     # ========================================================
 
     def closeEvent(
@@ -4129,20 +4621,27 @@ class WhiteboardPage(
         event
     ):
 
-        self.finish_gesture_drawing()
-
         self.stop_camera()
 
-        if self.hands is not None:
+        if self.hands:
 
-            try:
+            self.hands.close()
 
-                self.hands.close()
+        event.accept()
 
-            except Exception:
 
-                pass
+# ============================================================
+# NUMPY HELPER
+# ============================================================
 
-        super().closeEvent(
-            event
-        )
+def np_array(data):
+    """
+    Small helper so the code only needs numpy here.
+    """
+
+    import numpy as np
+
+    return np.array(
+        data,
+        dtype=np.float32
+    )
