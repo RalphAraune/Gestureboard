@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 # ============================================================
 # IMPORTANT:
@@ -37,9 +38,37 @@ from gui.main_window import MainWindow
 # Application
 # ============================================================
 
+APP_ICON = Path(__file__).resolve().parent / "assets" / "logo" / "app_icon.ico"
+
+
 def main():
 
+    # --------------------------------------------------------
+    # Own taskbar identity (Windows)
+    # --------------------------------------------------------
+    #
+    # Without an AppUserModelID, Windows groups the window under
+    # python.exe and shows the Python logo in the taskbar.
+    #
+    # --------------------------------------------------------
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "GestureBoard.App"
+            )
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
+
+    # GestureBoard logo (logo2 on a square tile) for the window,
+    # taskbar and Alt+Tab instead of the Python icon.
+    from PyQt5.QtGui import QIcon
+
+    app.setWindowIcon(QIcon(str(APP_ICON)))
 
     # One font for every page (some pages set Segoe UI, others
     # fell back to the system default and looked different).
