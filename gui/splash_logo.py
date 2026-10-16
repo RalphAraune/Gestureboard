@@ -42,6 +42,11 @@ TAGLINE_DURATION = 0.8
 # Total length of the animation in seconds (tagline ends at 4.15 + 0.8).
 TOTAL_SECONDS = 4.95
 
+# Vertical spacing (px)
+LOGO_NAME_GAP = -14     # logo -> "GestureBoard" (negative: the logo box and the
+                        # font both carry empty space of their own)
+NAME_TAGLINE_GAP = 2    # "GestureBoard" -> tagline
+
 
 # ==============================================================
 # EASING
@@ -286,7 +291,7 @@ class AnimatedLogo(QWidget):
 
     def _tagline_px(self):
 
-        return max(15, min(26, int(self.logo_width * 0.055)))
+        return max(16, min(28, int(self.logo_width * 0.06)))
 
     def _tagline_block(self):
         """Height reserved for the tagline (gap + line)."""
@@ -294,7 +299,7 @@ class AnimatedLogo(QWidget):
         if not self.tagline:
             return 0
 
-        return int(10 + self._tagline_px() * 1.6)
+        return int(NAME_TAGLINE_GAP + self._tagline_px() * 1.5)
 
     def sizeHint(self):
 
@@ -303,7 +308,7 @@ class AnimatedLogo(QWidget):
         return QSize(
             int(self.logo_width * 1.9),
             int(
-                logo_h + 28 + self._name_px() * 1.4 + 12
+                logo_h + LOGO_NAME_GAP + self._name_px() * 1.4 + 6
                 + self._tagline_block()
             )
         )
@@ -349,10 +354,12 @@ class AnimatedLogo(QWidget):
         top = 6.0
 
         self._paint_logo(painter, t, QRectF(left, top, logo_w, logo_h))
-        name_bottom = self._paint_name(painter, t, top + logo_h + 28)
+        name_bottom = self._paint_name(
+            painter, t, top + logo_h + LOGO_NAME_GAP
+        )
 
         if self.tagline:
-            self._paint_tagline(painter, t, name_bottom + 10)
+            self._paint_tagline(painter, t, name_bottom + NAME_TAGLINE_GAP)
 
         painter.end()
 

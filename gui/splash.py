@@ -44,7 +44,7 @@ class SplashPage(QWidget):
         )
         layout.addWidget(self.logo, 0, Qt.AlignCenter)
 
-        layout.addSpacing(28)
+        layout.addSpacing(36)
 
         # Get Started button (hidden until the animation completes). It keeps
         # its space while hidden so the logo does not jump when it appears.
