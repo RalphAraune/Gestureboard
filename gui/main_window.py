@@ -283,6 +283,85 @@ class MainWindow(QMainWindow):
         # Apply the saved theme (light / dark) on startup.
         self.apply_theme()
 
+        # Restore the camera chosen in a previous session.
+        try:
+
+            import settings.preferences as prefs
+
+            index, name = prefs.get_camera()
+
+            if index is not None:
+
+                self.setActiveCamera(
+                    index,
+                    name or f"Camera {index}"
+                )
+
+        except Exception as e:
+
+            print(
+                f"Camera restore warning: {e}"
+            )
+
+    # ==============================================================
+    # SHUTDOWN
+    #
+    # Closing the main window must end the whole program. Pages keep
+    # webcams and timers running, and Presentation owns a separate
+    # always-on-top toolbar window, any of which would otherwise keep
+    # the Python process alive after the window disappears.
+    # ==============================================================
+
+    def closeEvent(self, event):
+
+        pages = (
+            getattr(self, "virtual_mouse", None),
+            getattr(self, "presentation", None),
+            getattr(self, "whiteboard", None),
+            getattr(self, "camera_setup", None),
+        )
+
+        for page in pages:
+
+            if page is None:
+                continue
+
+            for name in (
+                "stop_tracking",
+                "release_camera",
+                "close_camera",
+                "stop_camera",
+                "stop_preview",
+            ):
+
+                method = getattr(page, name, None)
+
+                if callable(method):
+
+                    try:
+                        method()
+                    except Exception as e:
+                        print(f"Shutdown warning ({name}): {e}")
+
+        event.accept()
+
+        # Close every other top-level window (floating toolbars,
+        # overlays) and stop the event loop.
+        app = QApplication.instance()
+
+        if app is not None:
+
+            for widget in app.topLevelWidgets():
+
+                if widget is not self:
+
+                    try:
+                        widget.close()
+                    except Exception:
+                        pass
+
+            app.quit()
+
     # ==============================================================
     # APPLY THEME (light / dark)
     # ==============================================================
@@ -1305,6 +1384,25 @@ class MainWindow(QMainWindow):
             ):
 
                 self.camera_setup.setActiveCamera(
+                    index,
+                    name
+                )
+
+        except Exception:
+            pass
+
+        # ----------------------------------------------------------
+        # Settings
+        # ----------------------------------------------------------
+
+        try:
+
+            if hasattr(
+                self.settings,
+                "setActiveCamera"
+            ):
+
+                self.settings.setActiveCamera(
                     index,
                     name
                 )

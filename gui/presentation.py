@@ -388,13 +388,6 @@ class PresentationPage(QWidget):
 
         self.left_click_cooldown = 0
 
-        # Debounce for discrete gestures so one gesture never fires twice.
-        self._last_gesture_time = 0.0
-        self._gesture_cooldown = 1.0
-
-        # Whether the floating annotation toolbar is expanded.
-        self.annotation_expanded = False
-
         # Tracks whether this page has been opened at least once. Used to stop
         # gesture handling from firing at startup (splash screen).
         self._page_opened = False
@@ -566,8 +559,8 @@ class PresentationPage(QWidget):
 
         preview_frame = QFrame()
         preview_frame.setStyleSheet("""
-            QFrame {
-                background: white;
+            .QFrame {
+                background: #F7F9FC;
                 border: 1px solid #D9E4F5;
                 border-radius: 12px;
             }
@@ -616,25 +609,6 @@ class PresentationPage(QWidget):
             0,
             0,
             Qt.AlignTop | Qt.AlignLeft
-        )
-
-        # Small camera feed in the lower-right of the preview (used to aim
-        # the annotation cursor / clicks).
-        self.slide_camera = QLabel()
-        self.slide_camera.setFixedSize(180, 135)
-        self.slide_camera.setAlignment(Qt.AlignCenter)
-        self.slide_camera.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.slide_camera.setStyleSheet(
-            "QLabel { background: rgba(5,11,22,0.85); color: #AAC0E1;"
-            " border: 2px solid #2A5A9E; border-radius: 8px; font-size: 11px; }"
-        )
-        self.slide_camera.setText("Camera")
-
-        preview_layout.addWidget(
-            self.slide_camera,
-            0,
-            0,
-            Qt.AlignBottom | Qt.AlignRight
         )
 
         center_column.addWidget(preview_frame, 1)
@@ -711,8 +685,8 @@ class PresentationPage(QWidget):
 
         gesture_frame = QFrame()
         gesture_frame.setStyleSheet("""
-            QFrame {
-                background: white;
+            .QFrame {
+                background: #F7F9FC;
                 border: 1px solid #D9E4F5;
                 border-radius: 12px;
             }
@@ -739,8 +713,15 @@ class PresentationPage(QWidget):
             ("👉", "Point Right", "Next Slide"),
             ("👈", "Point Left", "Previous Slide"),
             ("👍", "Thumbs Up", "Full Screen"),
-            ("✋", "Open Hand", "Exit Full Screen"),
+            ("👎", "Thumbs Down", "Exit Full Screen"),
             ("☝️", "Index Finger", "Cursor / Pointer"),
+            ("🖖", "Three Fingers (Index + Middle + Ring fingers)", "Activate Annotation Mode"),
+            ("☝️ + 🖕 ", "Index + Middle fingers together", "Draw"),
+            ("✌️", "Peace Sign (Index + Middle fingers separated)", "Stop Drawing"),
+            ("✋", "Open Hand ", "Move Cursor / Select Tool"),
+            ("✊", " Closed Hand/Fist", "Click"),
+            
+            
         ]
 
         for icon, gesture, action in gestures:
@@ -795,8 +776,8 @@ class PresentationPage(QWidget):
         status_frame = QFrame()
 
         status_frame.setStyleSheet("""
-            QFrame {
-                background: white;
+            .QFrame {
+                background: #F7F9FC;
                 border: 1px solid #D9E4F5;
                 border-radius: 12px;
             }
@@ -860,8 +841,8 @@ class PresentationPage(QWidget):
         camera_frame = QFrame()
 
         camera_frame.setStyleSheet("""
-            QFrame {
-                background: white;
+            .QFrame {
+                background: #F7F9FC;
                 border: 1px solid #D9E4F5;
                 border-radius: 12px;
             }
@@ -909,7 +890,7 @@ class PresentationPage(QWidget):
         # Separate status block placed BELOW the feed so it never covers it.
         status_block = QFrame()
         status_block.setStyleSheet("""
-            QFrame {
+            .QFrame {
                 background: #F2F6FC;
                 border: 1px solid #D9E4F5;
                 border-radius: 8px;
@@ -1486,19 +1467,110 @@ class PresentationPage(QWidget):
     # CAMERA
     # ============================================================
 
+    def _running_vmouse(self):
+        """Return the Virtual Mouse page if it is currently tracking."""
+
+        vmouse = getattr(
+            self.parent_window, "virtual_mouse", None
+        )
+
+        if vmouse is not None and getattr(
+            vmouse, "camera_running", False
+        ):
+            return vmouse
+
+        return None
+
     def start_camera(self):
 
-        # Presentation Control does NOT open the webcam itself. It mirrors the
-        # Virtual Mouse camera (frame + hand landmarks) so one camera serves
-        # both presentation gestures and the annotation cursor / clicks.
-        self.camera = None
+        # Do not open a second handle to the same webcam.
+        if self.camera is not None:
+            return
 
-        if not self.camera_timer.isActive():
+        # The Virtual Mouse already owns the webcam: reuse its frames and
+        # hand landmarks instead of opening the device a second time, so
+        # both features keep working together.
+        if self._running_vmouse() is not None:
+
+            self._last_shared_frame = None
+
+            if not self.camera_timer.isActive():
+                self.camera_timer.start(30)
+
+            self.camera_status.setText(
+                "● Camera Connected (shared)"
+            )
+
+            return
+
+        self.camera = cv2.VideoCapture(
+            self.camera_index,
+            cv2.CAP_DSHOW
+        )
+
+        if not self.camera.isOpened():
+
+            self.camera.release()
+
+            self.camera = cv2.VideoCapture(
+                self.camera_index
+            )
+
+        if self.camera.isOpened():
+
+            self.camera.set(
+                cv2.CAP_PROP_FRAME_WIDTH,
+                640
+            )
+
+            self.camera.set(
+                cv2.CAP_PROP_FRAME_HEIGHT,
+                480
+            )
+
             self.camera_timer.start(30)
 
-        self.camera_status.setText(
-            "● Camera (Virtual Mouse)"
+            self.camera_status.setText(
+                "● Camera Connected"
+            )
+
+        else:
+
+            # Release the failed handle and clear it so a later
+            # showEvent()/navigation can try again.
+            self.camera.release()
+            self.camera = None
+
+            self.camera_status.setText(
+                "● Camera Not Available"
+            )
+
+    # ============================================================
+    # CAMERA SELECTION
+    # ============================================================
+
+    def setActiveCamera(self, index, name):
+
+        if index is None or index == self.camera_index:
+            return
+
+        # Open on its own, or mirroring the Virtual Mouse (timer only).
+        was_open = (
+            self.camera is not None
+            or self.camera_timer.isActive()
         )
+
+        self.release_camera()
+
+        self.camera_index = index
+
+        # Reopen on the new device only if this page was using the camera.
+        if was_open and self.isVisible():
+            self.start_camera()
+
+    def updateCameraName(self, name):
+
+        self.camera_name = name
 
     # ============================================================
     # RELEASE CAMERA
@@ -1523,7 +1595,6 @@ class PresentationPage(QWidget):
 
     def update_camera(self):
 
-        # No own camera: use the Virtual Mouse's shared camera + hand.
         if not self.camera:
             self.update_shared_camera()
             return
@@ -1542,14 +1613,84 @@ class PresentationPage(QWidget):
             1
         )
 
+        self.process_frame(frame)
+
+    # ============================================================
+    # SHARED CAMERA (from the Virtual Mouse)
+    # ============================================================
+
+    def update_shared_camera(self):
+
+        vmouse = self._running_vmouse()
+
+        if vmouse is None:
+
+            # The Virtual Mouse stopped and freed the webcam: take it
+            # over so presentation gestures keep working.
+            self.camera_timer.stop()
+
+            if self.isVisible():
+                self.start_camera()
+
+            return
+
+        frame = vmouse.get_latest_frame()
+
+        # Only handle each Virtual Mouse frame once, so a gesture is
+        # not triggered twice from the same image.
+        if frame is None or frame is getattr(
+            self, "_last_shared_frame", None
+        ):
+            return
+
+        self._last_shared_frame = frame
+
+        # The Virtual Mouse already ran MediaPipe and drew the
+        # landmarks; reuse its result instead of tracking again.
+        self.process_frame(
+            frame.copy(),
+            shared_hand=vmouse.get_latest_hand()
+        )
+
+    # ============================================================
+    # PROCESS FRAME (gestures + preview)
+    # ============================================================
+
+    def process_frame(self, frame, shared_hand=None):
+
+        shared = shared_hand is not None or self.camera is None
+
         # --------------------------------------------------------
         # MEDIAPIPE
         # --------------------------------------------------------
 
         gesture = "None"
 
+        if shared:
+
+            if shared_hand is not None:
+
+                gesture = self.gesture_detector.detect(
+                    shared_hand
+                )
+
+                self.process_gesture(
+                    gesture,
+                    shared_hand
+                )
+
+                self.camera_status.setText(
+                    "● Hand Detected"
+                )
+
+            else:
+
+                self.camera_status.setText(
+                    "● Camera Connected (shared)"
+                )
+
         # If MediaPipe is unavailable, just show the raw camera feed.
-        if self.hands is not None:
+        elif self.hands is not None:
 
             rgb = cv2.cvtColor(
                 frame,
@@ -1608,53 +1749,6 @@ class PresentationPage(QWidget):
         # CAMERA IMAGE
         # --------------------------------------------------------
 
-        self._display_frame(frame)
-
-    # ============================================================
-    # SHARED CAMERA (from the Virtual Mouse)
-    # ============================================================
-
-    def update_shared_camera(self):
-
-        vm = getattr(self.parent_window, "virtual_mouse", None)
-
-        if vm is None or not hasattr(vm, "get_latest_frame"):
-            return
-
-        frame = vm.get_latest_frame()
-
-        if frame is None:
-
-            self.camera_status.setText("● Waiting for Virtual Mouse…")
-            return
-
-        # Use the Virtual Mouse's detected hand for our own gesture logic.
-        hand = (
-            vm.get_latest_hand()
-            if hasattr(vm, "get_latest_hand")
-            else None
-        )
-
-        if hand is not None:
-
-            gesture = self.gesture_detector.detect(hand)
-
-            self.process_gesture(gesture, hand)
-
-            self.camera_status.setText("● Hand Detected")
-
-            self.detected_label.setText("Detected: " + gesture)
-
-        else:
-
-            self.camera_status.setText("● Camera Connected")
-
-            self.detected_label.setText("Detected: None")
-
-        self._display_frame(frame)
-
-    def _display_frame(self, frame):
-
         frame_rgb = cv2.cvtColor(
             frame,
             cv2.COLOR_BGR2RGB
@@ -1690,62 +1784,16 @@ class PresentationPage(QWidget):
             pixmap
         )
 
-        # Mirror the same feed into the small lower-right preview over the
-        # slide, so the user can aim the annotation cursor / clicks.
-        if hasattr(self, "slide_camera"):
-
-            self.slide_camera.setPixmap(
-                pixmap.scaled(
-                    self.slide_camera.size(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                )
-            )
-
-        # And into the fullscreen viewer's lower-right camera feed.
-        if self.fullscreen_window is not None:
-
-            try:
-                self.fullscreen_window.set_camera_frame(pixmap)
-            except Exception:
-                pass
-
     # ============================================================
     # ANNOTATION TOOLBAR (floating, temporary)
     # ============================================================
 
     def _build_annotation_toolbar(self):
 
-        container = QFrame()
-        container.setStyleSheet("QFrame { background: transparent; }")
+        bar = QFrame()
 
-        outer = QVBoxLayout(container)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(6)
-        outer.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-
-        # --------------------------------------------------
-        # Floating pen button (upper-left)
-        # --------------------------------------------------
-        self.pen_toggle = QPushButton("✎")
-        self.pen_toggle.setToolTip("Annotation tools")
-        self.pen_toggle.setFixedSize(40, 40)
-        self.pen_toggle.setCursor(Qt.PointingHandCursor)
-        self.pen_toggle.setStyleSheet(
-            "QPushButton { background: rgba(10,22,40,0.94); color: #EAF2FF;"
-            " border: 1px solid #2A5A9E; border-radius: 10px;"
-            " font-size: 18px; }"
-            "QPushButton:hover { background: #1B3A63; }"
-        )
-        self.pen_toggle.clicked.connect(self._toggle_annotation_tools)
-        outer.addWidget(self.pen_toggle)
-
-        # --------------------------------------------------
-        # Tools row (hidden until the pen button is clicked)
-        # --------------------------------------------------
-        self.annotation_tools = QFrame()
-        self.annotation_tools.setStyleSheet(
-            "QFrame { background: rgba(10,22,40,0.94);"
+        bar.setStyleSheet(
+            ".QFrame { background: rgba(10,22,40,0.94);"
             " border: 1px solid #2A5A9E; border-radius: 10px; }"
             "QLabel { color: #AAC0E1; font-size: 12px; }"
             "QPushButton { background: transparent; color: #EAF2FF;"
@@ -1754,7 +1802,7 @@ class PresentationPage(QWidget):
             "QPushButton:hover { background: #1B3A63; }"
         )
 
-        layout = QHBoxLayout(self.annotation_tools)
+        layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(6)
 
@@ -1821,17 +1869,9 @@ class PresentationPage(QWidget):
         layout.addWidget(redo_btn)
         layout.addWidget(clear_btn)
 
-        self.annotation_tools.hide()
+        bar.hide()
 
-        container.hide()
-
-        return container
-
-    def _toggle_annotation_tools(self):
-
-        self.annotation_expanded = not self.annotation_expanded
-
-        self.annotation_tools.setVisible(self.annotation_expanded)
+        return bar
 
     def _set_annotation_tool(self, tool):
 
@@ -1855,13 +1895,9 @@ class PresentationPage(QWidget):
             return
 
         if not self.gestures_enabled:
-
-            # Even while gestures are inactive, the START gesture is allowed
-            # so the user can begin the presentation with a hand gesture.
-            if gesture == "Rock & Roll" and self._debounce_ok():
-                self.manual_start()
-            else:
-                self.detected_label.setText("Detected: " + gesture)
+            self.detected_label.setText(
+                "Detected: " + gesture + " (gestures inactive)"
+            )
             return
 
         # ====================================================
@@ -1924,17 +1960,11 @@ class PresentationPage(QWidget):
             self._set_action("Cursor / Pointer")
             return
 
-        # Discrete gestures fire once (and are debounced). Pointing gestures
-        # may repeat while held so the user can advance several slides.
-        repeatable = ("Point Right", "Point Left")
-
-        if gesture == self.detected_gesture and gesture not in repeatable:
+        # Discrete gestures fire once.
+        if gesture == self.detected_gesture:
             return
 
         self.detected_gesture = gesture
-
-        if not self._debounce_ok():
-            return
 
         actions = {
             "Rock & Roll": "Start Presentation",
@@ -2007,13 +2037,7 @@ class PresentationPage(QWidget):
         if self.annotation_toolbar is not None:
             self.annotation_toolbar.setVisible(self.annotation_mode)
 
-        # Collapse the tools back to just the floating pen button and
-        # always start the overlay clean.
-        self.annotation_expanded = False
-
-        if hasattr(self, "annotation_tools"):
-            self.annotation_tools.setVisible(False)
-
+        # Always start the overlay clean.
         self.slide_view.clear_annotations()
 
         self.end_annotation_draw()
@@ -2055,17 +2079,6 @@ class PresentationPage(QWidget):
         except Exception:
             pass
 
-    def _debounce_ok(self):
-        """True at most once per cooldown window (debounce gestures)."""
-
-        now = time.time()
-
-        if now - self._last_gesture_time < self._gesture_cooldown:
-            return False
-
-        self._last_gesture_time = now
-        return True
-
     # ============================================================
     # INDEX FINGER CURSOR
     # ============================================================
@@ -2094,20 +2107,16 @@ class PresentationPage(QWidget):
                 self._cursor_prev_x = target_x
                 self._cursor_prev_y = target_y
 
-            # While writing, smooth a lot more so the line is steady (less
-            # shaky). Moving the pointer uses lighter smoothing.
-            smoothing = 0.35 if self._annot_drawing else self._cursor_smoothing
-
             smooth_x = (
                 self._cursor_prev_x
                 + (target_x - self._cursor_prev_x)
-                * smoothing
+                * self._cursor_smoothing
             )
 
             smooth_y = (
                 self._cursor_prev_y
                 + (target_y - self._cursor_prev_y)
-                * smoothing
+                * self._cursor_smoothing
             )
 
             smooth_x = max(
@@ -2406,12 +2415,11 @@ class PresentationPage(QWidget):
 # ============================================================
 
 class FullscreenViewer(QDialog):
-    """Fullscreen presentation window WITH temporary annotation support.
+    """Black fullscreen window that displays the current presentation slide.
 
-    A frameless, always-on-top, independent window so it can show fullscreen
-    even if the main GestureBoard window is minimized. It uses a SlideView so
-    the user can draw a temporary overlay directly on the slide (cleared on
-    every slide change). A small floating pen button opens the tools.
+    Created as a frameless, always-on-top, independent window (no parent) so
+    it can still show fullscreen even if the main GestureBoard window is
+    minimized or the user is working in another application.
     """
 
     def __init__(self, parent=None, page=None):
@@ -2424,161 +2432,79 @@ class FullscreenViewer(QDialog):
             | Qt.Window
             | Qt.WindowStaysOnTopHint
         )
-        self.setStyleSheet("QDialog { background: #000000; }")
+        self.setStyleSheet("""
+            QDialog {
+                background: #000000;
+            }
+            QLabel {
+                background: transparent;
+            }
+        """)
 
-        root = QGridLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        self.slide_view = SlideView()
-        root.addWidget(self.slide_view, 0, 0)
+        self.slide_label = QLabel("Loading slide...")
+        self.slide_label.setAlignment(Qt.AlignCenter)
+        self.slide_label.setStyleSheet("""
+            color: #FFFFFF;
+            font-size: 18px;
+        """)
+        layout.addWidget(self.slide_label, 1)
 
-        # Floating pen button (upper-left) + expandable tools.
-        self.pen_button = QPushButton("\u270e")
-        self.pen_button.setToolTip("Annotation tools")
-        self.pen_button.setFixedSize(40, 40)
-        self.pen_button.setCursor(Qt.PointingHandCursor)
-        self.pen_button.setStyleSheet(
-            "QPushButton { background: rgba(10,22,40,0.94); color: #EAF2FF;"
-            " border: 1px solid #2A5A9E; border-radius: 10px;"
-            " font-size: 18px; }"
-            "QPushButton:hover { background: #1B3A63; }"
-        )
-        self.pen_button.clicked.connect(self._toggle_tools)
+        info = QLabel("")
+        info.setObjectName("infoLabel")
+        info.setAlignment(Qt.AlignCenter)
+        info.setStyleSheet("""
+            color: #888888;
+            font-size: 12px;
+            padding: 6px;
+        """)
+        self.info_label = info
+        layout.addWidget(info)
 
-        self.tools = self._build_tools()
-        self.tools.hide()
-
-        overlay = QWidget()
-        overlay_layout = QVBoxLayout(overlay)
-        overlay_layout.setContentsMargins(12, 12, 12, 12)
-        overlay_layout.setSpacing(6)
-        overlay_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        overlay_layout.addWidget(self.pen_button)
-        overlay_layout.addWidget(self.tools)
-
-        root.addWidget(
-            overlay,
-            0,
-            0,
-            Qt.AlignTop | Qt.AlignLeft
-        )
-
-        # Small camera feed in the lower-right (shows the presentation camera
-        # so the user can aim the gesture cursor / annotation).
-        self.camera_feed = QLabel()
-        self.camera_feed.setFixedSize(200, 150)
-        self.camera_feed.setAlignment(Qt.AlignCenter)
-        self.camera_feed.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.camera_feed.setStyleSheet(
-            "QLabel { background: rgba(5,11,22,0.85); color: #AAC0E1;"
-            " border: 2px solid #2A5A9E; border-radius: 8px; font-size: 11px; }"
-        )
-        self.camera_feed.setText("Camera")
-
-        root.addWidget(
-            self.camera_feed,
-            0,
-            0,
-            Qt.AlignBottom | Qt.AlignRight
-        )
-
-    def set_camera_frame(self, pixmap):
-        """Update the small fullscreen camera feed."""
-
-        if hasattr(self, "camera_feed"):
-
-            self.camera_feed.setPixmap(
-                pixmap.scaled(
-                    self.camera_feed.size(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                )
-            )
-
-    def _toggle_tools(self):
-        self.tools.setVisible(not self.tools.isVisible())
-
-    def _build_tools(self):
-        bar = QFrame()
-        bar.setStyleSheet(
-            "QFrame { background: rgba(10,22,40,0.94);"
-            " border: 1px solid #2A5A9E; border-radius: 10px; }"
-            "QLabel { color: #AAC0E1; font-size: 12px; }"
-            "QPushButton { background: transparent; color: #EAF2FF;"
-            " border: none; padding: 6px 10px; border-radius: 6px;"
-            " font-size: 13px; }"
-            "QPushButton:hover { background: #1B3A63; }"
-        )
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(6)
-
-        for name, tool in (
-            ("Pen", "pen"),
-            ("Highlighter", "highlighter"),
-            ("Eraser", "eraser"),
-        ):
-            button = QPushButton(name)
-            button.clicked.connect(
-                lambda checked=False, t=tool:
-                setattr(self.slide_view, "tool", t)
-            )
-            layout.addWidget(button)
-
-        layout.addWidget(QLabel("Colour:"))
-        for color in ("#E81123", "#FFB020", "#28C76F", "#2876E8", "#FFFFFF"):
-            swatch = QPushButton()
-            swatch.setFixedSize(20, 20)
-            swatch.setStyleSheet(
-                "QPushButton { background: " + color + ";"
-                " border: 2px solid #FFFFFF; border-radius: 10px; }"
-            )
-            swatch.clicked.connect(
-                lambda checked=False, c=color:
-                setattr(self.slide_view, "color", QColor(c))
-            )
-            layout.addWidget(swatch)
-
-        layout.addWidget(QLabel("Size:"))
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(1, 20)
-        slider.setValue(4)
-        slider.setFixedWidth(90)
-        slider.valueChanged.connect(
-            lambda v: setattr(self.slide_view, "brush_size", v)
-        )
-        layout.addWidget(slider)
-
-        undo_btn = QPushButton("Undo")
-        redo_btn = QPushButton("Redo")
-        clear_btn = QPushButton("Clear")
-        undo_btn.clicked.connect(self.slide_view.undo)
-        redo_btn.clicked.connect(self.slide_view.redo)
-        clear_btn.clicked.connect(self.slide_view.clear_annotations)
-        layout.addWidget(undo_btn)
-        layout.addWidget(redo_btn)
-        layout.addWidget(clear_btn)
-
-        return bar
+        # Cache the current image so we can re-scale on resize.
+        self._image = None
 
     def set_slide(self, image, page_number, total_pages):
-        """Display a slide image fullscreen (clears annotations)."""
+        """Display a slide image fullscreen."""
 
-        pixmap = (
-            QPixmap.fromImage(image)
-            if isinstance(image, QImage)
-            else image
+        self._image = image
+        self._render()
+
+        self.info_label.setText(
+            f"{page_number} / {total_pages}"
         )
 
-        self.slide_view.set_slide(pixmap)
+    def _render(self):
+        if self._image is None:
+            return
+
+        pixmap = QPixmap.fromImage(self._image)
+
+        pixmap = pixmap.scaled(
+            self.slide_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+
+        self.slide_label.setPixmap(pixmap)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render()
 
     def keyPressEvent(self, event):
+        # Allow ESC / Q to exit fullscreen too.
         if event.key() in (Qt.Key_Escape, Qt.Key_Q):
             self.close()
         else:
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        # Clear the page's reference so Full Screen can be re-opened cleanly
+        # (e.g. after the user closes the window directly).
         if self.page is not None:
             self.page.fullscreen_window = None
         super().closeEvent(event)

@@ -32,7 +32,7 @@ class SettingsPage(QWidget):
     NAVY = "#163B82"
     NAVY_DARK = "#123575"
 
-    BACKGROUND = "#F5FEFF"
+    BACKGROUND = "#EEF2F7"
     CARD = "#FBFEFF"
     BORDER = "#D7E4F2"
 
@@ -42,7 +42,7 @@ class SettingsPage(QWidget):
     SELECTED = "#DCEAF7"
     LIGHT_BLUE = "#AFC7E8"
 
-    WHITE = "#FFFFFF"
+    WHITE = "#F7F9FC"
 
     GREEN = "#21C46B"
 
@@ -560,7 +560,7 @@ class SettingsPage(QWidget):
 
         card.setStyleSheet(
             f"""
-            QFrame {{
+            .QFrame {{
                 background-color: {self.CARD};
                 border: 1px solid {self.BORDER};
                 border-radius: 12px;
@@ -645,15 +645,13 @@ class SettingsPage(QWidget):
         self.camera_combo = QComboBox()
 
         self.camera_combo.setFixedWidth(
-            128
+            220
         )
 
-        self.camera_combo.addItems(
-            [
-                "Default Webcam",
-                "Camera 1",
-                "Camera 2"
-            ]
+        self.populate_camera_combo()
+
+        self.camera_combo.currentIndexChanged.connect(
+            self.on_camera_selected
         )
 
         row_layout.addWidget(
@@ -673,7 +671,7 @@ class SettingsPage(QWidget):
         self.resolution_combo = QComboBox()
 
         self.resolution_combo.setFixedWidth(
-            110
+            150
         )
 
         self.resolution_combo.addItems(
@@ -701,7 +699,7 @@ class SettingsPage(QWidget):
         self.fps_combo = QComboBox()
 
         self.fps_combo.setFixedWidth(
-            80
+            110
         )
 
         self.fps_combo.addItems(
@@ -859,7 +857,7 @@ class SettingsPage(QWidget):
         manage_button = QComboBox()
 
         manage_button.setFixedWidth(
-            85
+            120
         )
 
         manage_button.addItems(
@@ -1384,25 +1382,120 @@ class SettingsPage(QWidget):
     # CAMERA METHODS
     # ==========================================================
 
+    def detect_cameras(self, force=False):
+
+        # Detection can be slow (OpenCV probes each index), so the
+        # result is cached until a refresh is forced.
+        if force or not hasattr(self, "_detected_cameras"):
+
+            try:
+
+                from gui.camera_setup import find_named_cameras
+
+                self._detected_cameras = find_named_cameras()
+
+            except Exception as e:
+
+                print(f"Settings camera detection warning: {e}")
+
+                self._detected_cameras = []
+
+        cameras = list(self._detected_cameras)
+
+        # The active camera may be busy (in use) and missed by the
+        # OpenCV probe; always keep it selectable.
+        if (
+            self.active_camera_index is not None
+            and all(i != self.active_camera_index for i, _ in cameras)
+        ):
+
+            cameras.insert(
+                0,
+                (
+                    self.active_camera_index,
+                    self.active_camera_name
+                    or f"Camera {self.active_camera_index}"
+                )
+            )
+
+        return cameras
+
+    def populate_camera_combo(self):
+
+        self.camera_combo.blockSignals(True)
+
+        self.camera_combo.clear()
+
+        cameras = self.detect_cameras()
+
+        if not cameras:
+
+            self.camera_combo.addItem(
+                "No camera detected",
+                None
+            )
+
+        for index, name in cameras:
+
+            self.camera_combo.addItem(name, index)
+
+        self._select_camera_in_combo()
+
+        self.camera_combo.blockSignals(False)
+
+    def _select_camera_in_combo(self):
+
+        if self.active_camera_index is None:
+            return
+
+        found = self.camera_combo.findData(
+            self.active_camera_index
+        )
+
+        if found >= 0:
+
+            self.camera_combo.setCurrentIndex(found)
+
+    def on_camera_selected(self, combo_index):
+
+        index = self.camera_combo.itemData(combo_index)
+
+        name = self.camera_combo.itemText(combo_index)
+
+        if index is None or index == self.active_camera_index:
+            return
+
+        # MainWindow broadcasts the choice to every page and saves it.
+        if self.main_window is not None and hasattr(
+            self.main_window, "setActiveCamera"
+        ):
+
+            self.main_window.setActiveCamera(index, name)
+
+        else:
+
+            self.setActiveCamera(index, name)
+
     def setActiveCamera(self, index, name):
 
         self.active_camera_index = index
 
         self.active_camera_name = name
 
-        # Update camera dropdown if available
+        # Update camera dropdown if it is currently shown. The combo
+        # is rebuilt with each section, so it may already be deleted.
 
         if hasattr(self, "camera_combo"):
 
-            found_index = self.camera_combo.findText(
-                name
-            )
+            try:
 
-            if found_index >= 0:
+                # Rebuild so a camera missing from the list (e.g. one
+                # restored from a previous session) is still shown.
+                self.populate_camera_combo()
 
-                self.camera_combo.setCurrentIndex(
-                    found_index
-                )
+            except RuntimeError:
+
+                pass
 
     # ==========================================================
     # OPTIONAL CAMERA NAME METHOD
@@ -1416,12 +1509,22 @@ class SettingsPage(QWidget):
 
         if hasattr(self, "camera_combo"):
 
-            found_index = self.camera_combo.findText(
-                self.active_camera_name
-            )
+            try:
 
-            if found_index >= 0:
-
-                self.camera_combo.setCurrentIndex(
-                    found_index
+                found_index = self.camera_combo.findText(
+                    self.active_camera_name
                 )
+
+                if found_index >= 0:
+
+                    self.camera_combo.blockSignals(True)
+
+                    self.camera_combo.setCurrentIndex(
+                        found_index
+                    )
+
+                    self.camera_combo.blockSignals(False)
+
+            except RuntimeError:
+
+                pass

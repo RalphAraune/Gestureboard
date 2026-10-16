@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget, QGridLayout
 )
@@ -32,10 +32,11 @@ class StatusCard(QFrame):
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
         dot = QLabel("●")
-        dot.setStyleSheet(f"color: {status_color}; font-size: 10px;")
         status = QLabel(status_text)
         status.setObjectName("cardStatus")
-        status.setStyleSheet(f"color: {status_color}; font-size: 14px; font-weight: 600;")
+        self._dot = dot
+        self._status = status
+        self.set_status(status_text, status_color)
         status_row.addWidget(dot)
         status_row.addWidget(status)
         status_row.addStretch()
@@ -57,6 +58,15 @@ class StatusCard(QFrame):
 
     def apply_theme(self):
         self.setStyleSheet(self._stylesheet())
+
+    def set_status(self, text, color):
+        if self._status.text() == text and self._status_color == color:
+            return
+        self._status_color = color
+        self._status.setText(text)
+        self._status.setToolTip(text)
+        self._dot.setStyleSheet(f"color: {color}; font-size: 10px;")
+        self._status.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: 600;")
 
 
 class FeatureCard(QFrame):
@@ -175,10 +185,10 @@ class DashboardPage(QWidget):
         status_row = QHBoxLayout()
         status_row.setSpacing(16)
         self.status_cards = [
-            StatusCard("CAMERA", "Connected", "#2F9E62"),
-            StatusCard("HAND TRACKING", "Active", "#2F9E62"),
-            StatusCard("GESTURE RECOGNITION", "Ready", "#2F9E62"),
-            StatusCard("CURRENT MODE", "Idle", "#E8A33D"),
+            StatusCard("CAMERA", "Not selected", self.GREY),
+            StatusCard("HAND TRACKING", "Off", self.GREY),
+            StatusCard("GESTURE RECOGNITION", "Checking…", self.GREY),
+            StatusCard("VIRTUAL MOUSE", "Off", self.GREY),
         ]
         for card in self.status_cards:
             status_row.addWidget(card)
@@ -195,7 +205,7 @@ class DashboardPage(QWidget):
             ("Presentation Control", "📺", "Navigate presentation slides using gestures", "Open Presentation", "showPresentation"),
             ("Virtual Mouse", "🖱", "Control your computer cursor using hand gestures", "Open Virtual Mouse", "showVirtualMouse"),
             ("Whiteboard", "🖥", "Draw and write using your mouse", "Open Whiteboard", "showWhiteboard"),
-            ("Annotation", "✎", "Annotate presentation materials using mouse controls", "Open Annotation", "showAnnotation"),
+            ("Saved Files", "📁", "Open, rename and manage your saved whiteboards and annotations", "Open Saved Files", "showSavedFiles"),
         ]
 
         self.feature_cards = []
@@ -210,6 +220,60 @@ class DashboardPage(QWidget):
         content_layout.addStretch()
 
         view.addWidget(content, 1)
+
+        # Status cards reflect the real app state, refreshed while visible.
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self.refresh_status)
+
+    GREEN = "#2F9E62"
+    AMBER = "#E8A33D"
+    RED = "#D9534F"
+    GREY = "#8A9BB5"
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_status()
+        self._status_timer.start(1000)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._status_timer.stop()
+
+    def refresh_status(self):
+        win = self.parent_window
+        if win is None or not self.status_cards:
+            return
+
+        camera, tracking, gestures, vmouse_card = self.status_cards
+
+        if getattr(win, "active_camera_index", None) is None:
+            camera.set_status("Not selected", self.AMBER)
+        else:
+            camera.set_status(win.active_camera_name, self.GREEN)
+
+        vmouse = getattr(win, "virtual_mouse", None)
+        vm_running = bool(vmouse and getattr(vmouse, "camera_running", False))
+        vm_paused = bool(vmouse and getattr(vmouse, "camera_paused", False))
+        has_mediapipe = bool(vmouse and getattr(vmouse, "hands", None) is not None)
+
+        if not has_mediapipe:
+            gestures.set_status("Unavailable", self.RED)
+        else:
+            gestures.set_status("Ready", self.GREEN)
+
+        if vm_running and not vm_paused:
+            hand = vmouse.get_latest_hand() if hasattr(vmouse, "get_latest_hand") else None
+            tracking.set_status(
+                "Hand detected" if hand is not None else "Looking for hand",
+                self.GREEN if hand is not None else self.AMBER,
+            )
+            vmouse_card.set_status("On", self.GREEN)
+        elif vm_paused:
+            tracking.set_status("Paused", self.AMBER)
+            vmouse_card.set_status("Paused", self.AMBER)
+        else:
+            tracking.set_status("Off", self.GREY)
+            vmouse_card.set_status("Off", self.GREY)
 
     def _stylesheet(self):
         from settings import theme as app_theme
@@ -241,13 +305,11 @@ class DashboardPage(QWidget):
 
     def updateCameraName(self, name):
         """Update camera status card."""
-        if self.status_cards:
-            self.status_cards[0].findChild(QLabel, "cardStatus").setText(name)
+        self.refresh_status()
 
     def setActiveCamera(self, name):
         """Show the active camera name in the CAMERA status card."""
-        if self.status_cards:
-            self.status_cards[0].findChild(QLabel, "cardStatus").setText(name)
+        self.refresh_status()
 
     def setActivePage(self, page_name):
         """No-op: sidebar is managed globally by MainWindow."""

@@ -35,8 +35,8 @@ class SavedFilesPage(QWidget):
         # COLORS
         # =========================================================
 
-        self.bg_color = "#F5FEFF"
-        self.card_color = "#FFFFFF"
+        self.bg_color = "#EEF2F7"
+        self.card_color = "#F7F9FC"
         self.preview_color = "#E5EFF8"
         self.primary = "#123A82"
         self.secondary = "#6384B8"
@@ -178,7 +178,7 @@ class SavedFilesPage(QWidget):
         self.search_box.setStyleSheet(
             f"""
             QLineEdit {{
-                background: #FFFFFF;
+                background: #F7F9FC;
                 border: 1px solid {self.light_blue};
                 border-radius: 8px;
                 padding-left: 12px;
@@ -950,7 +950,7 @@ class SavedFilesPage(QWidget):
             button.setStyleSheet(
                 f"""
                 QPushButton {{
-                    background-color: #FFFFFF;
+                    background-color: #F7F9FC;
                     color: {self.primary};
                     border: 1px solid {self.light_blue};
                     border-radius: 6px;

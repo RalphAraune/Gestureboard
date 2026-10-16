@@ -41,6 +41,12 @@ def main():
 
     app = QApplication(sys.argv)
 
+    # One font for every page (some pages set Segoe UI, others
+    # fell back to the system default and looked different).
+    from PyQt5.QtGui import QFont
+
+    app.setFont(QFont("Segoe UI", 9))
+
     # --------------------------------------------------------
     # Create Main Window
     # --------------------------------------------------------
@@ -62,7 +68,24 @@ def main():
     # Start Qt Event Loop
     # --------------------------------------------------------
 
-    sys.exit(app.exec_())
+    exit_code = app.exec_()
+
+    # --------------------------------------------------------
+    # Make sure the process really ends
+    # --------------------------------------------------------
+    #
+    # MediaPipe / OpenCV can leave background threads running,
+    # which keeps Python (and the VS Code "Run") alive after the
+    # window is closed. Flush output, then exit immediately.
+    #
+    # --------------------------------------------------------
+
+    import os
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    os._exit(exit_code)
 
 
 # ============================================================

@@ -283,7 +283,7 @@ class CameraSetupPage(QWidget):
         self.setStyleSheet(
             """
             QWidget#cameraSetup {
-                background: #F5FEFF;
+                background: #EEF2F7;
             }
 
             QLabel {
@@ -303,7 +303,7 @@ class CameraSetupPage(QWidget):
             }
 
             QFrame#preview {
-                background: #FFFFFF;
+                background: #F7F9FC;
                 border: 1px solid #AAC0E1;
                 border-radius: 12px;
             }
@@ -321,7 +321,7 @@ class CameraSetupPage(QWidget):
             }
 
             QComboBox {
-                background: #FFFFFF;
+                background: #F7F9FC;
                 color: #0E2F76;
                 border: 1px solid #AAC0E1;
                 border-radius: 8px;
@@ -329,13 +329,13 @@ class CameraSetupPage(QWidget):
             }
 
             QComboBox QAbstractItemView {
-                background: #FFFFFF;
+                background: #F7F9FC;
                 color: #0E2F76;
                 selection-background-color: #AAC0E1;
             }
 
             QPushButton {
-                background: #FFFFFF;
+                background: #F7F9FC;
                 color: #5A6B93;
                 border: 1px solid #AAC0E1;
                 border-radius: 8px;
@@ -993,9 +993,41 @@ class CameraSetupPage(QWidget):
                 "Click Test Camera to show the live feed."
             )
 
+        # Keep the app-wide active camera selected.
+        if self.camera_index is not None:
+
+            found = self.camera_combo.findData(
+                self.camera_index
+            )
+
+            if found >= 0:
+
+                self.camera_combo.setCurrentIndex(
+                    found
+                )
+
         self.camera_combo.blockSignals(
             False
         )
+
+
+    # ========================================================
+    # ACTIVE CAMERA (set by MainWindow)
+    # ========================================================
+
+    def setActiveCamera(self, index, name):
+
+        self.camera_index = index
+
+        found = self.camera_combo.findData(index)
+
+        if found >= 0 and found != self.camera_combo.currentIndex():
+
+            self.camera_combo.blockSignals(True)
+
+            self.camera_combo.setCurrentIndex(found)
+
+            self.camera_combo.blockSignals(False)
 
 
     # ========================================================
@@ -1846,7 +1878,7 @@ class CameraPickerDialog(QDialog):
         self.setStyleSheet(
             """
             QWidget {
-                background: #F5FEFF;
+                background: #EEF2F7;
             }
 
             QLabel {
@@ -1865,7 +1897,7 @@ class CameraPickerDialog(QDialog):
             }
 
             QComboBox {
-                background: #FFFFFF;
+                background: #F7F9FC;
                 color: #0E2F76;
                 border: 1px solid #AAC0E1;
                 border-radius: 7px;
@@ -1874,13 +1906,13 @@ class CameraPickerDialog(QDialog):
             }
 
             QComboBox QAbstractItemView {
-                background: #FFFFFF;
+                background: #F7F9FC;
                 color: #0E2F76;
                 selection-background-color: #AAC0E1;
             }
 
             QPushButton {
-                background: #FFFFFF;
+                background: #F7F9FC;
                 color: #5A6B93;
                 border: 1px solid #AAC0E1;
                 border-radius: 7px;
@@ -1907,7 +1939,7 @@ class CameraPickerDialog(QDialog):
             }
 
             QPushButton#cancel {
-                background: #FFFFFF;
+                background: #F7F9FC;
                 color: #5A6B93;
                 border: 1px solid #AAC0E1;
                 border-radius: 7px;

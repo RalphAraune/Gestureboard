@@ -1580,7 +1580,7 @@ class WhiteboardPage(QWidget):
 
         self.setStyleSheet("""
             QWidget {
-                background-color: #F5FEFF;
+                background-color: #EEF2F7;
                 color: #0E2F76;
                 font-family: "Segoe UI";
             }
@@ -2307,7 +2307,7 @@ class WhiteboardPage(QWidget):
 
         menu.setStyleSheet("""
             QMenu {
-                background-color: white;
+                background-color: #F7F9FC;
                 border: 1px solid #D7E5F3;
                 padding: 5px;
             }
@@ -2755,6 +2755,10 @@ class WhiteboardPage(QWidget):
     # ========================================================
 
     def update_shared_preview(self):
+
+        # Keep the header pill in sync if the Virtual Mouse starts or
+        # stops while the Whiteboard is open.
+        self.update_camera_status()
 
         vmouse = getattr(
             self.parent_window, "virtual_mouse", None

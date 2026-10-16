@@ -61,7 +61,7 @@ class HomePage(QWidget):
                ========================= */
 
             QFrame#statusCard {
-                background-color: #FFFFFF;
+                background-color: #F7F9FC;
                 border: 1px solid #B6CDEA;
                 border-radius: 9px;
             }
@@ -95,7 +95,7 @@ class HomePage(QWidget):
                ========================= */
 
             QFrame#featureCard {
-                background-color: #FFFFFF;
+                background-color: #F7F9FC;
                 border: 1px solid #B6CDEA;
                 border-radius: 10px;
             }

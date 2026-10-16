@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor
 from PyQt5.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QSizePolicy
 
@@ -15,6 +15,11 @@ class Sidebar(QFrame):
         ("Saved Files", "📁", "showSavedFiles"),
         ("Settings", "⚙", "showSettings"),
     ]
+
+    # Shorter text for items whose full name does not fit the sidebar.
+    SHORT_LABELS = {
+        "Presentation Control": "Presentation",
+    }
 
     def __init__(self, main_window, active_page="Home"):
         super().__init__()
@@ -69,7 +74,8 @@ class Sidebar(QFrame):
         self.nav_buttons = {}
         self._nav_icons = {}
         for key, icon, callback_name in self.NAV_ITEMS:
-            btn = QPushButton(f"{icon}  {key}")
+            btn = QPushButton(f"{icon}  {self.SHORT_LABELS.get(key, key)}")
+            btn.setToolTip(key)
             btn.setCursor(Qt.PointingHandCursor)
             if key == active_page:
                 btn.setObjectName("active")
@@ -93,7 +99,7 @@ class Sidebar(QFrame):
         camera_status.setSpacing(8)
         camera_dot = QLabel("●")
         camera_dot.setObjectName("statusDot")
-        self.camera_text = QLabel("Camera Connected")
+        self.camera_text = QLabel("No camera selected")
         self.camera_text.setObjectName("statusLabel")
         camera_status.addWidget(camera_dot)
         camera_status.addWidget(self.camera_text)
@@ -104,7 +110,7 @@ class Sidebar(QFrame):
         fps_layout.setSpacing(8)
         fps_dot = QLabel("●")
         fps_dot.setObjectName("fpsLabel")
-        self.fps_text = QLabel("FPS: 30")
+        self.fps_text = QLabel("Virtual Mouse: Off")
         self.fps_text.setObjectName("fpsLabel")
         fps_layout.addWidget(fps_dot)
         fps_layout.addWidget(self.fps_text)
@@ -112,6 +118,37 @@ class Sidebar(QFrame):
         status_layout.addLayout(fps_layout)
 
         layout.addWidget(status_section)
+
+        # Footer shows the real camera / Virtual Mouse state.
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self.refresh_status)
+        self._status_timer.start(1000)
+        QTimer.singleShot(0, self.refresh_status)
+
+    def refresh_status(self):
+
+        win = self.main_window
+
+        name = getattr(win, "active_camera_name", None)
+
+        if getattr(win, "active_camera_index", None) is None:
+            name = "No camera selected"
+
+        if self.camera_text.text() != name:
+            self.camera_text.setText(name)
+            self.camera_text.setToolTip(name)
+
+        vmouse = getattr(win, "virtual_mouse", None)
+
+        if vmouse is not None and getattr(vmouse, "camera_running", False):
+            state = "Paused" if getattr(vmouse, "camera_paused", False) else "On"
+        else:
+            state = "Off"
+
+        text = f"Virtual Mouse: {state}"
+
+        if self.fps_text.text() != text:
+            self.fps_text.setText(text)
 
     # ==========================================================
     # COLLAPSE / EXPAND (responsive)
@@ -153,8 +190,8 @@ class Sidebar(QFrame):
                 btn.setText(icon)
                 btn.setToolTip(key)
             else:
-                btn.setText(f"{icon}  {key}")
-                btn.setToolTip("")
+                btn.setText(f"{icon}  {self.SHORT_LABELS.get(key, key)}")
+                btn.setToolTip(key)
 
         # Re-apply the stylesheet so alignment/padding update.
         self.setStyleSheet(self._stylesheet())
@@ -178,7 +215,7 @@ class Sidebar(QFrame):
                 border-right: 1px solid {c['border']};
             }}
             QLabel {{ background: transparent; color: {c['sidebar_text']}; }}
-            QLabel#brand {{ font-size: 16px; font-weight: 700; color: {c['sidebar_text']}; }}
+            QLabel#brand {{ font-size: 14px; font-weight: 700; color: {c['sidebar_text']}; }}
             QLabel#brandIcon {{ font-size: 22px; }}
             QLabel#section {{ color: {c['muted']}; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }}
             QLabel#statusLabel {{ color: {c['sidebar_text']}; font-size: 11px; }}

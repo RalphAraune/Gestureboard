@@ -1,3 +1,7 @@
+import sys
+import time
+from collections import deque
+
 import cv2
 import pyautogui
 
@@ -8,19 +12,426 @@ except Exception as e:
     print("MediaPipe import error:", e)
     mp = None
 
-from PyQt5.QtCore import Qt, QTimer, QSize
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt, QTimer, QSize, QRectF, QPointF
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QPen
 from PyQt5.QtWidgets import (
     QWidget,
     QLabel,
     QPushButton,
     QVBoxLayout,
     QHBoxLayout,
-    QGridLayout,
     QFrame,
     QSlider,
     QSizePolicy,
+    QSplitter,
+    QSplitterHandle,
+    QScrollArea,
 )
+
+
+# ==============================================================
+# NATIVE MOUSE INPUT (Windows)
+#
+# pyautogui.click() sends button-down and button-up in ONE
+# mouse_event call with zero time between them and silently
+# swallows errors, so many apps never register the click.
+# Sending a real press, a short hold, then a release is reliable.
+# ==============================================================
+
+if sys.platform == "win32":
+
+    import ctypes
+
+    _user32 = ctypes.windll.user32
+
+    _MOUSE_FLAGS = {
+        "left": (0x0002, 0x0004),   # LEFTDOWN, LEFTUP
+        "right": (0x0008, 0x0010),  # RIGHTDOWN, RIGHTUP
+    }
+
+    _MOUSEEVENTF_WHEEL = 0x0800
+
+else:
+
+    _user32 = None
+
+
+def native_click(x=None, y=None, button="left"):
+    """Press and release a mouse button, optionally at (x, y)."""
+
+    if _user32 is None:
+
+        if x is not None:
+            pyautogui.moveTo(int(x), int(y), duration=0)
+
+        pyautogui.mouseDown(button=button)
+        time.sleep(0.03)
+        pyautogui.mouseUp(button=button)
+
+        return
+
+    down, up = _MOUSE_FLAGS[button]
+
+    if x is not None:
+        _user32.SetCursorPos(int(x), int(y))
+
+    _user32.mouse_event(down, 0, 0, 0, 0)
+    time.sleep(0.03)
+    _user32.mouse_event(up, 0, 0, 0, 0)
+
+
+def native_scroll(clicks):
+    """Scroll the window under the cursor (positive = up)."""
+
+    if _user32 is None:
+
+        pyautogui.scroll(int(clicks))
+
+        return
+
+    _user32.mouse_event(
+        _MOUSEEVENTF_WHEEL, 0, 0, int(clicks * 120), 0
+    )
+
+
+# ==============================================================
+# GESTURES
+#
+# One table drives the detector, the action label and the guide,
+# so the guide always matches what the mouse actually does.
+# ==============================================================
+
+GESTURE_GUIDE = (
+    # key,          icon,  name,                    action
+    ("move",        "🖐️", "Open palm",              "Move the cursor"),
+    ("left",        "✊",  "Close your hand",        "Left click"),
+    ("right",       "🤏",  "Touch thumb and index",  "Right click"),
+    ("scroll_up",   "↑",  "Hold cursor top-centre",  "Scroll up after 2 s"),
+    ("scroll_down", "↓",  "Hold cursor bottom-centre", "Scroll down after 2 s"),
+)
+
+# Seconds the cursor must stay inside a scroll zone before scrolling.
+SCROLL_DWELL_SECONDS = 2.0
+
+# Seconds between scroll steps once scrolling has started.
+SCROLL_REPEAT_SECONDS = 0.12
+
+# Scroll zones as fractions of the screen: the middle 40% horizontally,
+# and the top / bottom 18% vertically.
+ZONE_X = (0.30, 0.70)
+ZONE_TOP = 0.18
+ZONE_BOTTOM = 0.82
+
+
+# ==============================================================
+# STATUS COLOURS (per theme)
+# ==============================================================
+
+STATE_COLORS = {
+    "Light": {
+        "live": "#24855A",
+        "paused": "#A06A22",
+        "error": "#C2413B",
+    },
+    "Dark": {
+        "live": "#4CC38A",
+        "paused": "#E0A458",
+        "error": "#F07470",
+    },
+}
+
+
+# ==============================================================
+# PAGE PALETTE
+#
+# In light mode this page uses a softer, greyer off-white than the
+# app theme so the camera feed and panels never glare.
+# ==============================================================
+
+LIGHT_SURFACES = {
+    "bg": "#E3E8EF",            # page background
+    "card": "#ECF0F5",          # camera frame and side panel
+    "well": "#D8DFE9",          # empty camera area
+    "button_hover": "#DCE4EE",
+}
+
+
+def page_colors():
+    """App theme colours with this page's softer light surfaces."""
+
+    from settings import theme as app_theme
+
+    c = dict(app_theme.colors())
+
+    if app_theme.is_dark():
+        c["well"] = c["bg"]
+    else:
+        c.update(LIGHT_SURFACES)
+
+    return c
+
+
+# ==============================================================
+# RESIZE HANDLE
+#
+# The divider between the camera and the side panel. It draws a
+# visible grip so it is obvious the camera can be resized.
+# ==============================================================
+
+class GripHandle(QSplitterHandle):
+
+    def __init__(self, orientation, parent):
+
+        super().__init__(orientation, parent)
+
+        self.grip_color = QColor("#8FA3C4")
+        self.hover_color = QColor("#0E2F76")
+        self._hover = False
+
+        self.setToolTip("Drag to resize the camera. Double-click to reset.")
+
+    def enterEvent(self, event):
+
+        self._hover = True
+        self.update()
+
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+
+        self._hover = False
+        self.update()
+
+        super().leaveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+
+        page = self.splitter().parent()
+
+        if hasattr(page, "reset_splitter"):
+            page.reset_splitter()
+
+    def paintEvent(self, event):
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(
+            self.hover_color if self._hover else self.grip_color
+        )
+
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+
+        # A short rounded bar along the handle
+        if self.orientation() == Qt.Horizontal:
+            bar = QRectF(cx - 2, cy - 22, 4, 44)
+        else:
+            bar = QRectF(cx - 22, cy - 2, 44, 4)
+
+        painter.drawRoundedRect(bar, 2, 2)
+
+        painter.end()
+
+
+class GripSplitter(QSplitter):
+
+    def createHandle(self):
+
+        return GripHandle(self.orientation(), self)
+
+
+class EdgeTrigger:
+    """Fires once when a gesture has been held for `hold` frames.
+
+    It re-arms only after the gesture has been gone for `release`
+    frames, so one flickering frame never causes a double click.
+    """
+
+    def __init__(self, hold=2, release=3):
+
+        self.hold = hold
+        self.release = release
+
+        self.on_frames = 0
+        self.off_frames = 0
+        self.fired = False
+
+    def update(self, active):
+
+        if active:
+
+            self.on_frames += 1
+            self.off_frames = 0
+
+            if self.on_frames >= self.hold and not self.fired:
+
+                self.fired = True
+
+                return True
+
+        else:
+
+            self.on_frames = 0
+            self.off_frames += 1
+
+            if self.off_frames >= self.release:
+                self.fired = False
+
+        return False
+
+
+# ==============================================================
+# SCREEN MAP
+#
+# A miniature of the screen showing the cursor and the two scroll
+# zones. The active zone fills up while the 2 second hold counts down.
+# ==============================================================
+
+class ScreenMap(QWidget):
+
+    def __init__(self, parent=None):
+
+        super().__init__(parent)
+
+        self.cursor = None          # (fx, fy) in 0..1, or None
+        self.zone = None            # "up", "down" or None
+        self.progress = 0.0         # 0..1 dwell progress
+        self.scrolling = False
+
+        self.colors = {}
+
+        self.setMinimumHeight(120)
+        self.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Preferred
+        )
+
+    def sizeHint(self):
+
+        return QSize(260, 150)
+
+    def set_colors(self, c):
+
+        self.colors = c
+        self.update()
+
+    def set_state(self, cursor, zone, progress, scrolling):
+
+        state = (cursor, zone, round(progress, 2), scrolling)
+
+        if state == (
+            self.cursor, self.zone, round(self.progress, 2), self.scrolling
+        ):
+            return
+
+        self.cursor = cursor
+        self.zone = zone
+        self.progress = progress
+        self.scrolling = scrolling
+
+        self.update()
+
+    def paintEvent(self, event):
+
+        c = self.colors
+
+        if not c:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Keep the screen's aspect ratio inside the widget.
+        aspect = 16 / 9
+
+        try:
+            w, h = pyautogui.size()
+            aspect = w / float(h)
+        except Exception:
+            pass
+
+        avail_w = self.width() - 2
+        avail_h = self.height() - 2
+
+        width = min(avail_w, avail_h * aspect)
+        height = width / aspect
+
+        screen = QRectF(
+            (self.width() - width) / 2,
+            (self.height() - height) / 2,
+            width,
+            height
+        )
+
+        # Screen outline
+        painter.setPen(QPen(QColor(c["border"]), 1.5))
+        painter.setBrush(QColor(c["bg"]))
+        painter.drawRoundedRect(screen, 6, 6)
+
+        # Scroll zones
+        zone_w = screen.width() * (ZONE_X[1] - ZONE_X[0])
+        zone_h = screen.height() * ZONE_TOP
+        zone_x = screen.left() + screen.width() * ZONE_X[0]
+
+        zones = {
+            "up": QRectF(zone_x, screen.top() + 3, zone_w, zone_h - 3),
+            "down": QRectF(
+                zone_x,
+                screen.top() + screen.height() * ZONE_BOTTOM,
+                zone_w,
+                zone_h - 3
+            ),
+        }
+
+        primary = QColor(c["primary"])
+
+        for key, rect in zones.items():
+
+            painter.setPen(QPen(QColor(c["border"]), 1, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect, 4, 4)
+
+            if key == self.zone and self.progress > 0:
+
+                fill = QRectF(rect)
+                fill.setWidth(rect.width() * min(1.0, self.progress))
+
+                tint = QColor(primary)
+                tint.setAlpha(230 if self.scrolling else 120)
+
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(tint)
+                painter.drawRoundedRect(fill, 4, 4)
+
+            painter.setPen(QColor(c["text_secondary"]))
+
+            label = "Scroll up" if key == "up" else "Scroll down"
+
+            if key == self.zone and self.scrolling:
+                label = "Scrolling up" if key == "up" else "Scrolling down"
+                painter.setPen(QColor(c["primary_text"]))
+
+            font = painter.font()
+            font.setPointSizeF(8)
+            painter.setFont(font)
+            painter.drawText(rect, Qt.AlignCenter, label)
+
+        # Cursor
+        if self.cursor is not None:
+
+            fx, fy = self.cursor
+
+            point = QPointF(
+                screen.left() + fx * screen.width(),
+                screen.top() + fy * screen.height()
+            )
+
+            painter.setPen(QPen(QColor(c["card"]), 2))
+            painter.setBrush(primary)
+            painter.drawEllipse(point, 5, 5)
+
+        painter.end()
 
 
 class VirtualMousePage(QWidget):
@@ -113,36 +524,34 @@ class VirtualMousePage(QWidget):
         # Ignore sub-pixel hand jitter so the cursor does not tremble.
         self.dead_zone = 4
 
-        # Auto-centre calibration: the hand's position when tracking starts
-        # becomes the screen centre. This makes the LEFT and RIGHT hand (or
-        # any resting position) behave identically and stops small movements
-        # from slamming the cursor into an edge.
-        self._neutral_x = None
-        self._neutral_y = None
-        self._cal_samples = []
-
         self.last_gesture = "None"
 
-        # Prevent accidental repeated clicks
-        self.left_click_cooldown = 0
-        self.right_click_cooldown = 0
+        # Fist -> left click, Pinch -> right click. Each clicks ONCE per
+        # gesture; the hand must open again before the next click.
+        self.left_trigger = EdgeTrigger()
+        self.right_trigger = EdgeTrigger()
 
-        # Scroll state (Open Palm + vertical swipe)
-        self._scroll_accum = 0.0
-        self._scroll_prev_y = None
+        # Recent cursor positions (time, x, y). Closing the hand shifts the
+        # knuckles, which drags the cursor off the target just before the
+        # gesture is recognised, so clicks go to where the cursor was
+        # a moment BEFORE the hand started closing.
+        self._cursor_history = deque(maxlen=60)
 
-        # Drag state (held only by the "Index + Middle" draw gesture)
-        self.is_dragging = False
+        # Frames left to show the click flash on the camera feed.
+        self._click_flash = 0
+        self._click_text = ""
 
-        # Grace frames before releasing a drag (avoids the line breaking
-        # when the hand is briefly not detected).
-        self._hold_grace = 0
+        # Scroll zone dwell state
+        self._dwell_zone = None
+        self._dwell_start = 0.0
+        self._last_scroll = 0.0
 
         # ======================================================
         # FPS
         # ======================================================
 
         self.frame_count = 0
+        self._frame_times = deque(maxlen=30)
 
         # ======================================================
         # TIMER
@@ -158,7 +567,12 @@ class VirtualMousePage(QWidget):
         # BUILD UI
         # ======================================================
 
+        self._theme_name = None
+        self._status_state = "off"
+
         self.build_ui()
+
+        self.apply_theme()
 
     # ==========================================================
     # UI
@@ -166,289 +580,276 @@ class VirtualMousePage(QWidget):
 
     def build_ui(self):
 
-        from settings import theme as app_theme
-
-        c = app_theme.colors()
+        self.setObjectName("vmPage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(34, 26, 34, 26)
-        main_layout.setSpacing(14)
+        main_layout.setContentsMargins(32, 24, 32, 24)
+        main_layout.setSpacing(18)
 
         # --------------------------------------------------
-        # TITLE
+        # HEADER: title on the left, tracking controls on the right
         # --------------------------------------------------
 
-        title = QLabel("Virtual Mouse")
-        title.setStyleSheet(
-            f"QLabel {{ font-size: 26px; font-weight: 800; color: {c['text']}; }}"
-        )
+        header = QHBoxLayout()
+        header.setSpacing(12)
+
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+
+        title = QLabel("Virtual mouse")
+        title.setObjectName("vmTitle")
 
         subtitle = QLabel(
-            "Use your hand like a mouse — move the cursor, click and scroll."
+            "Control the cursor with your hand in front of the camera."
         )
-        subtitle.setStyleSheet(
-            f"QLabel {{ font-size: 13px; color: {c['text_secondary']}; }}"
-        )
+        subtitle.setObjectName("vmSubtitle")
+        subtitle.setWordWrap(True)
 
-        main_layout.addWidget(title)
-        main_layout.addWidget(subtitle)
+        titles.addWidget(title)
+        titles.addWidget(subtitle)
+
+        header.addLayout(titles, 1)
+
+        main_layout.addLayout(header)
 
         # --------------------------------------------------
-        # CONTENT
+        # BODY: camera | panel, resizable with a splitter
         # --------------------------------------------------
 
-        content_layout = QHBoxLayout()
-        content_layout.setSpacing(16)
+        self.splitter = GripSplitter(Qt.Horizontal, self)
+        self.splitter.setObjectName("vmSplitter")
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(12)
 
-        # ==================================================
-        # LEFT: CAMERA (responsive)
-        # ==================================================
+        self.splitter.addWidget(self.build_camera_panel())
+        self.splitter.addWidget(self.build_side_panel())
 
-        left_panel = QVBoxLayout()
-        left_panel.setSpacing(10)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 1)
 
-        camera_frame = QFrame()
-        camera_frame.setStyleSheet(
-            f"""
-            QFrame {{
-                background: {c['card']};
-                border: 1px solid {c['border']};
-                border-radius: 14px;
-            }}
-            """
+        main_layout.addWidget(self.splitter, 1)
+
+        self.reset_splitter()
+
+    def reset_splitter(self):
+        """Give the camera about 70% of the space (horizontal) or 60%
+        (stacked), whatever the current page size is."""
+
+        horizontal = self.splitter.orientation() == Qt.Horizontal
+
+        total = (
+            self.splitter.width() if horizontal
+            else self.splitter.height()
         )
 
-        camera_layout = QVBoxLayout(camera_frame)
-        camera_layout.setContentsMargins(14, 14, 14, 12)
-        camera_layout.setSpacing(10)
+        total = max(total, 600)
 
-        self.camera_label = QLabel()
-        self.camera_label.setMinimumSize(340, 240)
-        self.camera_label.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Expanding
-        )
-        self.camera_label.setAlignment(Qt.AlignCenter)
-        self.camera_label.setStyleSheet(
-            f"""
-            QLabel {{
-                background: {c['bg']};
-                border: 1px solid {c['border']};
-                border-radius: 10px;
-                color: {c['text_secondary']};
-                font-size: 14px;
-            }}
-            """
-        )
-        self.camera_label.setText(
-            "Camera is stopped.\n\nClick Start to begin tracking."
-        )
+        share = 0.70 if horizontal else 0.60
 
-        camera_layout.addWidget(self.camera_label, 1)
+        self.splitter.setSizes([
+            int(total * share),
+            int(total * (1 - share)),
+        ])
 
-        # Compact status row UNDER the camera feed.
-        status_row = QHBoxLayout()
-        status_row.setSpacing(8)
-
-        self.tracking_status = self.make_pill("● Tracking Inactive")
-        self.fps_label = self.make_pill("FPS: 0")
-        self.gesture_action = self.make_pill("Gesture: —")
-
-        status_row.addWidget(self.tracking_status)
-        status_row.addWidget(self.fps_label)
-        status_row.addWidget(self.gesture_action)
-        status_row.addStretch()
-
-        camera_layout.addLayout(status_row)
-
-        left_panel.addWidget(camera_frame, 1)
-        content_layout.addLayout(left_panel, 3)
-
-        # ==================================================
-        # RIGHT: GUIDE + SETTINGS
-        # ==================================================
-
-        right_panel = QVBoxLayout()
-        right_panel.setSpacing(12)
-
-        right_panel.addWidget(self.build_guide_card())
-        right_panel.addWidget(self.build_sensitivity_card(c))
-        right_panel.addLayout(self.build_buttons(c))
-        right_panel.addStretch()
-
-        content_layout.addLayout(right_panel, 1)
-        main_layout.addLayout(content_layout, 1)
-
-        self.setStyleSheet(
-            f"QWidget {{ background: {c['bg']}; color: {c['text']}; }}"
-        )
-
-    # ==========================================================
-    # SMALL UI HELPERS
-    # ==========================================================
-
-    def make_pill(self, text):
-
-        from settings import theme as app_theme
-
-        c = app_theme.colors()
-
-        label = QLabel(text)
-        label.setStyleSheet(
-            f"""
-            QLabel {{
-                background: {c['card']};
-                color: {c['text_secondary']};
-                border: 1px solid {c['border']};
-                border-radius: 12px;
-                padding: 5px 12px;
-                font-size: 12px;
-                font-weight: 600;
-            }}
-            """
-        )
-        return label
-
-    def build_guide_card(self):
-
-        from settings import theme as app_theme
-
-        c = app_theme.colors()
+    def build_camera_panel(self):
 
         frame = QFrame()
-        frame.setStyleSheet(
-            f"""
-            QFrame {{
-                background: {c['card']};
-                border: 1px solid {c['border']};
-                border-radius: 12px;
-            }}
-            """
-        )
+        frame.setObjectName("vmFeed")
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(9)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(10)
 
-        title = QLabel("How to use")
-        title.setStyleSheet(
-            f"QLabel {{ font-size: 15px; font-weight: 800; color: {c['text']}; }}"
+        self.camera_label = QLabel()
+        self.camera_label.setObjectName("vmCamera")
+        self.camera_label.setAlignment(Qt.AlignCenter)
+        self.camera_label.setMinimumSize(260, 195)
+
+        # "Ignored" lets the label shrink below the pixmap size, so the
+        # feed follows the splitter / window size in both directions.
+        self.camera_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Ignored
         )
-        layout.addWidget(title)
 
-        rows = [
-            ("🖐️", "Open palm", "Move the cursor"),
-            ("✌️", "Peace sign (apart)", "Drawing cursor"),
-            ("✌️", "Index + middle together", "Draw / write"),
-            ("✊", "Closed palm (fist)", "Left click"),
-            ("🤏", "Thumb + Middle", "Right click"),
-            ("⬆️", "Palm up", "Scroll up"),
-            ("⬇️", "Palm down", "Scroll down"),
-        ]
+        self.camera_label.setText(
+            "Camera is off.\nPress Start to begin tracking."
+        )
 
-        for icon, name, action in rows:
-            layout.addWidget(
-                self.make_guide_row(icon, name, action, c)
-            )
+        layout.addWidget(self.camera_label, 1)
+
+        # Status strip under the feed
+        status_row = QHBoxLayout()
+        status_row.setSpacing(16)
+
+        self.tracking_status = QLabel("Tracking off")
+        self.tracking_status.setObjectName("vmStatus")
+
+        self.gesture_action = QLabel("No hand detected")
+        self.gesture_action.setObjectName("vmMeta")
+
+        self.fps_label = QLabel("0 fps")
+        self.fps_label.setObjectName("vmMeta")
+
+        status_row.addWidget(self.tracking_status)
+        status_row.addWidget(self.gesture_action)
+        status_row.addStretch()
+        status_row.addWidget(self.fps_label)
+
+        layout.addLayout(status_row)
 
         return frame
 
-    def make_guide_row(self, icon, name, action, c):
+    def build_side_panel(self):
 
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 2, 0, 2)
-        h.setSpacing(8)
+        panel = QFrame()
+        panel.setObjectName("vmPanel")
+        panel.setMinimumWidth(300)
 
-        icon_label = QLabel(icon)
-        icon_label.setFixedWidth(26)
-        icon_label.setStyleSheet("QLabel { font-size: 15px; }")
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        name_label = QLabel(name)
-        name_label.setStyleSheet(
-            f"QLabel {{ color: {c['text']}; font-size: 12px; font-weight: 600; }}"
+        # --------------------------------------------------
+        # Scrollable part: gestures and scroll zones
+        # (scrolls only when the window is too short)
+        # --------------------------------------------------
+
+        content = QWidget()
+        content.setObjectName("vmPanelContent")
+
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(18, 16, 18, 8)
+        layout.setSpacing(6)
+
+        # Gestures (the active one lights up live)
+        layout.addWidget(self.make_section("Gestures"))
+
+        self.guide_rows = {}
+
+        for key, icon, name, action in GESTURE_GUIDE:
+
+            row = self.make_guide_row(icon, name, action)
+
+            self.guide_rows[key] = row
+
+            layout.addWidget(row)
+
+        layout.addSpacing(10)
+
+        # Scroll zones
+        layout.addWidget(self.make_section("Scroll zones"))
+
+        hint = QLabel(
+            "Hold the cursor still in a zone for 2 seconds to scroll. "
+            "Move out of the zone to stop."
         )
+        hint.setObjectName("vmHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
-        action_label = QLabel(action)
-        action_label.setStyleSheet(
-            f"QLabel {{ color: {c['text_secondary']}; font-size: 12px; }}"
-        )
+        self.screen_map = ScreenMap()
+        self.screen_map.setMinimumHeight(96)
+        self.screen_map.setMaximumHeight(130)
+        layout.addWidget(self.screen_map)
 
-        h.addWidget(icon_label)
-        h.addWidget(name_label)
-        h.addStretch()
-        h.addWidget(action_label)
+        layout.addStretch()
 
-        return row
+        scroll = QScrollArea()
+        scroll.setObjectName("vmPanelScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(content)
 
-    def build_sensitivity_card(self, c):
+        outer.addWidget(scroll, 1)
 
-        frame = QFrame()
-        frame.setStyleSheet(
-            f"""
-            QFrame {{
-                background: {c['card']};
-                border: 1px solid {c['border']};
-                border-radius: 12px;
-            }}
-            """
-        )
+        # --------------------------------------------------
+        # Pinned footer: sensitivity, then Start / Pause / Stop.
+        # Always visible, whatever the window height.
+        # --------------------------------------------------
 
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(8)
+        footer = QWidget()
+        footer.setObjectName("vmPanelFooter")
+
+        foot = QVBoxLayout(footer)
+        foot.setContentsMargins(18, 12, 18, 16)
+        foot.setSpacing(8)
 
         header = QHBoxLayout()
 
-        label = QLabel("Cursor Sensitivity")
-        label.setStyleSheet(
-            f"QLabel {{ color: {c['text']}; font-size: 13px; font-weight: 700; }}"
-        )
-
-        self.sensitivity_value = QLabel(
-            f"{self.sensitivity}%"
-        )
-        self.sensitivity_value.setStyleSheet(
-            f"QLabel {{ color: {c['text']}; font-size: 13px; font-weight: 700; }}"
-        )
-
-        header.addWidget(label)
+        header.addWidget(self.make_section("Cursor sensitivity"))
         header.addStretch()
+
+        self.sensitivity_value = QLabel(f"{self.sensitivity}%")
+        self.sensitivity_value.setObjectName("vmValue")
         header.addWidget(self.sensitivity_value)
-        layout.addLayout(header)
+
+        foot.addLayout(header)
 
         self.sensitivity_slider = QSlider(Qt.Horizontal)
+        self.sensitivity_slider.setObjectName("vmSlider")
         self.sensitivity_slider.setMinimum(10)
         self.sensitivity_slider.setMaximum(100)
         self.sensitivity_slider.setValue(self.sensitivity)
         self.sensitivity_slider.valueChanged.connect(
             self.change_sensitivity
         )
-        self.sensitivity_slider.setStyleSheet(
-            f"""
-            QSlider::groove:horizontal {{
-                height: 5px;
-                background: {c['border']};
-                border-radius: 3px;
-            }}
-            QSlider::sub-page:horizontal {{
-                background: {c['accent']};
-                border-radius: 3px;
-            }}
-            QSlider::handle:horizontal {{
-                width: 14px;
-                height: 14px;
-                margin: -5px 0;
-                background: {c['primary']};
-                border-radius: 7px;
-            }}
-            """
-        )
-        layout.addWidget(self.sensitivity_slider)
+        foot.addWidget(self.sensitivity_slider)
 
-        return frame
+        foot.addSpacing(8)
 
-    def build_buttons(self, c):
+        # Tracking controls
+        foot.addLayout(self.build_buttons())
+
+        outer.addWidget(footer, 0)
+
+        return panel
+
+    # ==========================================================
+    # SMALL UI HELPERS
+    # ==========================================================
+
+    def make_section(self, text):
+
+        label = QLabel(text)
+        label.setObjectName("vmSection")
+
+        return label
+
+    def make_guide_row(self, icon, name, action):
+
+        row = QFrame()
+        row.setObjectName("vmGestureRow")
+        row.setProperty("active", False)
+
+        h = QHBoxLayout(row)
+        h.setContentsMargins(10, 5, 10, 5)
+        h.setSpacing(10)
+
+        icon_label = QLabel(icon)
+        icon_label.setObjectName("vmGestureIcon")
+        icon_label.setFixedWidth(24)
+
+        text = QVBoxLayout()
+        text.setSpacing(0)
+
+        name_label = QLabel(name)
+        name_label.setObjectName("vmGestureName")
+
+        action_label = QLabel(action)
+        action_label.setObjectName("vmGestureAction")
+
+        text.addWidget(name_label)
+        text.addWidget(action_label)
+
+        h.addWidget(icon_label)
+        h.addLayout(text, 1)
+
+        return row
+
+    def build_buttons(self):
 
         layout = QHBoxLayout()
         layout.setSpacing(8)
@@ -457,49 +858,308 @@ class VirtualMousePage(QWidget):
         self.pause_button = QPushButton("Pause")
         self.stop_button = QPushButton("Stop")
 
+        self.start_button.setObjectName("vmPrimary")
+        self.pause_button.setObjectName("vmSecondary")
+        self.stop_button.setObjectName("vmSecondary")
+
         for button in (
             self.start_button,
             self.pause_button,
             self.stop_button
         ):
-            button.setFixedHeight(40)
+            button.setFixedHeight(38)
+            button.setMinimumWidth(64)
             button.setCursor(Qt.PointingHandCursor)
+            button.setSizePolicy(
+                QSizePolicy.Expanding,
+                QSizePolicy.Fixed
+            )
+
+        # Start is the main action, so it gets the widest button.
+        layout.addWidget(self.start_button, 2)
+        layout.addWidget(self.pause_button, 1)
+        layout.addWidget(self.stop_button, 1)
 
         self.start_button.clicked.connect(self.start_tracking)
         self.pause_button.clicked.connect(self.pause_tracking)
         self.stop_button.clicked.connect(self.stop_tracking)
 
-        self.start_button.setStyleSheet(
+        return layout
+
+    # ==========================================================
+    # THEME
+    #
+    # Every colour on this page comes from the app theme through
+    # ONE stylesheet, so switching light / dark repaints it all.
+    # ==========================================================
+
+    def apply_theme(self):
+
+        from settings import theme as app_theme
+
+        self._theme_name = app_theme.current_name()
+
+        c = page_colors()
+
+        self.state_colors = STATE_COLORS.get(
+            "Dark" if app_theme.is_dark() else "Light"
+        )
+
+        self.setStyleSheet(
             f"""
-            QPushButton {{
+            QWidget#vmPage {{
+                background: {c['bg']};
+            }}
+
+            QLabel {{
+                background: transparent;
+                color: {c['text']};
+            }}
+
+            QLabel#vmTitle {{
+                font-size: 22px;
+                font-weight: 700;
+            }}
+
+            QLabel#vmSubtitle {{
+                font-size: 13px;
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#vmSection {{
+                font-size: 14px;
+                font-weight: 700;
+            }}
+
+            QLabel#vmHint {{
+                font-size: 12px;
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#vmValue {{
+                font-size: 13px;
+                font-weight: 600;
+            }}
+
+            QFrame#vmFeed {{
+                background: {c['card']};
+                border: 1px solid {c['border']};
+                border-radius: 14px;
+            }}
+
+            QLabel#vmCamera {{
+                background: {c['well']};
+                border-radius: 10px;
+                color: {c['text_secondary']};
+                font-size: 14px;
+            }}
+
+            QLabel#vmMeta {{
+                font-size: 12px;
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#vmStatus {{
+                font-size: 12px;
+                font-weight: 700;
+                color: {c['text_secondary']};
+            }}
+
+            QScrollArea#vmPanelScroll,
+            QWidget#vmPanelContent {{
+                background: transparent;
+                border: none;
+            }}
+
+            QWidget#vmPanelFooter {{
+                background: transparent;
+                border-top: 1px solid {c['border']};
+            }}
+
+            QScrollArea#vmPanelScroll QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 4px 2px 4px 0;
+            }}
+
+            QScrollArea#vmPanelScroll QScrollBar::handle:vertical {{
+                background: {c['border']};
+                border-radius: 3px;
+                min-height: 30px;
+            }}
+
+            QScrollArea#vmPanelScroll QScrollBar::add-line:vertical,
+            QScrollArea#vmPanelScroll QScrollBar::sub-line:vertical,
+            QScrollArea#vmPanelScroll QScrollBar::add-page:vertical,
+            QScrollArea#vmPanelScroll QScrollBar::sub-page:vertical {{
+                background: transparent;
+                height: 0;
+            }}
+
+            QFrame#vmPanel {{
+                background: {c['card']};
+                border: 1px solid {c['border']};
+                border-radius: 14px;
+            }}
+
+            QFrame#vmGestureRow {{
+                background: transparent;
+                border: none;
+                border-left: 3px solid transparent;
+                border-radius: 6px;
+            }}
+
+            QFrame#vmGestureRow[active="true"] {{
+                background: {c['button_hover']};
+                border-left: 3px solid {c['primary']};
+            }}
+
+            QLabel#vmGestureIcon {{
+                font-size: 16px;
+                font-weight: 700;
+                color: {c['primary']};
+                qproperty-alignment: AlignCenter;
+            }}
+
+            QLabel#vmGestureName {{
+                font-size: 13px;
+                font-weight: 600;
+            }}
+
+            QLabel#vmGestureAction {{
+                font-size: 12px;
+                color: {c['text_secondary']};
+            }}
+
+            QPushButton#vmPrimary {{
                 background: {c['primary']};
                 color: {c['primary_text']};
                 border: none;
                 border-radius: 8px;
+                font-size: 13px;
                 font-weight: 700;
+                padding: 0 8px;
             }}
-            QPushButton:hover {{ background: {c['sidebar_hover']}; }}
-            """
-        )
 
-        secondary = f"""
-            QPushButton {{
-                background: {c['card']};
+            QPushButton#vmPrimary:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+
+            QPushButton#vmSecondary {{
+                background: {c['bg']};
                 color: {c['text']};
                 border: 1px solid {c['border']};
                 border-radius: 8px;
+                font-size: 13px;
                 font-weight: 600;
+                padding: 0 6px;
             }}
-            QPushButton:hover {{ background: {c['button_hover']}; }}
-        """
-        self.pause_button.setStyleSheet(secondary)
-        self.stop_button.setStyleSheet(secondary)
 
-        layout.addWidget(self.start_button)
-        layout.addWidget(self.pause_button)
-        layout.addWidget(self.stop_button)
+            QPushButton#vmSecondary:hover {{
+                background: {c['button_hover']};
+            }}
 
-        return layout
+            QPushButton:focus {{
+                outline: none;
+                border: 2px solid {c['accent'] if app_theme.is_dark() else c['sidebar_hover']};
+            }}
+
+            QSlider#vmSlider::groove:horizontal {{
+                height: 5px;
+                background: {c['border']};
+                border-radius: 2px;
+            }}
+
+            QSlider#vmSlider::sub-page:horizontal {{
+                background: {c['primary']};
+                border-radius: 2px;
+            }}
+
+            QSlider#vmSlider::handle:horizontal {{
+                width: 16px;
+                height: 16px;
+                margin: -6px 0;
+                background: {c['card']};
+                border: 2px solid {c['primary']};
+                border-radius: 9px;
+            }}
+
+            QSplitter#vmSplitter::handle {{
+                background: transparent;
+            }}
+            """
+        )
+
+        for i in range(1, self.splitter.count()):
+
+            handle = self.splitter.handle(i)
+
+            if isinstance(handle, GripHandle):
+
+                handle.grip_color = QColor(c['border'])
+                handle.hover_color = QColor(c['primary'])
+                handle.update()
+
+        if hasattr(self, "screen_map"):
+            self.screen_map.set_colors(c)
+
+        self.set_tracking_status(
+            self.tracking_status.text(),
+            self._status_state
+        )
+
+    def set_tracking_status(self, text, state="off"):
+        """state is one of: off, live, paused, error."""
+
+        self._status_state = state
+
+        self.tracking_status.setText(text)
+
+        color = getattr(self, "state_colors", {}).get(state)
+
+        if color:
+
+            self.tracking_status.setStyleSheet(
+                f"QLabel#vmStatus {{ color: {color}; }}"
+            )
+
+        else:
+
+            self.tracking_status.setStyleSheet("")
+
+    def set_active_gesture(self, key):
+        """Highlight the guide row for the gesture in use."""
+
+        for row_key, row in self.guide_rows.items():
+
+            active = row_key == key
+
+            if row.property("active") == active:
+                continue
+
+            row.setProperty("active", active)
+            row.style().unpolish(row)
+            row.style().polish(row)
+
+    # ==========================================================
+    # RESPONSIVE LAYOUT
+    # ==========================================================
+
+    def resizeEvent(self, event):
+
+        super().resizeEvent(event)
+
+        # Stack the camera above the panel on narrow windows.
+        orientation = (
+            Qt.Vertical if self.width() < 900 else Qt.Horizontal
+        )
+
+        if self.splitter.orientation() != orientation:
+
+            self.splitter.setOrientation(orientation)
+
+            self.reset_splitter()
 
     # ==========================================================
     # CAMERA
@@ -528,8 +1188,8 @@ class VirtualMousePage(QWidget):
             self.camera = None
 
             self.set_tracking_status(
-                "● Camera Not Available",
-                "#D9534F"
+                "Camera not available",
+                "error"
             )
 
             return False
@@ -593,35 +1253,6 @@ class VirtualMousePage(QWidget):
     # START TRACKING
     # ==========================================================
 
-    # ==========================================================
-    # TRACKING STATUS PILL
-    # ==========================================================
-
-    def set_tracking_status(self, text, color=""):
-
-        from settings import theme as app_theme
-
-        c = app_theme.colors()
-
-        if not color:
-            color = c["text_secondary"]
-
-        self.tracking_status.setText(text)
-
-        self.tracking_status.setStyleSheet(
-            f"""
-            QLabel {{
-                background: {c['card']};
-                color: {color};
-                border: 1px solid {c['border']};
-                border-radius: 12px;
-                padding: 5px 12px;
-                font-size: 12px;
-                font-weight: 600;
-            }}
-            """
-        )
-
     def start_tracking(self):
 
         if not self.open_camera():
@@ -638,16 +1269,12 @@ class VirtualMousePage(QWidget):
         self.previous_x = None
         self.previous_y = None
 
-        # Re-calibrate the neutral (screen-centre) hand position.
-        self._neutral_x = None
-        self._neutral_y = None
-        self._cal_samples = []
-
         self.frame_count = 0
+        self._frame_times.clear()
 
         self.set_tracking_status(
-            "● Tracking Active",
-            "#2A9561"
+            "Tracking on",
+            "live"
         )
 
         # 25 ms ≈ 40 FPS target.
@@ -668,9 +1295,11 @@ class VirtualMousePage(QWidget):
 
         self.camera_paused = True
 
+        self.reset_gesture_status()
+
         self.set_tracking_status(
-            "● Tracking Paused",
-            "#B47B32"
+            "Paused",
+            "paused"
         )
 
     # ==========================================================
@@ -693,31 +1322,27 @@ class VirtualMousePage(QWidget):
             self.camera.release()
             self.camera = None
 
+        # Pages mirroring this camera must not keep a frozen frame.
+        self.latest_frame = None
+        self.latest_hand = None
+
         self.previous_x = None
         self.previous_y = None
-
-        # Make sure the mouse button is not left held down.
-        self.release_drag()
 
         self.last_gesture = "None"
 
         self.set_tracking_status(
-            "● Tracking Inactive"
+            "Tracking off"
         )
 
         self.fps_label.setText(
-            "FPS: 0"
-        )
-
-        self.gesture_action.setText(
-            "Gesture: —"
+            "0 fps"
         )
 
         self.camera_label.clear()
 
         self.camera_label.setText(
-            "Camera is stopped.\n\n"
-            "Click Start to begin tracking."
+            "Camera is off.\nPress Start to begin tracking."
         )
 
         self.reset_gesture_status()
@@ -742,14 +1367,16 @@ class VirtualMousePage(QWidget):
             self.camera.release()
             self.camera = None
 
+        self.latest_frame = None
+        self.latest_hand = None
+
         self.camera_running = False
         self.camera_paused = False
 
         self.previous_x = None
         self.previous_y = None
 
-        # Make sure the mouse button is not left held down.
-        self.release_drag()
+        self.reset_gesture_status()
 
     # ==========================================================
     # ENSURE RUNNING (persistent mouse)
@@ -772,6 +1399,12 @@ class VirtualMousePage(QWidget):
     def showEvent(self, event):
 
         super().showEvent(event)
+
+        # The theme may have been changed on the Settings page.
+        from settings import theme as app_theme
+
+        if app_theme.current_name() != self._theme_name:
+            self.apply_theme()
 
         if self.camera_was_running and self.camera is None:
             self.start_tracking()
@@ -856,14 +1489,23 @@ class VirtualMousePage(QWidget):
                 self.reset_gesture_status()
 
         # ------------------------------------------------------
-        # FPS
+        # FPS (measured over the last 30 frames)
         # ------------------------------------------------------
 
         self.frame_count += 1
 
-        self.fps_label.setText(
-            "FPS: 40"
-        )
+        now = time.monotonic()
+        self._frame_times.append(now)
+
+        if len(self._frame_times) > 1 and self.frame_count % 10 == 0:
+
+            span = self._frame_times[-1] - self._frame_times[0]
+
+            if span > 0:
+
+                fps = (len(self._frame_times) - 1) / span
+
+                self.fps_label.setText(f"{fps:.0f} fps")
 
         # ------------------------------------------------------
         # CAMERA DISPLAY
@@ -871,10 +1513,35 @@ class VirtualMousePage(QWidget):
 
         # Share the latest frame (with landmarks drawn) so other pages such
         # as the Whiteboard preview can show it without opening the camera.
+        # The page-only overlay is drawn after this copy.
         self.latest_frame = frame.copy()
+
+        self.draw_gesture_overlay(
+            frame,
+            gesture
+        )
 
         self.display_frame(
             frame
+        )
+
+    def draw_gesture_overlay(self, frame, gesture):
+        """Show a click flash on the feed so clicks are easy to confirm."""
+
+        if self._click_flash <= 0:
+            return
+
+        self._click_flash -= 1
+
+        cv2.putText(
+            frame,
+            self._click_text,
+            (14, 36),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (60, 200, 120),
+            2,
+            cv2.LINE_AA
         )
 
     # ==========================================================
@@ -895,6 +1562,11 @@ class VirtualMousePage(QWidget):
     # GESTURE DETECTION
     # ==========================================================
 
+    @staticmethod
+    def _dist(a, b):
+
+        return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
+
     def detect_gesture(
         self,
         hand
@@ -903,97 +1575,95 @@ class VirtualMousePage(QWidget):
         lm = hand.landmark
         HL = self.mp_hands.HandLandmark
 
-        # --------------------------------------------------
-        # LANDMARKS
-        # --------------------------------------------------
+        dist = self._dist
+
+        wrist = lm[HL.WRIST]
+
+        # Hand size (wrist -> middle knuckle) so every threshold works at
+        # any distance from the camera.
+        palm = dist(wrist, lm[HL.MIDDLE_FINGER_MCP]) or 1e-6
 
         thumb_tip = lm[HL.THUMB_TIP]
         index_tip = lm[HL.INDEX_FINGER_TIP]
-        middle_tip = lm[HL.MIDDLE_FINGER_TIP]
-        ring_tip = lm[HL.RING_FINGER_TIP]
-        pinky_tip = lm[HL.PINKY_TIP]
-
-        index_up = index_tip.y < lm[HL.INDEX_FINGER_PIP].y
-        middle_up = middle_tip.y < lm[HL.MIDDLE_FINGER_PIP].y
-        ring_up = ring_tip.y < lm[HL.RING_FINGER_PIP].y
-        pinky_up = pinky_tip.y < lm[HL.PINKY_PIP].y
 
         # --------------------------------------------------
-        # 🤏 THUMB + MIDDLE  ->  RIGHT CLICK
+        # 🤏 THUMB + INDEX TOUCHING  ->  RIGHT CLICK
+        #
+        # The index tip must still be away from the palm: in a fist
+        # the thumb rests near the curled index, which is not a pinch.
+        # Hysteresis: tips must be close to start, may part a little
+        # before the pinch ends.
         # --------------------------------------------------
 
-        thumb_middle = (
-            (thumb_tip.x - middle_tip.x) ** 2
-            + (thumb_tip.y - middle_tip.y) ** 2
-        ) ** 0.5
+        pinch = dist(thumb_tip, index_tip) / palm
 
-        thumb_index = (
-            (thumb_tip.x - index_tip.x) ** 2
-            + (thumb_tip.y - index_tip.y) ** 2
-        ) ** 0.5
+        pinch_threshold = 0.32 if self.last_gesture == "Pinch" else 0.22
 
-        # --------------------------------------------------
-        # 🤏 THUMB + MIDDLE  ->  RIGHT CLICK
-        # --------------------------------------------------
+        index_reaching = (
+            dist(index_tip, wrist)
+            > dist(lm[HL.INDEX_FINGER_PIP], wrist)
+        )
 
-        if thumb_middle < 0.07 and middle_up:
-            return "Thumb + Middle"
+        if pinch < pinch_threshold and index_reaching:
+            return "Pinch"
 
         # --------------------------------------------------
-        # ✌️ INDEX + MIDDLE TOGETHER  ->  DRAW
-        # (finger tips touching) Holds the left mouse button so the user
-        # can draw / write on the Whiteboard / Annotation canvas.
-        # Must be checked before Open Palm.
+        # ✊ CLOSED HAND (FIST)  ->  LEFT CLICK
         # --------------------------------------------------
 
-        index_middle = (
-            (index_tip.x - middle_tip.x) ** 2
-            + (index_tip.y - middle_tip.y) ** 2
-        ) ** 0.5
-
-        if (
-            index_up
-            and middle_up
-            and not ring_up
-            and not pinky_up
-        ):
-
-            # Distance between the index and middle fingertips decides
-            # DRAW vs PEACE:
-            #   tips touching  -> draw
-            #   tips apart     -> peace sign (cursor, no drawing)
-            #
-            # Hysteresis: to START drawing the tips must be really close,
-            # but once drawing they may separate a little before it stops.
-            # This stops accidental drawing while showing a peace sign.
-            draw_threshold = 0.055 if self.is_dragging else 0.040
-
-            if index_middle < draw_threshold:
-
-                return "Index + Middle"
-
-            return "Peace Sign"
-
-        # --------------------------------------------------
-        # 🖐️ OPEN PALM  ->  MOVE CURSOR (+ scroll on vertical motion)
-        # --------------------------------------------------
-
-        if index_up and middle_up and ring_up and pinky_up:
-            return "Open Palm"
-
-        # --------------------------------------------------
-        # ✊ CLOSED PALM (FIST)  ->  LEFT CLICK
-        # --------------------------------------------------
-
-        if (
-            not index_up
-            and not middle_up
-            and not ring_up
-            and not pinky_up
-        ):
+        if self.is_fist(lm, HL, palm):
             return "Fist"
 
+        # --------------------------------------------------
+        # 🖐️ OPEN PALM  ->  MOVE CURSOR (+ scroll zones)
+        # --------------------------------------------------
+
+        fingers = (
+            (HL.INDEX_FINGER_TIP, HL.INDEX_FINGER_PIP),
+            (HL.MIDDLE_FINGER_TIP, HL.MIDDLE_FINGER_PIP),
+            (HL.RING_FINGER_TIP, HL.RING_FINGER_PIP),
+            (HL.PINKY_TIP, HL.PINKY_PIP),
+        )
+
+        if all(lm[tip].y < lm[pip].y for tip, pip in fingers):
+            return "Open Palm"
+
         return "None"
+
+    def is_fist(self, lm, HL, palm):
+        """Return True when all four fingers are curled into the palm.
+
+        A finger counts as folded when its tip is below its middle
+        knuckle (PIP), closer to the wrist than that knuckle, or close
+        to the palm. This works whatever the hand's rotation.
+        """
+
+        dist = self._dist
+
+        wrist = lm[HL.WRIST]
+
+        fingers = (
+            (HL.INDEX_FINGER_TIP, HL.INDEX_FINGER_PIP),
+            (HL.MIDDLE_FINGER_TIP, HL.MIDDLE_FINGER_PIP),
+            (HL.RING_FINGER_TIP, HL.RING_FINGER_PIP),
+            (HL.PINKY_TIP, HL.PINKY_PIP),
+        )
+
+        for tip_id, pip_id in fingers:
+
+            tip = lm[tip_id]
+            pip = lm[pip_id]
+
+            tip_wrist = dist(tip, wrist)
+
+            curled = tip_wrist < dist(pip, wrist)
+            below = tip.y > pip.y
+            near_palm = tip_wrist < 1.3 * palm
+
+            if not (curled or below or near_palm):
+                return False
+
+        return True
 
     # ==========================================================
     # PERFORM GESTURE
@@ -1005,144 +1675,88 @@ class VirtualMousePage(QWidget):
         hand
     ):
 
-        # Reset the scroll accumulator whenever the palm is not open, so a
-        # stale swipe never carries over to the next open-palm moment.
-        if gesture != "Open Palm":
-            self._scroll_accum = 0.0
-            self._scroll_prev_y = None
+        fire_left = self.left_trigger.update(gesture == "Fist")
+        fire_right = self.right_trigger.update(gesture == "Pinch")
 
-        # Only the INDEX + MIDDLE "draw" gesture may hold the mouse button.
-        # (A fist must never hold it, or the Whiteboard would draw by itself.)
-        hold_gestures = ("Index + Middle",)
+        # Scroll zones only count while the open palm steers the cursor.
+        # A single undetected frame ("None") does not reset the hold.
+        if gesture not in ("Open Palm", "None"):
+            self.reset_dwell()
 
-        if gesture in hold_gestures:
-
-            self._hold_grace = 8
-
-        else:
-
-            self.tick_hold_grace()
+        self.last_gesture = gesture
 
         if gesture == "None":
             return
 
         # --------------------------------------------------
-        # 🖐️ OPEN PALM -> move cursor (+ scroll on vertical motion)
+        # 🖐️ OPEN PALM -> move cursor, scroll in the zones
         # --------------------------------------------------
 
         if gesture == "Open Palm":
 
             self.move_cursor(hand)
 
-            self.handle_scroll(hand)
-
-            self.set_action("Move Cursor")
-
-        # --------------------------------------------------
-        # ✌️ PEACE SIGN -> move the drawing cursor (no scroll)
-        # --------------------------------------------------
-
-        elif gesture == "Peace Sign":
-
-            self.move_cursor(hand)
-
-            self.set_action("Cursor / Draw")
+            if not self.update_scroll_zone():
+                self.set_active_gesture("move")
+                self.set_action("Moving the cursor")
 
         # --------------------------------------------------
-        # ✌️ INDEX + MIDDLE TOGETHER -> DRAW
-        # Holds the left mouse button so the user can draw / write on the
-        # Whiteboard / Annotation canvas while moving the hand.
-        # --------------------------------------------------
-
-        elif gesture == "Index + Middle":
-
-            self.move_cursor(hand)
-
-            if not self.is_dragging:
-
-                self.begin_drag()
-
-            self.set_action("Draw")
-
-        # --------------------------------------------------
-        # ✊ CLOSED PALM (FIST) -> left click
+        # ✊ FIST -> left click (once per fist)
         # --------------------------------------------------
 
         elif gesture == "Fist":
 
-            if self.left_click_cooldown <= 0:
+            if fire_left:
+                self.click("left")
 
-                pyautogui.click()
-
-                self.left_click_cooldown = 8
-
-            else:
-
-                self.left_click_cooldown -= 1
-
-            self.set_action("Left Click")
+            self.set_active_gesture("left")
+            self.set_action("Left click")
 
         # --------------------------------------------------
-        # 🤏 THUMB + MIDDLE -> right click
+        # 🤏 PINCH -> right click (once per pinch)
         # --------------------------------------------------
 
-        elif gesture == "Thumb + Middle":
+        elif gesture == "Pinch":
 
-            if self.right_click_cooldown <= 0:
+            if fire_right:
+                self.click("right")
 
-                pyautogui.rightClick()
+            self.set_active_gesture("right")
+            self.set_action("Right click")
 
-                self.right_click_cooldown = 8
+    def click(self, button):
+        """Click where the cursor was just before the hand changed shape."""
 
-            else:
+        target = None
+        cutoff = time.monotonic() - 0.3
 
-                self.right_click_cooldown -= 1
+        for t, x, y in reversed(self._cursor_history):
 
-            self.set_action("Right Click")
+            if t <= cutoff:
 
-        self.last_gesture = gesture
-
-    # ==========================================================
-    # DRAG HELPERS
-    # ==========================================================
-
-    def begin_drag(self):
+                target = (x, y)
+                break
 
         try:
 
-            pyautogui.mouseDown()
+            if target is not None:
 
-        except Exception:
+                native_click(target[0], target[1], button)
 
-            pass
+                self.previous_x, self.previous_y = target
 
-        self.is_dragging = True
+            else:
 
-    def release_drag(self):
+                native_click(button=button)
 
-        if not self.is_dragging:
-            return
+        except Exception as exc:
 
-        try:
+            print(f"Virtual mouse: {button} click failed:", exc)
 
-            pyautogui.mouseUp()
-
-        except Exception:
-
-            pass
-
-        self.is_dragging = False
-
-    def tick_hold_grace(self):
-
-        if not self.is_dragging:
-            return
-
-        self._hold_grace -= 1
-
-        if self._hold_grace <= 0:
-
-            self.release_drag()
+        self._click_text = (
+            "Left click" if button == "left" else "Right click"
+        )
+        self._click_flash = 10
 
     # ==========================================================
     # ACTION LABEL
@@ -1152,9 +1766,7 @@ class VirtualMousePage(QWidget):
 
         if hasattr(self, "gesture_action"):
 
-            self.gesture_action.setText(
-                "Gesture: " + text
-            )
+            self.gesture_action.setText(text)
 
     # ==========================================================
     # MOVE CURSOR (Open Palm)
@@ -1237,25 +1849,12 @@ class VirtualMousePage(QWidget):
         dx = target_x - self.previous_x
         dy = target_y - self.previous_y
 
-        # While drawing (left button held) follow closely for a responsive,
-        # continuous line (the grace period prevents the stroke from
-        # breaking if the hand blinks for a frame).
-        if self.is_dragging:
-
-            dead = 0
-            smooth = 0.8
-
-        else:
-
-            dead = self.dead_zone
-            smooth = self.smoothing
-
-        if dead and abs(dx) <= dead and abs(dy) <= dead:
+        if abs(dx) <= self.dead_zone and abs(dy) <= self.dead_zone:
 
             return
 
-        smooth_x = self.previous_x + dx * smooth
-        smooth_y = self.previous_y + dy * smooth
+        smooth_x = self.previous_x + dx * self.smoothing
+        smooth_y = self.previous_y + dy * self.smoothing
 
         smooth_x = max(
             0,
@@ -1274,6 +1873,10 @@ class VirtualMousePage(QWidget):
 
     def move_to(self, x, y):
 
+        self._cursor_history.append(
+            (time.monotonic(), int(x), int(y))
+        )
+
         try:
 
             pyautogui.moveTo(
@@ -1288,89 +1891,137 @@ class VirtualMousePage(QWidget):
             pass
 
     # ==========================================================
-    # SCROLL (Open Palm + vertical movement)
+    # SCROLL ZONES
     #
-    # A deliberate up/down swipe of the open palm scrolls, while normal
-    # small open-palm movement does NOT scroll (accumulator threshold).
+    # Hold the cursor in the upper-middle of the screen for 2 seconds
+    # to scroll up, or the lower-middle to scroll down. Scrolling
+    # continues until the cursor leaves the zone.
     # ==========================================================
 
-    def handle_scroll(
-        self,
-        hand
-    ):
+    def scroll_zone_at(self, x, y):
 
-        _, palm_y = self.hand_centre(hand)
+        fx = x / float(self.screen_width)
+        fy = y / float(self.screen_height)
 
-        if self._scroll_prev_y is None:
+        if not (ZONE_X[0] <= fx <= ZONE_X[1]):
+            return None
 
-            self._scroll_prev_y = palm_y
-            return
+        if fy <= ZONE_TOP:
+            return "up"
 
-        dy = palm_y - self._scroll_prev_y
-        self._scroll_prev_y = palm_y
+        if fy >= ZONE_BOTTOM:
+            return "down"
 
-        # Ignore tiny jitter / normal movement.
-        if abs(dy) < 0.004:
+        return None
 
-            self._scroll_accum *= 0.6
-            return
+    def update_scroll_zone(self):
+        """Advance the dwell timer. Returns True while in a zone."""
 
-        self._scroll_accum += dy
+        if self.previous_x is None:
+            return False
 
-        threshold = 0.18
+        x, y = self.previous_x, self.previous_y
 
-        if self._scroll_accum > threshold:
+        zone = self.scroll_zone_at(x, y)
 
-            # Palm moved DOWN -> scroll down
-            pyautogui.scroll(-4)
-            self._scroll_accum = 0.0
+        now = time.monotonic()
 
-        elif self._scroll_accum < -threshold:
+        if zone != self._dwell_zone:
 
-            # Palm moved UP -> scroll up
-            pyautogui.scroll(4)
-            self._scroll_accum = 0.0
+            self._dwell_zone = zone
+            self._dwell_start = now
+            self._last_scroll = 0.0
 
-    # ==========================================================
-    # ACTION NAME
-    # ==========================================================
-
-    def get_action_name(
-        self,
-        gesture
-    ):
-
-        actions = {
-            "Open Palm": "Move Cursor",
-            "Peace Sign": "Cursor / Draw",
-            "Fist": "Left Click",
-            "Index + Middle": "Draw",
-            "Thumb + Middle": "Right Click",
-        }
-
-        return actions.get(
-            gesture,
-            "Ready"
+        cursor = (
+            x / float(self.screen_width),
+            y / float(self.screen_height),
         )
 
+        if zone is None:
+
+            self.screen_map.set_state(cursor, None, 0.0, False)
+
+            return False
+
+        elapsed = now - self._dwell_start
+
+        progress = min(1.0, elapsed / SCROLL_DWELL_SECONDS)
+
+        scrolling = elapsed >= SCROLL_DWELL_SECONDS
+
+        if scrolling and now - self._last_scroll >= SCROLL_REPEAT_SECONDS:
+
+            try:
+
+                native_scroll(1 if zone == "up" else -1)
+
+            except Exception as exc:
+
+                print("Virtual mouse: scroll failed:", exc)
+
+            self._last_scroll = now
+
+        key = "scroll_up" if zone == "up" else "scroll_down"
+
+        self.set_active_gesture(key)
+
+        if scrolling:
+
+            self.set_action(
+                "Scrolling up" if zone == "up" else "Scrolling down"
+            )
+
+        else:
+
+            remaining = SCROLL_DWELL_SECONDS - elapsed
+
+            self.set_action(
+                f"Hold to scroll {zone}: {remaining:.1f} s left"
+            )
+
+        self.screen_map.set_state(cursor, zone, progress, scrolling)
+
+        return True
+
+    def reset_dwell(self):
+
+        self._dwell_zone = None
+        self._dwell_start = 0.0
+        self._last_scroll = 0.0
+
+        if hasattr(self, "screen_map"):
+
+            cursor = None
+
+            if self.previous_x is not None:
+
+                cursor = (
+                    self.previous_x / float(self.screen_width),
+                    self.previous_y / float(self.screen_height),
+                )
+
+            self.screen_map.set_state(cursor, None, 0.0, False)
+
     # ==========================================================
-    # RESET STATUS
+    # RESET
     # ==========================================================
 
     def reset_gesture_status(self):
 
-        self._scroll_accum = 0.0
-        self._scroll_prev_y = None
+        self.reset_dwell()
 
-        # Dropping the hand must not leave the mouse button held down,
-        # but allow a short grace period first (hand detection can blink).
-        self.tick_hold_grace()
+        # Losing the hand counts as "gesture released" so the next fist
+        # or pinch clicks again.
+        for _ in range(self.left_trigger.release):
+            self.left_trigger.update(False)
+            self.right_trigger.update(False)
 
-        if hasattr(self, "gesture_action"):
+        self.last_gesture = "None"
 
-            self.gesture_action.setText(
-                "Gesture: —"
-            )
+        if hasattr(self, "guide_rows"):
+            self.set_active_gesture(None)
+
+        self.set_action("No hand detected")
 
     # ==========================================================
     # DISPLAY FRAME
@@ -1413,18 +2064,19 @@ class VirtualMousePage(QWidget):
 
         # ------------------------------------------------------
         # RESPONSIVE DISPLAY SIZE
+        # The feed fills the label while keeping its aspect ratio.
         # ------------------------------------------------------
 
-        target = self.camera_label.size()
+        target = self.camera_label.contentsRect().size()
 
         if target.width() < 40 or target.height() < 40:
 
-            target = QSize(480, 320)
+            target = QSize(480, 360)
 
         pixmap = pixmap.scaled(
             target,
             Qt.KeepAspectRatio,
-            Qt.FastTransformation
+            Qt.SmoothTransformation
         )
 
         self.camera_label.setPixmap(
@@ -1458,7 +2110,14 @@ class VirtualMousePage(QWidget):
         name
     ):
 
+        if index is None or index == self.camera_index:
+            return
+
         was_running = self.camera_running
+
+        # Tracking may be paused because another page borrowed the
+        # webcam; keep that intent so it resumes on the new camera.
+        should_resume = self.camera_was_running
 
         self.stop_tracking()
 
@@ -1467,6 +2126,10 @@ class VirtualMousePage(QWidget):
         if was_running:
 
             self.start_tracking()
+
+        else:
+
+            self.camera_was_running = should_resume
 
     # ==========================================================
     # CAMERA NAME

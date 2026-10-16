@@ -13,8 +13,8 @@ import settings.preferences as prefs
 
 LIGHT = {
     "name": "Light",
-    "bg": "#F5FEFF",
-    "card": "#FFFFFF",
+    "bg": "#EEF2F7",
+    "card": "#F7F9FC",
     "border": "#AAC0E1",
     "text": "#0E2F76",
     "text_secondary": "#5A6B93",
@@ -24,11 +24,11 @@ LIGHT = {
     "sidebar_hover": "#1B4499",
     "accent": "#AAC0E1",
     "accent_text": "#0E2F76",
-    "input_bg": "#FFFFFF",
+    "input_bg": "#F7F9FC",
     "input_border": "#AAC0E1",
-    "button_bg": "#FFFFFF",
+    "button_bg": "#F7F9FC",
     "button_text": "#5A6B93",
-    "button_hover": "#EFF4FC",
+    "button_hover": "#E3EAF4",
     "primary": "#0E2F76",
     "primary_text": "#F5FEFF",
 }

@@ -20,9 +20,9 @@ class TutorialPage(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setObjectName("tutorialPage")
         self.setStyleSheet("""
-            QWidget#tutorialPage { background: #F5FEFF; }
+            QWidget#tutorialPage { background: #EEF2F7; }
             QFrame#tutorialCard {
-                background: #FFFFFF; border: 1px solid #AAC0E1; border-radius: 18px;
+                background: #F7F9FC; border: 1px solid #AAC0E1; border-radius: 18px;
             }
             QLabel { background: transparent; color: #0E2F76; }
             QLabel#eyebrow { color: #AAC0E1; font-size: 12px; font-weight: 700; }
@@ -36,13 +36,13 @@ class TutorialPage(QWidget):
             QLabel#pageDot { color: #AAC0E1; font-size: 18px; }
             QLabel#pageDotActive { color: #0E2F76; font-size: 18px; }
             QPushButton {
-                background: #0E2F76; color: #F5FEFF; border: none; border-radius: 9px;
+                background: #0E2F76; color: #EEF2F7; border: none; border-radius: 9px;
                 padding: 11px 22px; min-width: 110px; font-size: 13px; font-weight: 700;
             }
             QPushButton:hover { background: #1B4499; }
-            QPushButton#backButton { background: #F5FEFF; color: #5A6B93; border: 1px solid #AAC0E1; }
+            QPushButton#backButton { background: #EEF2F7; color: #5A6B93; border: 1px solid #AAC0E1; }
             QPushButton#backButton:hover { background: #EFF4FC; color: #0E2F76; }
-            QPushButton#backButton:disabled { color: #AAC0E1; background: #F5FEFF; border-color: #CDDBF0; }
+            QPushButton#backButton:disabled { color: #AAC0E1; background: #EEF2F7; border-color: #CDDBF0; }
             QLabel#footer { color: #AAC0E1; font-size: 11px; }
         """)
 
