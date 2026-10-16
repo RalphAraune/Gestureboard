@@ -1,11 +1,13 @@
 from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
-from PyQt5.QtWidgets import QPushButton, QSizePolicy, QVBoxLayout, QWidget, QGraphicsOpacityEffect
+from PyQt5.QtWidgets import QPushButton, QVBoxLayout, QWidget, QGraphicsOpacityEffect
 
 from gui.splash_logo import AnimatedLogo
+from settings import theme as app_theme
+from widgets import page_background
 
 
 class SplashPage(QWidget):
-    """Light splash that plays the animated GestureBoard logo.
+    """Splash that plays the animated GestureBoard logo.
 
     When the animation has finished, a 'Get Started' button fades in.
     Clicking it starts the onboarding tutorial.
@@ -20,16 +22,6 @@ class SplashPage(QWidget):
         self.finished_loading = False
         self.setObjectName("splashPage")
 
-        self.setStyleSheet("""
-            QWidget#splashPage { background: #F2F8FC; }
-            QLabel { background: transparent; color: #0E2F76; }
-            QPushButton#getStarted {
-                background: #0E2F76; color: #F2F8FC; border: none; border-radius: 10px;
-                min-height: 50px; min-width: 210px; font-size: 15px; font-weight: 700;
-            }
-            QPushButton#getStarted:hover { background: #1B4499; }
-        """)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 30, 40, 40)
         layout.setAlignment(Qt.AlignCenter)
@@ -39,12 +31,11 @@ class SplashPage(QWidget):
         # (plays once, then stays on screen).
         self.logo = AnimatedLogo(
             self,
-            background="#F2F8FC",
             tagline="Gesture-Controlled Presentation and Annotation System",
         )
         layout.addWidget(self.logo, 0, Qt.AlignCenter)
 
-        layout.addSpacing(36)
+        layout.addSpacing(30)
 
         # Get Started button (hidden until the animation completes). It keeps
         # its space while hidden so the logo does not jump when it appears.
@@ -70,6 +61,46 @@ class SplashPage(QWidget):
         self.timer.setInterval(self.DURATION_MS)
         self.timer.timeout.connect(self.show_get_started)
 
+        self.apply_theme()
+
+    # ----------------------------------------------------------
+    # THEME
+    # ----------------------------------------------------------
+
+    def apply_theme(self):
+        """Shared Saved Files background, with theme-aware colours."""
+
+        c = self._page_colors = page_background.page_colors()
+
+        self.setStyleSheet(f"""
+            QWidget#splashPage {{ background: transparent; }}
+            QLabel {{ background: transparent; color: {c['text']}; }}
+            QPushButton#getStarted {{
+                background: {c['primary']};
+                color: {c['primary_text']};
+                border: none;
+                border-radius: 10px;
+                min-height: 46px;
+                min-width: 200px;
+                font-size: 15px;
+                font-weight: 700;
+            }}
+            QPushButton#getStarted:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+        """)
+
+        self.logo.set_dark(app_theme.is_dark())
+        self.update()
+
+    def paintEvent(self, event):
+        page_background.paint_page_background(self, self._page_colors)
+
+    # ----------------------------------------------------------
+    # ANIMATION
+    # ----------------------------------------------------------
+
     def showEvent(self, event):
         super().showEvent(event)
         # Play the logo animation the first time the splash appears,
@@ -80,13 +111,13 @@ class SplashPage(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Large logo that still leaves room for the name, tagline and
-        # button: about half of the window's smaller side, up to 480 px.
+        # Logo that still leaves room for the name, tagline and button:
+        # about 38% of the window's smaller side, up to 360 px.
         vmin = min(self.width(), self.height())
-        # Logo + name + tagline take about 1.45x the logo width in height;
-        # the button, spacing and margins need roughly 210 px more.
-        fits_height = (self.height() - 210) / 1.45
-        self.logo.set_logo_width(min(480, vmin * 0.5, fits_height))
+        # Logo + ring + name + tagline take about 1.5x the logo width in
+        # height; the button, spacing and margins need roughly 200 px more.
+        fits_height = (self.height() - 200) / 1.5
+        self.logo.set_logo_width(min(360, vmin * 0.38, fits_height))
 
     def show_get_started(self):
         """Fade in the Get Started button."""

@@ -7,9 +7,15 @@ A native QPainter port of the HTML/SVG splash animation:
   4. "GestureBoard" rises in letter by letter, then a shine sweeps across,
   5. the tagline fades in and rises into place under the name.
 
+Around the hand a small "tracking" stage plays at the same time: a soft
+glow, an orbit ring that sweeps in with a dot travelling once around it,
+and camera-style corner brackets that lock onto the logo, the way the
+app frames a detected hand.
+
 When the animation ends the final frame stays on screen.
 """
 
+import math
 import re
 
 from PyQt5.QtCore import Qt, QTimer, QElapsedTimer, QPointF, QRectF, QSize
@@ -24,6 +30,7 @@ from PyQt5.QtGui import (
     QPainterPath,
     QPen,
     QPolygonF,
+    QRadialGradient,
 )
 from PyQt5.QtWidgets import QSizePolicy, QWidget
 
@@ -43,9 +50,16 @@ TAGLINE_DURATION = 0.8
 TOTAL_SECONDS = 4.95
 
 # Vertical spacing (px)
-LOGO_NAME_GAP = -14     # logo -> "GestureBoard" (negative: the logo box and the
+LOGO_NAME_GAP = 2       # logo -> "GestureBoard" (negative: the logo box and the
                         # font both carry empty space of their own)
 NAME_TAGLINE_GAP = 2    # "GestureBoard" -> tagline
+
+# Room above the logo for the orbit ring, as a fraction of the logo width.
+STAGE_TOP = 0.06
+
+# Dark-mode replacements for the navy parts and the tagline.
+DARK_NAVY = QColor("#E6EEF8")
+DARK_TAGLINE = QColor("#9DB2CC")
 
 
 # ==============================================================
@@ -218,6 +232,7 @@ class AnimatedLogo(QWidget):
 
         self.background = QColor(background)
         self.tagline = tagline
+        self.dark = False
 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -274,6 +289,19 @@ class AnimatedLogo(QWidget):
         self.t = TOTAL_SECONDS
         self.update()
 
+    def set_dark(self, dark):
+        """Draw the navy parts light so they show on a dark page."""
+
+        self.dark = bool(dark)
+        self.update()
+
+    def _navy(self, color):
+
+        if self.dark and color == NAVY:
+            return DARK_NAVY
+
+        return color
+
     def set_logo_width(self, width):
 
         self.logo_width = max(120, int(width))
@@ -287,11 +315,11 @@ class AnimatedLogo(QWidget):
 
     def _name_px(self):
 
-        return max(32, min(100, int(self.logo_width * 0.22)))
+        return max(28, min(80, int(self.logo_width * 0.19)))
 
     def _tagline_px(self):
 
-        return max(16, min(28, int(self.logo_width * 0.06)))
+        return max(14, min(22, int(self.logo_width * 0.055)))
 
     def _tagline_block(self):
         """Height reserved for the tagline (gap + line)."""
@@ -308,7 +336,8 @@ class AnimatedLogo(QWidget):
         return QSize(
             int(self.logo_width * 1.9),
             int(
-                logo_h + LOGO_NAME_GAP + self._name_px() * 1.4 + 6
+                self.logo_width * STAGE_TOP
+                + logo_h + LOGO_NAME_GAP + self._name_px() * 1.4 + 6
                 + self._tagline_block()
             )
         )
@@ -351,9 +380,12 @@ class AnimatedLogo(QWidget):
         logo_h = logo_w * VIEW_H / VIEW_W
 
         left = (self.width() - logo_w) / 2.0
-        top = 6.0
+        top = 6.0 + logo_w * STAGE_TOP
 
-        self._paint_logo(painter, t, QRectF(left, top, logo_w, logo_h))
+        box = QRectF(left, top, logo_w, logo_h)
+
+        self._paint_stage(painter, t, box)
+        self._paint_logo(painter, t, box)
         name_bottom = self._paint_name(
             painter, t, top + logo_h + LOGO_NAME_GAP
         )
@@ -362,6 +394,108 @@ class AnimatedLogo(QWidget):
             self._paint_tagline(painter, t, name_bottom + NAME_TAGLINE_GAP)
 
         painter.end()
+
+    def _paint_stage(self, painter, t, box):
+        """Glow, orbit ring with a travelling dot, and tracking brackets."""
+
+        w = box.width()
+        # The hand sits a little above the middle of the logo box.
+        c = QPointF(box.center().x(), box.top() + box.height() * 0.48)
+        ring_r = w * 0.50
+
+        painter.save()
+
+        # ----- soft glow behind the hand (fades and grows in) -----
+        e = EASE_OUT(progress(t, 0.0, 1.1))
+
+        if e > 0:
+            glow_r = ring_r * (0.75 + 0.25 * e)
+            grad = QRadialGradient(c, glow_r)
+            glow = QColor(CYAN)
+            glow.setAlphaF(0.20 * e)
+            grad.setColorAt(0.0, glow)
+            glow.setAlphaF(0.07 * e)
+            grad.setColorAt(0.6, glow)
+            glow.setAlphaF(0.0)
+            grad.setColorAt(1.0, glow)
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(grad)
+            painter.drawEllipse(c, glow_r, glow_r)
+
+        # ----- orbit ring sweeps in clockwise from the top -----
+        e = EASE_IN_OUT(progress(t, 0.25, 1.4))
+
+        ring = QRectF(c.x() - ring_r, c.y() - ring_r, ring_r * 2, ring_r * 2)
+
+        if e > 0:
+            ring_color = QColor(CYAN)
+            ring_color.setAlphaF(0.45)
+            pen = QPen(ring_color, max(1.2, w / 260))
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            # Qt angles: 1/16 degree, counter-clockwise from 3 o'clock.
+            painter.drawArc(ring, 90 * 16, int(-360 * 16 * e))
+
+        # ----- a dot travels once around the ring, then rests -----
+        p = progress(t, 1.2, 3.2)
+
+        if p > 0:
+            e = EASE_IN_OUT(p)
+            # Start at the top, finish at the upper right.
+            start, end = -90.0, -90.0 + 360.0 + 45.0
+
+            dot_r = max(3.0, w / 70)
+
+            # Fading tail behind the dot while it moves.
+            if p < 1:
+                for k in range(1, 9):
+                    a = math.radians(start + (end - start) * max(0.0, e - k * 0.012))
+                    tail = QColor(CYAN)
+                    tail.setAlphaF(0.5 * (1 - k / 9))
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(tail)
+                    painter.drawEllipse(
+                        QPointF(c.x() + math.cos(a) * ring_r,
+                                c.y() + math.sin(a) * ring_r),
+                        dot_r * (1 - k / 12), dot_r * (1 - k / 12),
+                    )
+
+            a = math.radians(start + (end - start) * e)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(CYAN)
+            painter.drawEllipse(
+                QPointF(c.x() + math.cos(a) * ring_r, c.y() + math.sin(a) * ring_r),
+                dot_r, dot_r,
+            )
+
+        # ----- tracking brackets close in and lock onto the hand -----
+        p = progress(t, 2.45, 0.6)
+
+        if p > 0:
+            e = EASE_OUT(p)
+
+            half = w * (0.50 - 0.08 * e)        # close in from the ring
+            arm = w * 0.10
+            color = QColor(self._navy(NAVY))
+            color.setAlphaF(0.55 * min(1.0, e * 1.4))
+
+            pen = QPen(color, max(1.6, w / 150))
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+
+            for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                corner = QPointF(c.x() + sx * half, c.y() + sy * half)
+                painter.drawPolyline(QPolygonF([
+                    QPointF(corner.x(), corner.y() - sy * arm),
+                    corner,
+                    QPointF(corner.x() - sx * arm, corner.y()),
+                ]))
+
+        painter.restore()
 
     def _paint_logo(self, painter, t, box):
 
@@ -399,7 +533,7 @@ class AnimatedLogo(QWidget):
 
             count = max(2, int(round(amount * (len(points) - 1))) + 1)
 
-            pen = QPen(color, 5)
+            pen = QPen(self._navy(color), 5)
             pen.setCapStyle(Qt.RoundCap)
             pen.setJoinStyle(Qt.RoundJoin)
 
@@ -417,7 +551,7 @@ class AnimatedLogo(QWidget):
             if s <= 0:
                 continue
 
-            painter.setBrush(color)
+            painter.setBrush(self._navy(color))
             painter.drawEllipse(QPointF(cx, cy), r * s, r * s)
 
         # ----- ripples -----
@@ -490,7 +624,7 @@ class AnimatedLogo(QWidget):
 
             if p > 0:
 
-                color = QColor(NAVY if i < NAME_SPLIT else CYAN)
+                color = QColor(self._navy(NAVY) if i < NAME_SPLIT else CYAN)
                 color.setAlphaF(min(1.0, p))
 
                 offset = (1 - p) * line_h * 1.1
@@ -551,7 +685,7 @@ class AnimatedLogo(QWidget):
 
         metrics = QFontMetricsF(font)
 
-        color = QColor(TAGLINE_COLOR)
+        color = QColor(DARK_TAGLINE if self.dark else TAGLINE_COLOR)
         color.setAlphaF(min(1.0, e))
         painter.setPen(color)
 

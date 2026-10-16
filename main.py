@@ -48,7 +48,9 @@ def main():
     # --------------------------------------------------------
     #
     # Without an AppUserModelID, Windows groups the window under
-    # python.exe and shows the Python logo in the taskbar.
+    # python.exe and shows the Python logo in the taskbar. Windows
+    # caches the taskbar icon per ID, so bump the number after
+    # changing app_icon.ico.
     #
     # --------------------------------------------------------
 
@@ -57,7 +59,7 @@ def main():
             import ctypes
 
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "GestureBoard.App"
+                "GestureBoard.Desktop.2"
             )
         except Exception:
             pass
