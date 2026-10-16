@@ -1,5 +1,6 @@
 # gui/presentation.py
 
+import html
 import os
 import sys
 import time
@@ -21,8 +22,10 @@ try:
 except Exception:
     pyautogui = None
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QFont, QColor, QBrush, QPen
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect, QRectF, QSize
+from PyQt5.QtGui import (
+    QImage, QPixmap, QPainter, QPainterPath, QFont, QColor, QBrush, QPen
+)
 from PyQt5.QtWidgets import (
     QWidget,
     QLabel,
@@ -34,12 +37,15 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QFrame,
     QMessageBox,
-    QScrollArea,
     QDialog,
     QDialogButtonBox,
     QProgressDialog,
     QSlider,
     QSizePolicy,
+    QSplitter,
+    QSplitterHandle,
+    QStackedWidget,
+    QButtonGroup,
 )
 
 from core.gesture_detector import GestureDetector
@@ -79,7 +85,7 @@ class SlideView(QWidget):
         self.undo_stack = []
         self.redo_stack = []
 
-        self.setMinimumSize(360, 240)
+        self.setMinimumSize(240, 150)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
         self.setStyleSheet("background: #0B1A30; border-radius: 6px;")
@@ -306,8 +312,8 @@ class SlideView(QWidget):
             painter.drawText(
                 self.rect(),
                 Qt.AlignCenter,
-                "Upload a PDF or PowerPoint file\n\n"
-                "Your presentation preview will appear here."
+                "No slides yet\n\n"
+                "Press Choose file to open a PDF or PowerPoint."
             )
 
         if self.layer is not None:
@@ -315,6 +321,149 @@ class SlideView(QWidget):
             painter.drawImage(0, 0, self.layer)
 
         painter.end()
+
+
+# ============================================================
+# SMALL WIDGETS USED BY THE PAGE
+# ============================================================
+
+class ToneLabel(QLabel):
+    """Status label whose colour follows its text.
+
+    `rules` is a list of (substring, tone) pairs checked in order; the
+    stylesheet colours the label through its `tone` property.
+    """
+
+    def __init__(self, text="", rules=(), parent=None):
+        super().__init__(parent)
+        self._rules = list(rules)
+        self.setText(text)
+
+    def setText(self, text):
+        super().setText(text)
+
+        lowered = text.lower()
+        tone = next(
+            (tone for key, tone in self._rules if key in lowered),
+            "idle",
+        )
+
+        # Re-polish only on a change: camera text updates every frame.
+        if tone != self.property("tone"):
+            self.setProperty("tone", tone)
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+
+class CameraFeed(QWidget):
+    """Camera preview that fills whatever space it gets.
+
+    The frame keeps its aspect ratio and is centred on a rounded well,
+    so the panel can be dragged to any size.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self._pixmap = None
+        self._text = ""
+        self._bg = QColor("#DCE7F3")
+        self._fg = QColor("#5A6B93")
+
+        self.setMinimumSize(180, 110)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def sizeHint(self):
+        return QSize(320, 240)
+
+    def set_colors(self, background, text):
+        self._bg = QColor(background)
+        self._fg = QColor(text)
+        self.update()
+
+    def setText(self, text):
+        self._text = text
+        self._pixmap = None
+        self.update()
+
+    def setPixmap(self, pixmap):
+        self._pixmap = pixmap
+        self.update()
+
+    def paintEvent(self, event):
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        well = QPainterPath()
+        well.addRoundedRect(QRectF(self.rect()), 10, 10)
+        painter.setClipPath(well)
+        painter.fillRect(self.rect(), self._bg)
+
+        if self._pixmap is not None and not self._pixmap.isNull():
+
+            scaled = self._pixmap.size().scaled(
+                self.size(), Qt.KeepAspectRatio
+            )
+            target = QRect(QPoint(0, 0), scaled)
+            target.moveCenter(self.rect().center())
+
+            frame = QPainterPath()
+            frame.addRoundedRect(QRectF(target), 10, 10)
+            painter.setClipPath(frame)
+            painter.drawPixmap(target, self._pixmap)
+
+        elif self._text:
+
+            painter.setPen(self._fg)
+            painter.setFont(QFont("Segoe UI", 10))
+            painter.drawText(self.rect(), Qt.AlignCenter, self._text)
+
+        painter.end()
+
+
+class _GripHandle(QSplitterHandle):
+    """Splitter handle drawn as a small pill so it reads as draggable."""
+
+    def paintEvent(self, event):
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        color = QColor(self.splitter().property("gripColor") or "#AAC0E1")
+
+        if not self.underMouse():
+            color.setAlpha(150)
+
+        length = 36
+        thickness = 4
+
+        if self.orientation() == Qt.Horizontal:
+            pill = QRectF(0, 0, thickness, length)
+        else:
+            pill = QRectF(0, 0, length, thickness)
+
+        pill.moveCenter(QRectF(self.rect()).center())
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        painter.drawRoundedRect(pill, 2, 2)
+        painter.end()
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
+
+
+class GripSplitter(QSplitter):
+
+    def createHandle(self):
+        return _GripHandle(self.orientation(), self)
 
 
 class PresentationPage(QWidget):
@@ -446,6 +595,7 @@ class PresentationPage(QWidget):
         # presentation or enable gesture control. The user has to press
         # Start Presentation explicitly.
         self.gestures_enabled = False
+        self._refresh_controls()
 
         if self.camera is None:
             self.start_camera()
@@ -460,6 +610,7 @@ class PresentationPage(QWidget):
 
         self.gestures_enabled = False
         self.exit_fullscreen()
+        self._refresh_controls()
 
         # Leaving the page also ends annotation mode and clears the
         # temporary overlay (annotations are never kept).
@@ -476,363 +627,520 @@ class PresentationPage(QWidget):
 
         self.setObjectName("presentationPage")
 
+        # Width / height breakpoints flip these (see _apply_density).
+        self._narrow = False
+        self._short = False
+
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(36, 28, 36, 28)
+        main_layout.setContentsMargins(32, 24, 32, 24)
         main_layout.setSpacing(14)
+        self._main_layout = main_layout
 
         # --------------------------------------------------------
-        # TITLE
+        # HEADER  (title on the left, gesture on/off on the right)
         # --------------------------------------------------------
+
+        header = QHBoxLayout()
+        header.setSpacing(12)
+
+        heading = QVBoxLayout()
+        heading.setSpacing(2)
 
         title = QLabel("Presentation Control")
         title.setObjectName("pageTitle")
 
-        subtitle = QLabel(
-            "Control your presentation using hand gestures."
+        self.subtitle = QLabel(
+            "Choose your slides, press Start presenting, then use your "
+            "hand to move through them."
+        )
+        self.subtitle.setObjectName("pageSubtitle")
+        self.subtitle.setWordWrap(True)
+
+        heading.addWidget(title)
+        heading.addWidget(self.subtitle)
+
+        self.status_gesture = ToneLabel(
+            "● Gestures off",
+            [("on", "good"), ("annotating", "warn")],
+        )
+        self.status_gesture.setObjectName("gesturePill")
+        self.status_gesture.setToolTip(
+            "Hand gestures only work after you press Start presenting."
         )
 
-        subtitle.setObjectName("pageSubtitle")
+        header.addLayout(heading, 1)
+        header.addWidget(self.status_gesture, 0, Qt.AlignTop)
 
-        main_layout.addWidget(title)
-        main_layout.addWidget(subtitle)
+        main_layout.addLayout(header)
 
         # --------------------------------------------------------
-        # UPLOAD BAR
+        # FILE BAR
         # --------------------------------------------------------
 
-        upload_layout = QHBoxLayout()
-        upload_layout.setSpacing(10)
+        file_bar = QFrame()
+        file_bar.setObjectName("fileBar")
 
-        self.upload_button = QPushButton("📄  Upload File")
-        self.upload_button.setFixedHeight(42)
+        file_layout = QHBoxLayout(file_bar)
+        file_layout.setContentsMargins(8, 8, 12, 8)
+        file_layout.setSpacing(12)
+
+        self.upload_button = QPushButton("📂  Choose file")
+        self.upload_button.setObjectName("uploadButton")
+        self.upload_button.setFixedHeight(38)
+        self.upload_button.setCursor(Qt.PointingHandCursor)
+        self.upload_button.setToolTip("Open a PDF or PowerPoint (.pptx) file")
         self.upload_button.clicked.connect(self.upload_file)
 
-        self.file_type_combo = QComboBox()
-        self.file_type_combo.setFixedHeight(42)
-        self.file_type_combo.setFixedWidth(180)
+        self.file_status = QLabel(
+            "No file yet. Choose a PDF or PowerPoint (.pptx) file to begin."
+        )
+        self.file_status.setObjectName("fileStatus")
+        self.file_status.setProperty("loaded", False)
+        self.file_status.setTextFormat(Qt.RichText)
+        # Long file names clip instead of widening the page.
+        self.file_status.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Preferred
+        )
 
+        self.file_type_label = QLabel("Show")
+        self.file_type_label.setObjectName("fieldLabel")
+
+        self.file_type_combo = QComboBox()
+        self.file_type_combo.setFixedHeight(38)
+        self.file_type_combo.setMinimumWidth(130)
+        self.file_type_combo.setToolTip(
+            "Which files the file picker lists"
+        )
         self.file_type_combo.addItems([
-            "Auto Detect",
+            "All supported",
             "PDF",
             "PowerPoint",
         ])
 
-        self.file_status = QLabel("● No File Loaded")
-        self.file_status.setObjectName("fileStatus")
-        self.file_status.setProperty("loaded", False)
+        file_layout.addWidget(self.upload_button)
+        file_layout.addWidget(self.file_status, 1)
+        file_layout.addWidget(self.file_type_label)
+        file_layout.addWidget(self.file_type_combo)
 
-        upload_layout.addWidget(self.upload_button)
-        upload_layout.addWidget(self.file_type_combo)
-        upload_layout.addWidget(self.file_status)
-        upload_layout.addStretch()
-
-        main_layout.addLayout(upload_layout)
+        main_layout.addWidget(file_bar)
 
         # --------------------------------------------------------
-        # CONTENT
+        # BODY  (stage | side column, drag the gap to resize)
         # --------------------------------------------------------
 
-        content_layout = QHBoxLayout()
-        content_layout.setSpacing(20)
+        self.body_splitter = GripSplitter(Qt.Horizontal)
+        self.body_splitter.setObjectName("bodySplitter")
+        self.body_splitter.setChildrenCollapsible(False)
+        self.body_splitter.setHandleWidth(14)
 
         # ========================================================
-        # CENTER COLUMN  (presentation preview + buttons)
+        # STAGE  (slide preview + control deck)
         # ========================================================
 
-        center_column = QVBoxLayout()
-        center_column.setSpacing(12)
+        stage = QFrame()
+        stage.setObjectName("panel")
 
-        # --------------------------------------------------------
-        # PRESENTATION PREVIEW  (slide counter at upper-right)
-        # --------------------------------------------------------
+        stage_layout = QVBoxLayout(stage)
+        stage_layout.setContentsMargins(14, 14, 14, 12)
+        stage_layout.setSpacing(12)
 
-        preview_frame = QFrame()
-        preview_frame.setObjectName("panel")
+        preview_holder = QWidget()
 
-        preview_layout = QGridLayout(preview_frame)
-        preview_layout.setContentsMargins(16, 16, 16, 16)
+        preview_layout = QGridLayout(preview_holder)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
 
         # Slide + temporary transparent annotation overlay.
         self.slide_view = SlideView()
-
         self.preview_label = self.slide_view
 
-        # Slide counter overlaid at the preview's upper-right corner.
-        self.slide_counter = QLabel("Slide 0 / 0")
-
+        self.slide_counter = QLabel("")
+        self.slide_counter.setObjectName("slideCounter")
         self.slide_counter.setAlignment(Qt.AlignCenter)
+        self.slide_counter.hide()
 
-        self.slide_counter.setStyleSheet("""
-            QLabel {
-                background: rgba(18, 55, 125, 0.88);
-                color: #FFFFFF;
-                padding: 5px 12px;
-                border-radius: 12px;
-                font-weight: 600;
-                font-size: 12px;
-            }
-        """)
-
-        preview_layout.addWidget(self.preview_label, 0, 0)
+        preview_layout.addWidget(self.slide_view, 0, 0)
         preview_layout.addWidget(
-            self.slide_counter,
-            0,
-            0,
-            Qt.AlignTop | Qt.AlignRight
+            self.slide_counter, 0, 0, Qt.AlignTop | Qt.AlignRight
         )
 
-        # --------------------------------------------------------
-        # FLOATING ANNOTATION TOOLBAR (shown only in Annotation Mode)
-        # --------------------------------------------------------
-
+        # Floating annotation toolbar (shown only in Annotation Mode).
         self.annotation_toolbar = self._build_annotation_toolbar()
 
         preview_layout.addWidget(
-            self.annotation_toolbar,
-            0,
-            0,
-            Qt.AlignTop | Qt.AlignLeft
+            self.annotation_toolbar, 0, 0, Qt.AlignTop | Qt.AlignLeft
         )
 
-        center_column.addWidget(preview_frame, 1)
+        stage_layout.addWidget(preview_holder, 1)
 
-        # --------------------------------------------------------
-        # PRESENTATION BUTTONS  (directly under the preview)
-        #   1 - 2 - 1 layout
-        # --------------------------------------------------------
+        # Control deck, laid out like a presenter remote:
+        #   ‹ Previous  |  ▶ Start presenting  |  Next ›     ■ Stop
 
-        self.start_button = QPushButton("Start Presentation")
+        self.previous_button = QPushButton()
+        self.previous_button.setObjectName("navButton")
+        self.previous_button.setToolTip(
+            "Go back one slide\nGesture: point left 👈"
+        )
+        self.previous_button.clicked.connect(self.manual_previous)
+
+        self.start_button = QPushButton()
         self.start_button.setObjectName("startButton")
-        self.start_button.setFixedHeight(42)
-        self.start_button.clicked.connect(
-            self.manual_start
-        )
+        self.start_button.clicked.connect(self.manual_start)
 
-        self.stop_button = QPushButton("Stop Presentation")
-        self.stop_button.setFixedHeight(42)
+        self.next_button = QPushButton()
+        self.next_button.setObjectName("navButton")
+        self.next_button.setToolTip(
+            "Go forward one slide\nGesture: point right 👉"
+        )
+        self.next_button.clicked.connect(self.manual_next)
+
+        self.stop_button = QPushButton()
         self.stop_button.setObjectName("stopButton")
-        self.stop_button.clicked.connect(
-            self.manual_stop
+        self.stop_button.setToolTip(
+            "Close full screen and turn hand gestures off"
         )
+        self.stop_button.clicked.connect(self.manual_stop)
 
-        self.previous_button = QPushButton("Previous Slide")
-        self.previous_button.setFixedHeight(42)
-        self.previous_button.clicked.connect(
-            self.manual_previous
+        deck = QHBoxLayout()
+        deck.setSpacing(8)
+
+        for button, stretch in (
+            (self.previous_button, 2),
+            (self.start_button, 3),
+            (self.next_button, 2),
+        ):
+            button.setFixedHeight(44)
+            button.setMinimumWidth(0)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            deck.addWidget(button, stretch)
+
+        deck.addSpacing(10)
+
+        self.stop_button.setFixedHeight(44)
+        self.stop_button.setMinimumWidth(0)
+        self.stop_button.setCursor(Qt.PointingHandCursor)
+        self.stop_button.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
         )
+        deck.addWidget(self.stop_button, 1)
 
-        self.next_button = QPushButton("Next Slide")
-        self.next_button.setFixedHeight(42)
-        self.next_button.clicked.connect(
-            self.manual_next
-        )
+        stage_layout.addLayout(deck)
 
-        nav_row = QHBoxLayout()
-        nav_row.setSpacing(10)
-        nav_row.addWidget(self.previous_button)
-        nav_row.addWidget(self.next_button)
+        # One line that always says what to do next.
+        self.hint_label = QLabel()
+        self.hint_label.setObjectName("hintLabel")
+        self.hint_label.setWordWrap(True)
 
-        center_column.addWidget(self.start_button)
-        center_column.addLayout(nav_row)
-        center_column.addWidget(self.stop_button)
+        stage_layout.addWidget(self.hint_label)
 
-        content_layout.addLayout(center_column, 1)
+        self.body_splitter.addWidget(stage)
 
         # ========================================================
-        # RIGHT PANEL
+        # SIDE COLUMN  (camera | gesture guide, drag to resize)
         # ========================================================
 
-        # Fixed-width container keeps the Gesture Controls, Presentation
-        # Status and Camera panels the same size and prevents overlap.
-        right_container = QWidget()
-        right_container.setFixedWidth(370)
+        self.side_splitter = GripSplitter(Qt.Vertical)
+        self.side_splitter.setObjectName("sideSplitter")
+        self.side_splitter.setChildrenCollapsible(False)
+        self.side_splitter.setHandleWidth(14)
+        self.side_splitter.setMinimumWidth(290)
 
-        right_panel = QVBoxLayout(right_container)
-        right_panel.setContentsMargins(0, 0, 0, 0)
-        right_panel.setSpacing(12)
-
-        # --------------------------------------------------------
-        # GESTURE CONTROLS
-        # --------------------------------------------------------
-
-        gesture_frame = QFrame()
-        gesture_frame.setObjectName("panel")
-
-        gesture_layout = QVBoxLayout(gesture_frame)
-        gesture_layout.setContentsMargins(14, 12, 14, 12)
-        gesture_layout.setSpacing(7)
-
-        gesture_title = QLabel("Gesture Controls")
-
-        gesture_title.setObjectName("panelTitle")
-
-        gesture_layout.addWidget(gesture_title)
-
-        # Same gesture list the tutorial and Settings show.
-        from gui.tutorial import STEPS
-
-        gestures = [
-            gesture
-            for _title, items in STEPS[0]["groups"]
-            for gesture in items
-        ]
-
-        for icon, gesture, action in gestures:
-
-            row = QHBoxLayout()
-            row.setSpacing(10)
-
-            icon_label = QLabel(icon)
-            icon_label.setObjectName("gestureIcon")
-            icon_label.setFixedSize(30, 28)
-            icon_label.setAlignment(Qt.AlignCenter)
-
-            gesture_label = QLabel(gesture)
-            gesture_label.setObjectName("gestureName")
-
-            action_label = QLabel(action)
-            action_label.setObjectName("gestureAction")
-            action_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-            row.addWidget(icon_label)
-            row.addWidget(gesture_label, 1)
-            row.addWidget(action_label)
-
-            gesture_layout.addLayout(row)
-
-        right_panel.addWidget(gesture_frame)
-
-        # --------------------------------------------------------
-        # PRESENTATION STATUS
-        # --------------------------------------------------------
-
-        status_frame = QFrame()
-        status_frame.setObjectName("panel")
-
-        status_layout = QGridLayout(status_frame)
-        status_layout.setContentsMargins(14, 12, 14, 12)
-        status_layout.setVerticalSpacing(8)
-
-        status_title = QLabel("Presentation Status")
-
-        status_title.setObjectName("panelTitle")
-
-        status_layout.addWidget(status_title, 0, 0, 1, 2)
-
-        self.status_slide = QLabel("0 / 0")
-        self.status_mode = QLabel("Waiting")
-        self.status_gesture = QLabel("● Inactive")
-        self.status_action = QLabel("Ready")
-
-        self.add_status_row(
-            status_layout,
-            1,
-            "Current Slide",
-            self.status_slide,
-        )
-
-        self.add_status_row(
-            status_layout,
-            2,
-            "Mode",
-            self.status_mode,
-        )
-
-        self.add_status_row(
-            status_layout,
-            3,
-            "Gesture Recognition",
-            self.status_gesture,
-        )
-
-        self.add_status_row(
-            status_layout,
-            4,
-            "Current Action",
-            self.status_action,
-        )
-
-        right_panel.addWidget(status_frame)
-
-        # --------------------------------------------------------
-        # CAMERA
-        # --------------------------------------------------------
+        # -------------------- Camera --------------------
 
         camera_frame = QFrame()
         camera_frame.setObjectName("panel")
 
         camera_layout = QVBoxLayout(camera_frame)
+        camera_layout.setContentsMargins(14, 12, 14, 12)
+        camera_layout.setSpacing(10)
 
-        camera_layout.setContentsMargins(
-            15, 15, 15, 15
-        )
+        camera_head = QHBoxLayout()
+        camera_head.setSpacing(8)
 
         camera_title = QLabel("Camera")
-
         camera_title.setObjectName("panelTitle")
 
-        camera_layout.addWidget(camera_title)
-
-        self.camera_label = QLabel()
-
-        self.camera_label.setFixedSize(330, 190)
-
-        self.camera_label.setAlignment(Qt.AlignCenter)
-
-        self.camera_label.setObjectName("cameraWell")
-
-        self.camera_label.setText("Starting Camera...")
-
-        camera_layout.addWidget(
-            self.camera_label,
-            alignment=Qt.AlignCenter
+        self.camera_status = ToneLabel(
+            "● Connecting…",
+            [
+                ("hand detected", "good"),
+                ("not available", "bad"),
+                ("connected", "info"),
+                ("shared", "info"),
+            ],
         )
-
-        # Separate status block placed BELOW the feed so it never covers it.
-        status_block = QFrame()
-        status_block.setObjectName("statusBlock")
-
-        status_block_layout = QVBoxLayout(status_block)
-        status_block_layout.setContentsMargins(
-            10, 8, 10, 8
-        )
-        status_block_layout.setSpacing(4)
-
-        self.camera_status = QLabel(
-            "● Camera Connecting..."
-        )
-
         self.camera_status.setObjectName("cameraStatus")
 
-        status_block_layout.addWidget(self.camera_status)
+        camera_head.addWidget(camera_title)
+        camera_head.addStretch()
+        camera_head.addWidget(self.camera_status)
 
-        self.detected_label = QLabel(
-            "Detected: None"
+        camera_layout.addLayout(camera_head)
+
+        # Scales with the panel; keeps the camera's aspect ratio.
+        self.camera_label = CameraFeed()
+        self.camera_label.setText("Starting camera…")
+
+        camera_layout.addWidget(self.camera_label, 1)
+
+        readout = QGridLayout()
+        readout.setHorizontalSpacing(12)
+        readout.setVerticalSpacing(4)
+        readout.setColumnStretch(1, 1)
+
+        self.detected_label = QLabel("No gesture")
+        self.status_action = QLabel("Ready")
+
+        for row, (name, value) in enumerate((
+            ("Seeing", self.detected_label),
+            ("Last action", self.status_action),
+        )):
+            name_label = QLabel(name)
+            name_label.setObjectName("readoutName")
+
+            value.setObjectName("readoutValue")
+            value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+            readout.addWidget(name_label, row, 0)
+            readout.addWidget(value, row, 1)
+
+        # Hidden on short windows; the hint line under the deck covers it.
+        self._action_row = [name_label, self.status_action]
+
+        camera_layout.addLayout(readout)
+
+        self.side_splitter.addWidget(camera_frame)
+
+        # -------------------- Gesture guide --------------------
+
+        guide_frame = QFrame()
+        guide_frame.setObjectName("panel")
+
+        guide_layout = QVBoxLayout(guide_frame)
+        guide_layout.setContentsMargins(14, 12, 14, 12)
+        guide_layout.setSpacing(8)
+
+        self.guide_title = QLabel("Hand gestures")
+        self.guide_title.setObjectName("panelTitle")
+
+        guide_layout.addWidget(self.guide_title)
+
+        # Same gesture list the tutorial and Settings show, split into
+        # its two groups behind a segmented switch so it never needs
+        # to scroll.
+        from gui.tutorial import STEPS
+
+        groups = STEPS[0]["groups"]
+
+        segment_row = QHBoxLayout()
+        segment_row.setSpacing(0)
+
+        self.guide_stack = QStackedWidget()
+        self._guide_grids = []
+        self._guide_icons = []
+        self.guide_tabs = QButtonGroup(self)
+        self.guide_tabs.setExclusive(True)
+
+        for index, (group_title, items) in enumerate(groups):
+
+            tab = QPushButton(group_title)
+            tab.setObjectName("segment")
+            tab.setCheckable(True)
+            tab.setCursor(Qt.PointingHandCursor)
+            tab.setFixedHeight(30)
+            tab.setProperty(
+                "edge",
+                "left" if index == 0
+                else "right" if index == len(groups) - 1
+                else "mid",
+            )
+            self.guide_tabs.addButton(tab, index)
+            segment_row.addWidget(tab, 1)
+
+            page = QWidget()
+
+            rows = QGridLayout(page)
+            rows.setContentsMargins(0, 2, 0, 0)
+            rows.setHorizontalSpacing(10)
+            rows.setVerticalSpacing(5)
+            rows.setColumnStretch(1, 1)
+            self._guide_grids.append(rows)
+
+            for row, (icon, gesture, action) in enumerate(items):
+
+                icon_label = QLabel(icon)
+                icon_label.setObjectName("gestureIcon")
+                icon_label.setFixedSize(28, 24)
+                icon_label.setAlignment(Qt.AlignCenter)
+                self._guide_icons.append(icon_label)
+
+                gesture_label = QLabel(gesture)
+                gesture_label.setObjectName("gestureName")
+                gesture_label.setWordWrap(True)
+
+                action_label = QLabel(action)
+                action_label.setObjectName("gestureAction")
+                action_label.setWordWrap(True)
+                action_label.setAlignment(
+                    Qt.AlignRight | Qt.AlignVCenter
+                )
+
+                rows.addWidget(icon_label, row, 0)
+                rows.addWidget(gesture_label, row, 1)
+                rows.addWidget(action_label, row, 2)
+
+            rows.setRowStretch(len(items), 1)
+
+            self.guide_stack.addWidget(page)
+
+        self.guide_tabs.buttonClicked[int].connect(
+            self.guide_stack.setCurrentIndex
+        )
+        self.guide_tabs.button(0).setChecked(True)
+
+        guide_layout.addLayout(segment_row)
+        guide_layout.addWidget(self.guide_stack, 1)
+
+        self.side_splitter.addWidget(guide_frame)
+        self.side_splitter.setStretchFactor(0, 1)
+        self.side_splitter.setStretchFactor(1, 0)
+
+        self.body_splitter.addWidget(self.side_splitter)
+        self.body_splitter.setStretchFactor(0, 1)
+        self.body_splitter.setStretchFactor(1, 0)
+        self.body_splitter.setSizes([900, 360])
+
+        for splitter in (self.body_splitter, self.side_splitter):
+            splitter.handle(1).setToolTip("Drag to resize")
+
+        main_layout.addWidget(self.body_splitter, 1)
+
+        self._refresh_controls()
+
+    # ============================================================
+    # RESPONSIVE LAYOUT
+    # ============================================================
+
+    def resizeEvent(self, event):
+
+        super().resizeEvent(event)
+        self._apply_density()
+
+    def _apply_density(self):
+        """Tighten spacing and shorten labels on small windows so the
+        whole page always fits without scrolling."""
+
+        narrow = self.width() < 980
+        short = self.height() < 700
+
+        if (narrow, short) == (self._narrow, self._short):
+            return
+
+        self._narrow, self._short = narrow, short
+
+        side = 18 if narrow else 32
+        top = 14 if short else 24
+
+        self._main_layout.setContentsMargins(side, top, side, top)
+        self._main_layout.setSpacing(10 if short else 14)
+
+        self.subtitle.setVisible(not short)
+        self.guide_title.setVisible(not short)
+
+        for widget in self._action_row:
+            widget.setVisible(not short)
+
+        for grid in self._guide_grids:
+            grid.setVerticalSpacing(1 if short else 5)
+
+        for icon in self._guide_icons:
+            icon.setFixedSize(28, 20 if short else 24)
+
+        self.camera_label.setMinimumHeight(80 if short else 110)
+        self.file_type_label.setVisible(not narrow)
+        self.side_splitter.setMinimumWidth(250 if narrow else 290)
+
+        self._refresh_controls()
+
+    # ============================================================
+    # CONTROL STATE  (buttons, hint line and gesture pill)
+    # ============================================================
+
+    def _has_slides(self):
+
+        return bool(self.pdf_document) or bool(
+            getattr(self, "ppt_slides", None)
         )
 
-        self.detected_label.setObjectName("detectedLabel")
+    def _refresh_controls(self):
 
-        status_block_layout.addWidget(self.detected_label)
+        if not hasattr(self, "start_button"):
+            return
 
-        camera_layout.addWidget(status_block)
+        loaded = self._has_slides()
+        presenting = self.gestures_enabled
+        narrow = self._narrow
 
-        right_panel.addWidget(camera_frame)
+        self.previous_button.setText("‹  Prev" if narrow else "‹  Previous")
+        self.next_button.setText("Next  ›")
+        self.stop_button.setText("■  Stop")
 
-        right_panel.addStretch()
+        if presenting:
+            self.start_button.setText(
+                "⤢  Full screen" if narrow else "⤢  Back to full screen"
+            )
+            self.start_button.setToolTip(
+                "Reopen the slides full screen\nGesture: thumbs up 👍"
+            )
+        else:
+            self.start_button.setText(
+                "▶  Start" if narrow else "▶  Start presenting"
+            )
+            self.start_button.setToolTip(
+                "Show the slides full screen and turn hand gestures on"
+            )
 
-        # Wrap the right column in a scroll area so the page can shrink
-        # vertically (responsive) instead of forcing a tall minimum height.
-        right_scroll = QScrollArea()
-        right_scroll.setObjectName("rightScroll")
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setFrameShape(QFrame.NoFrame)
-        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        right_scroll.setFixedWidth(390)
-        right_scroll.setWidget(right_container)
+        self.start_button.setEnabled(loaded)
+        self.previous_button.setEnabled(loaded)
+        self.next_button.setEnabled(loaded)
+        self.stop_button.setEnabled(presenting)
 
-        content_layout.addWidget(right_scroll)
+        if not loaded:
+            hint = "Choose a file above. Your slides show up here."
+        elif self.annotation_mode:
+            hint = (
+                "Annotation mode: hold index and middle fingers together "
+                "to draw. Show three fingers again to finish."
+            )
+        elif presenting:
+            hint = (
+                "Hand gestures are on. Point right for the next slide, "
+                "point left to go back."
+            )
+        else:
+            hint = (
+                "Hand gestures are off. Press Start presenting to turn "
+                "them on, or use Previous and Next."
+            )
 
-        main_layout.addLayout(content_layout)
+        self.hint_label.setText(hint)
+
+        if self.annotation_mode:
+            self.status_gesture.setText("● Annotating")
+        elif presenting:
+            self.status_gesture.setText("● Gestures on")
+        else:
+            self.status_gesture.setText("● Gestures off")
+
+    def _update_counter(self):
+
+        if self._has_slides() and self.total_pages:
+            self.slide_counter.setText(
+                f"Slide {self.current_page + 1} of {self.total_pages}"
+            )
+            self.slide_counter.show()
+        else:
+            self.slide_counter.hide()
 
     # ============================================================
     # THEME
@@ -856,9 +1164,21 @@ class PresentationPage(QWidget):
         if dark:
             ok_bg, ok_text, ok_border = "#173B2E", "#5FD39A", "#245A45"
             stop_bg, stop_text, stop_border = "#3A2230", "#F59A93", "#5A3040"
+            warn_bg, warn_text = "#3A3220", "#F2C46B"
+            info_text = "#8DB4F5"
+            disabled_bg, disabled_text = "#132742", "#5A7396"
         else:
             ok_bg, ok_text, ok_border = "#E3F4EA", "#23804F", "#B7E1C7"
             stop_bg, stop_text, stop_border = "#F8E3E1", "#B83227", "#EBC3BF"
+            warn_bg, warn_text = "#FBF0D9", "#8A5A00"
+            info_text = "#1B4499"
+            disabled_bg, disabled_text = "#E4ECF6", "#9AAACA"
+
+        self.camera_label.set_colors(well, c["text_secondary"])
+
+        for splitter in (self.body_splitter, self.side_splitter):
+            splitter.setProperty("gripColor", c["input_border"])
+            splitter.handle(1).update()
 
         self.setStyleSheet(
             page_background.LAYER_RULE
@@ -881,19 +1201,46 @@ class PresentationPage(QWidget):
             QLabel#pageSubtitle {{
                 font-size: 14px;
                 color: {c['text_secondary']};
-                margin-bottom: 4px;
             }}
 
-            QFrame#panel {{
+            QFrame#panel, QFrame#fileBar {{
                 background: {c['card']};
                 border: 1px solid {c['card_border']};
                 border-radius: 14px;
             }}
 
             QLabel#panelTitle {{
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: 700;
-                padding-bottom: 2px;
+            }}
+
+            QLabel#fieldLabel {{
+                color: {c['text_secondary']};
+                font-size: 12px;
+            }}
+
+            /* ---------- Gesture on/off pill ---------- */
+
+            QLabel#gesturePill {{
+                background: {c['card']};
+                border: 1px solid {c['card_border']};
+                color: {c['text_secondary']};
+                border-radius: 15px;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+
+            QLabel#gesturePill[tone="good"] {{
+                background: {ok_bg};
+                border-color: {ok_border};
+                color: {ok_text};
+            }}
+
+            QLabel#gesturePill[tone="warn"] {{
+                background: {warn_bg};
+                border-color: {warn_text};
+                color: {warn_text};
             }}
 
             /* ---------- Buttons ---------- */
@@ -902,10 +1249,10 @@ class PresentationPage(QWidget):
                 background: {field};
                 color: {c['text']};
                 border: 1px solid {c['input_border']};
-                border-radius: 9px;
+                border-radius: 10px;
                 font-size: 13px;
                 font-weight: 600;
-                padding: 8px 14px;
+                padding: 6px 14px;
             }}
 
             QPushButton:hover {{
@@ -917,16 +1264,49 @@ class PresentationPage(QWidget):
                 border: 2px solid {focus};
             }}
 
+            QPushButton:disabled {{
+                background: {disabled_bg};
+                color: {disabled_text};
+                border: 1px solid {c['card_border']};
+            }}
+
+            QPushButton#uploadButton {{
+                background: {c['primary']};
+                color: {c['primary_text']};
+                border: none;
+                font-weight: 700;
+                padding: 6px 18px;
+            }}
+
+            QPushButton#uploadButton:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+
+            QPushButton#navButton {{
+                font-size: 14px;
+            }}
+
             QPushButton#startButton {{
                 background: {c['primary']};
                 color: {c['primary_text']};
                 border: none;
+                font-size: 14px;
                 font-weight: 700;
             }}
 
             QPushButton#startButton:hover {{
                 background: {c['sidebar_hover']};
                 color: {c['sidebar_text']};
+            }}
+
+            QPushButton#startButton:focus {{
+                border: 2px solid {c['accent']};
+            }}
+
+            QPushButton#startButton:disabled {{
+                background: {disabled_bg};
+                color: {disabled_text};
             }}
 
             QPushButton#stopButton {{
@@ -939,29 +1319,105 @@ class PresentationPage(QWidget):
                 border: 1px solid {stop_text};
             }}
 
-            /* ---------- File status pill ---------- */
+            QPushButton#stopButton:disabled {{
+                background: transparent;
+                color: {disabled_text};
+                border: 1px dashed {c['card_border']};
+            }}
+
+            /* ---------- File status ---------- */
 
             QLabel#fileStatus {{
-                background: {c['button_hover']};
                 color: {c['text_secondary']};
-                padding: 10px 16px;
-                border-radius: 9px;
-                font-weight: 600;
+                font-size: 13px;
             }}
 
             QLabel#fileStatus[loaded="true"] {{
-                background: {ok_bg};
-                color: {ok_text};
-                border: 1px solid {ok_border};
+                color: {c['text']};
             }}
 
-            /* ---------- Gesture list ---------- */
+            /* ---------- Stage ---------- */
+
+            QLabel#slideCounter {{
+                background: rgba(11, 26, 48, 0.82);
+                color: #FFFFFF;
+                padding: 5px 12px;
+                margin: 10px;
+                border-radius: 12px;
+                font-weight: 600;
+                font-size: 12px;
+            }}
+
+            QLabel#hintLabel {{
+                color: {c['text_secondary']};
+                font-size: 12px;
+                padding: 0 2px;
+            }}
+
+            /* ---------- Camera ---------- */
+
+            QLabel#cameraStatus {{
+                color: {c['text_secondary']};
+                font-size: 12px;
+                font-weight: 600;
+            }}
+
+            QLabel#cameraStatus[tone="good"] {{
+                color: {ok_text};
+            }}
+
+            QLabel#cameraStatus[tone="info"] {{
+                color: {info_text};
+            }}
+
+            QLabel#cameraStatus[tone="bad"] {{
+                color: {stop_text};
+            }}
+
+            QLabel#readoutName {{
+                color: {c['text_secondary']};
+                font-size: 12px;
+            }}
+
+            QLabel#readoutValue {{
+                font-size: 13px;
+                font-weight: 700;
+            }}
+
+            /* ---------- Gesture guide ---------- */
+
+            QPushButton#segment {{
+                background: {field};
+                color: {c['text_secondary']};
+                border: 1px solid {c['input_border']};
+                border-radius: 0;
+                font-size: 12px;
+                padding: 4px 8px;
+            }}
+
+            QPushButton#segment[edge="left"] {{
+                border-top-left-radius: 8px;
+                border-bottom-left-radius: 8px;
+                border-right: none;
+            }}
+
+            QPushButton#segment[edge="right"] {{
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+            }}
+
+            QPushButton#segment:checked {{
+                background: {c['primary']};
+                color: {c['primary_text']};
+                border-color: {c['primary']};
+                font-weight: 700;
+            }}
 
             QLabel#gestureIcon {{
                 background: {c['button_hover']};
                 border-radius: 7px;
                 font-family: "Segoe UI Emoji";
-                font-size: 15px;
+                font-size: 14px;
             }}
 
             QLabel#gestureName {{
@@ -974,57 +1430,57 @@ class PresentationPage(QWidget):
                 color: {c['text_secondary']};
             }}
 
-            /* ---------- Status and camera ---------- */
+            /* ---------- Annotation bar (over the slide) ---------- */
 
-            QLabel#statusName {{
-                color: {c['text_secondary']};
+            QFrame#annotBar {{
+                background: rgba(11, 26, 48, 0.94);
+                border: 1px solid #2A5A9E;
+                border-radius: 12px;
+                margin: 10px;
             }}
 
-            QLabel#statusValue {{
-                font-weight: 700;
-            }}
-
-            QLabel#cameraWell {{
-                background: {well};
-                border-radius: 10px;
-                color: {c['text_secondary']};
-            }}
-
-            QFrame#statusBlock {{
-                background: {well};
-                border: 1px solid {c['card_border']};
-                border-radius: 9px;
-            }}
-
-            QLabel#cameraStatus {{
-                color: {c['text_secondary']};
+            QFrame#annotBar QPushButton#annotTool,
+            QFrame#annotBar QPushButton#annotAction {{
+                background: transparent;
+                color: #EAF2FF;
+                border: 1px solid transparent;
+                border-radius: 7px;
+                padding: 4px 9px;
+                font-size: 12px;
                 font-weight: 600;
             }}
 
-            QLabel#detectedLabel {{
-                font-weight: 600;
+            QFrame#annotBar QPushButton#annotTool:hover,
+            QFrame#annotBar QPushButton#annotAction:hover {{
+                background: #1B3A63;
             }}
 
-            /* ---------- Right column scrollbar ---------- */
+            QFrame#annotBar QPushButton#annotTool:checked {{
+                background: #3E7CF7;
+                color: #0B1A30;
+            }}
 
-            QScrollArea#rightScroll QScrollBar:vertical {{
+            QFrame#annotBar QPushButton#annotSwatch {{
+                border: 2px solid rgba(255, 255, 255, 0.35);
+                border-radius: 11px;
+                padding: 0;
+            }}
+
+            QFrame#annotBar QPushButton#annotSwatch:checked {{
+                border: 3px solid #7FD3FF;
+            }}
+
+            QFrame#annotBar QLabel#annotLabel {{
+                color: #AAC0E1;
+                font-size: 12px;
+            }}
+
+            QFrame#annotBar QSlider {{
                 background: transparent;
-                width: 8px;
-                margin: 0;
             }}
 
-            QScrollArea#rightScroll QScrollBar::handle:vertical {{
-                background: {c['input_border']};
-                border-radius: 4px;
-                min-height: 30px;
-            }}
-
-            QScrollArea#rightScroll QScrollBar::add-line:vertical,
-            QScrollArea#rightScroll QScrollBar::sub-line:vertical,
-            QScrollArea#rightScroll QScrollBar::add-page:vertical,
-            QScrollArea#rightScroll QScrollBar::sub-page:vertical {{
+            QSplitter::handle {{
                 background: transparent;
-                height: 0;
             }}
             """
         )
@@ -1036,6 +1492,14 @@ class PresentationPage(QWidget):
         self.file_status.setProperty("loaded", bool(loaded))
         self.file_status.style().unpolish(self.file_status)
         self.file_status.style().polish(self.file_status)
+
+    def _file_summary(self, file_path, kind):
+
+        count = self.total_pages
+        slides = "slide" if count == 1 else "slides"
+        name = html.escape(os.path.basename(file_path))
+
+        return f"<b>{name}</b>&nbsp;&nbsp;&nbsp;{kind}, {count} {slides}"
 
     # ============================================================
     # BACKGROUND
@@ -1156,12 +1620,8 @@ class PresentationPage(QWidget):
 
             self.current_page = 0
 
-            self.status_mode.setText("PDF")
-
             self.file_status.setText(
-                "● "
-                + os.path.basename(file_path)
-                + " — PDF Loaded"
+                self._file_summary(file_path, "PDF")
             )
 
             self._set_file_loaded(True)
@@ -1205,22 +1665,13 @@ class PresentationPage(QWidget):
                 for slide in slides
             ]
 
-            self.status_mode.setText("PowerPoint")
-
             self.file_status.setText(
-                "● "
-                + os.path.basename(file_path)
-                + " — PowerPoint Loaded"
+                self._file_summary(file_path, "PowerPoint")
             )
 
             self._set_file_loaded(True)
 
             self.render_pdf_page()
-
-            self.slide_counter.setText(
-                f"Slide {self.current_page + 1} / "
-                f"{self.total_pages}"
-            )
 
             self.update_status()
 
@@ -1365,15 +1816,7 @@ class PresentationPage(QWidget):
                 QPixmap.fromImage(img)
             )
 
-            self.slide_counter.setText(
-                f"Slide {self.current_page + 1} / "
-                f"{self.total_pages}"
-            )
-
-            self.status_slide.setText(
-                f"{self.current_page + 1} / "
-                f"{self.total_pages}"
-            )
+            self._update_counter()
 
             self.refresh_fullscreen()
             return
@@ -1420,15 +1863,7 @@ class PresentationPage(QWidget):
             pixmap
         )
 
-        self.slide_counter.setText(
-            f"Slide {self.current_page + 1} / "
-            f"{self.total_pages}"
-        )
-
-        self.status_slide.setText(
-            f"{self.current_page + 1} / "
-            f"{self.total_pages}"
-        )
+        self._update_counter()
 
         self.refresh_fullscreen()
 
@@ -1568,7 +2003,7 @@ class PresentationPage(QWidget):
                 self.camera_timer.start(30)
 
             self.camera_status.setText(
-                "● Camera Connected (shared)"
+                "● Shared with Virtual Mouse"
             )
 
             return
@@ -1601,7 +2036,7 @@ class PresentationPage(QWidget):
             self.camera_timer.start(30)
 
             self.camera_status.setText(
-                "● Camera Connected"
+                "● Connected"
             )
 
         else:
@@ -1612,7 +2047,11 @@ class PresentationPage(QWidget):
             self.camera = None
 
             self.camera_status.setText(
-                "● Camera Not Available"
+                "● Camera not available"
+            )
+
+            self.camera_label.setText(
+                "No camera found.\nPick one in Camera Setup."
             )
 
     # ============================================================
@@ -1750,13 +2189,13 @@ class PresentationPage(QWidget):
                 )
 
                 self.camera_status.setText(
-                    "● Hand Detected"
+                    "● Hand detected"
                 )
 
             else:
 
                 self.camera_status.setText(
-                    "● Camera Connected (shared)"
+                    "● Shared with Virtual Mouse"
                 )
 
         # If MediaPipe is unavailable, just show the raw camera feed.
@@ -1801,19 +2240,23 @@ class PresentationPage(QWidget):
                 )
 
                 self.camera_status.setText(
-                    "● Hand Detected"
+                    "● Hand detected"
                 )
 
             else:
 
                 self.camera_status.setText(
-                    "● Camera Connected"
+                    "● Connected"
                 )
 
-        self.detected_label.setText(
-            "Detected: "
-            + gesture
-        )
+        if gesture in ("None", "Unknown"):
+            seen = "No gesture"
+        elif self.gestures_enabled:
+            seen = gesture
+        else:
+            seen = gesture + " (gestures off)"
+
+        self.detected_label.setText(seen)
 
         # --------------------------------------------------------
         # CAMERA IMAGE
@@ -1844,12 +2287,7 @@ class PresentationPage(QWidget):
             image
         )
 
-        pixmap = pixmap.scaled(
-            self.camera_label.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
-        )
-
+        # CameraFeed scales it to the panel size when painting.
         self.camera_label.setPixmap(
             pixmap
         )
@@ -1860,84 +2298,106 @@ class PresentationPage(QWidget):
 
     def _build_annotation_toolbar(self):
 
+        # Dark glass bar floating over the slide; styled by the page
+        # stylesheet (QFrame#annotBar) so it matches in both themes.
         bar = QFrame()
+        bar.setObjectName("annotBar")
+        bar.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
 
-        bar.setStyleSheet(
-            ".QFrame { background: rgba(10,22,40,0.94);"
-            " border: 1px solid #2A5A9E; border-radius: 10px; }"
-            "QLabel { color: #AAC0E1; font-size: 12px; }"
-            "QPushButton { background: transparent; color: #EAF2FF;"
-            " border: none; padding: 6px 10px; border-radius: 6px;"
-            " font-size: 13px; }"
-            "QPushButton:hover { background: #1B3A63; }"
-        )
-
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, 6, 10, 6)
+        layout = QVBoxLayout(bar)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
 
-        self.pen_btn = QPushButton("Pen")
-        self.highlighter_btn = QPushButton("Highlighter")
-        self.eraser_btn = QPushButton("Eraser")
+        # Row 1: tool choice, then history actions
+        tools_row = QHBoxLayout()
+        tools_row.setSpacing(4)
 
-        self.pen_btn.clicked.connect(
-            lambda: self._set_annotation_tool("pen")
-        )
-        self.highlighter_btn.clicked.connect(
-            lambda: self._set_annotation_tool("highlighter")
-        )
-        self.eraser_btn.clicked.connect(
-            lambda: self._set_annotation_tool("eraser")
-        )
+        self.annot_tools = QButtonGroup(bar)
+        self.annot_tools.setExclusive(True)
 
-        layout.addWidget(self.pen_btn)
-        layout.addWidget(self.highlighter_btn)
-        layout.addWidget(self.eraser_btn)
-
-        layout.addWidget(QLabel("Colour:"))
-
-        for color in (
-            "#E81123",
-            "#FFB020",
-            "#28C76F",
-            "#2876E8",
-            "#FFFFFF",
+        for tool, label in (
+            ("pen", "✎ Pen"),
+            ("highlighter", "▍ Highlighter"),
+            ("eraser", "⌫ Eraser"),
         ):
+            button = QPushButton(label)
+            button.setObjectName("annotTool")
+            button.setCheckable(True)
+            button.setChecked(tool == "pen")
+            button.clicked.connect(
+                lambda checked=False, t=tool: self._set_annotation_tool(t)
+            )
+            self.annot_tools.addButton(button)
+            tools_row.addWidget(button)
 
+        # Keep the old attribute names for anything that refers to them.
+        self.pen_btn, self.highlighter_btn, self.eraser_btn = (
+            self.annot_tools.buttons()
+        )
+
+        tools_row.addSpacing(8)
+
+        for label, tip, slot in (
+            ("Undo", "Undo the last stroke", self.slide_view.undo),
+            ("Redo", "Bring back the last undone stroke", self.slide_view.redo),
+            ("Clear", "Erase everything on this slide", self.slide_view.clear_annotations),
+        ):
+            button = QPushButton(label)
+            button.setObjectName("annotAction")
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            tools_row.addWidget(button)
+
+        layout.addLayout(tools_row)
+
+        # Row 2: colour swatches and brush size
+        style_row = QHBoxLayout()
+        style_row.setSpacing(6)
+
+        self.annot_colors = QButtonGroup(bar)
+        self.annot_colors.setExclusive(True)
+
+        for color, name in (
+            ("#E81123", "Red"),
+            ("#FFB020", "Yellow"),
+            ("#28C76F", "Green"),
+            ("#2876E8", "Blue"),
+            ("#FFFFFF", "White"),
+        ):
             swatch = QPushButton()
-            swatch.setFixedSize(20, 20)
+            swatch.setObjectName("annotSwatch")
+            swatch.setCheckable(True)
+            swatch.setChecked(color == "#E81123")
+            swatch.setFixedSize(22, 22)
+            swatch.setToolTip(name)
             swatch.setStyleSheet(
-                f"QPushButton {{ background:{color};"
-                " border:2px solid #FFFFFF; border-radius:10px; }}"
+                f"QPushButton {{ background: {color}; }}"
             )
             swatch.clicked.connect(
                 lambda checked=False, c=color:
                 self._set_annotation_color(c)
             )
-            layout.addWidget(swatch)
+            self.annot_colors.addButton(swatch)
+            style_row.addWidget(swatch)
 
-        layout.addWidget(QLabel("Size:"))
+        style_row.addSpacing(10)
+
+        size_label = QLabel("Size")
+        size_label.setObjectName("annotLabel")
+        style_row.addWidget(size_label)
 
         size_slider = QSlider(Qt.Horizontal)
+        size_slider.setObjectName("annotSize")
         size_slider.setRange(1, 20)
         size_slider.setValue(4)
-        size_slider.setFixedWidth(90)
+        size_slider.setFixedWidth(96)
         size_slider.valueChanged.connect(
             lambda v: setattr(self.slide_view, "brush_size", v)
         )
-        layout.addWidget(size_slider)
+        style_row.addWidget(size_slider)
+        style_row.addStretch()
 
-        undo_btn = QPushButton("Undo")
-        redo_btn = QPushButton("Redo")
-        clear_btn = QPushButton("Clear")
-
-        undo_btn.clicked.connect(self.slide_view.undo)
-        redo_btn.clicked.connect(self.slide_view.redo)
-        clear_btn.clicked.connect(self.slide_view.clear_annotations)
-
-        layout.addWidget(undo_btn)
-        layout.addWidget(redo_btn)
-        layout.addWidget(clear_btn)
+        layout.addLayout(style_row)
 
         bar.hide()
 
@@ -1966,7 +2426,7 @@ class PresentationPage(QWidget):
 
         if not self.gestures_enabled:
             self.detected_label.setText(
-                "Detected: " + gesture + " (gestures inactive)"
+                gesture + " (gestures off)"
             )
             return
 
@@ -2097,8 +2557,6 @@ class PresentationPage(QWidget):
         if hasattr(self, "status_action"):
             self.status_action.setText(text)
 
-        if hasattr(self, "status_gesture"):
-            self.status_gesture.setText("● " + text)
 
     def set_annotation_mode(self, enabled):
 
@@ -2111,6 +2569,12 @@ class PresentationPage(QWidget):
         self.slide_view.clear_annotations()
 
         self.end_annotation_draw()
+
+        # Show the drawing gestures while annotating.
+        if hasattr(self, "guide_tabs"):
+            tab = self.guide_tabs.button(1 if self.annotation_mode else 0)
+            if tab is not None:
+                tab.click()
 
         self._set_action(
             "Annotation Mode" if enabled else "Presentation"
@@ -2284,10 +2748,6 @@ class PresentationPage(QWidget):
             "Presentation Started"
         )
 
-        self.status_gesture.setText(
-            "● Active"
-        )
-
         self.update_status()
 
     def manual_stop(self):
@@ -2301,10 +2761,6 @@ class PresentationPage(QWidget):
 
         self.current_action = (
             "Presentation Stopped"
-        )
-
-        self.status_gesture.setText(
-            "● Inactive"
         )
 
         self.update_status()
@@ -2345,32 +2801,13 @@ class PresentationPage(QWidget):
 
     def update_status(self):
 
-        if self.pdf_document:
-
-            self.status_slide.setText(
-                f"{self.current_page + 1} / "
-                f"{self.total_pages}"
-            )
-
-        elif self.file_path:
-
-            self.status_slide.setText(
-                "PowerPoint"
-            )
-
-        else:
-
-            self.status_slide.setText(
-                "0 / 0"
-            )
-
-        self.status_mode.setText(
-            self.file_type_combo.currentText()
-        )
+        self._update_counter()
 
         self.status_action.setText(
             self.current_action
         )
+
+        self._refresh_controls()
 
     # ============================================================
     # FULLSCREEN VIEWER
