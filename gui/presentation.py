@@ -717,10 +717,19 @@ class PresentationPage(QWidget):
             "PowerPoint",
         ])
 
+        # Picker controls stay together on the left; the loaded file
+        # fills the rest of the bar after a divider.
+        divider = QFrame()
+        divider.setObjectName("fileDivider")
+        divider.setFixedSize(1, 24)
+
         file_layout.addWidget(self.upload_button)
-        file_layout.addWidget(self.file_status, 1)
         file_layout.addWidget(self.file_type_label)
         file_layout.addWidget(self.file_type_combo)
+        file_layout.addSpacing(4)
+        file_layout.addWidget(divider)
+        file_layout.addSpacing(4)
+        file_layout.addWidget(self.file_status, 1)
 
         main_layout.addWidget(file_bar)
 
@@ -909,8 +918,6 @@ class PresentationPage(QWidget):
 
         camera_layout.addLayout(readout)
 
-        self.side_splitter.addWidget(camera_frame)
-
         # -------------------- Gesture guide --------------------
 
         guide_frame = QFrame()
@@ -1001,9 +1008,14 @@ class PresentationPage(QWidget):
         guide_layout.addLayout(segment_row)
         guide_layout.addWidget(self.guide_stack, 1)
 
+        # Gesture guide on top, camera feed below it.
         self.side_splitter.addWidget(guide_frame)
-        self.side_splitter.setStretchFactor(0, 1)
-        self.side_splitter.setStretchFactor(1, 0)
+        self.side_splitter.addWidget(camera_frame)
+        self.side_splitter.setStretchFactor(0, 0)
+        self.side_splitter.setStretchFactor(1, 1)
+
+        self._guide_frame = guide_frame
+        self._side_fitted = False
 
         self.body_splitter.addWidget(self.side_splitter)
         self.body_splitter.setStretchFactor(0, 1)
@@ -1025,6 +1037,26 @@ class PresentationPage(QWidget):
 
         super().resizeEvent(event)
         self._apply_density()
+
+        # Once the page has its real size, give the gesture guide only
+        # the height its rows need and the camera feed the rest.
+        if not self._side_fitted and self.isVisible():
+            self._side_fitted = True
+            QTimer.singleShot(0, self._fit_side_column)
+
+    def _fit_side_column(self):
+
+        frame = self._guide_frame
+        guide = frame.minimumSizeHint().height()
+
+        # Wrapped gesture descriptions need more height on a narrow
+        # column; measure every tab at the real width.
+        layout = frame.layout()
+        if layout.hasHeightForWidth():
+            guide = max(guide, layout.totalHeightForWidth(frame.width()))
+        total = sum(self.side_splitter.sizes())
+
+        self.side_splitter.setSizes([guide, max(1, total - guide)])
 
     def _apply_density(self):
         """Tighten spacing and shorten labels on small windows so the
@@ -1057,6 +1089,9 @@ class PresentationPage(QWidget):
             icon.setFixedSize(28, 20 if short else 24)
 
         self.camera_label.setMinimumHeight(80 if short else 110)
+
+        if self._side_fitted:
+            QTimer.singleShot(0, self._fit_side_column)
         self.file_type_label.setVisible(not narrow)
         self.side_splitter.setMinimumWidth(250 if narrow else 290)
 
@@ -1212,6 +1247,11 @@ class PresentationPage(QWidget):
             QLabel#panelTitle {{
                 font-size: 15px;
                 font-weight: 700;
+            }}
+
+            QFrame#fileDivider {{
+                background: {c['card_border']};
+                border: none;
             }}
 
             QLabel#fieldLabel {{
