@@ -104,7 +104,7 @@ STEPS = [
 ]
 
 
-# Page colour: "Marble", a cool off-white that suits the navy / cyan brand.
+# Card colour: "Marble", a cool off-white that suits the navy / cyan brand.
 MARBLE = "#F2F8FC"
 
 
@@ -190,20 +190,13 @@ class ConstellationBackground(QWidget):
 
     def paintEvent(self, event):
 
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        # Same soft-blue page, dot grid and corner hand as Saved Files.
+        # The tutorial is styled for light mode only, so it stays light.
+        from widgets import page_background
 
-        painter.fillRect(self.rect(), QColor(MARBLE))
-
-        w, h = self.width(), self.height()
-        s = min(w, h)
-
-        # Large, faint hands peeking in from the corners.
-        self._draw_hand(painter, w * 0.06, h * 0.20, s * 0.42, -28, self.CYAN, 42)
-        self._draw_hand(painter, w * 0.95, h * 0.84, s * 0.50, 152, self.NAVY, 22)
-        self._draw_hand(painter, w * 0.93, h * 0.12, s * 0.20, 24, self.CYAN, 34)
-
-        painter.end()
+        page_background.paint_page_background(
+            self, page_background.page_colors(dark=False)
+        )
 
 
 # ==============================================================
@@ -218,7 +211,9 @@ class TutorialPage(ConstellationBackground):
         self.parent_window = parent
         self.setObjectName("tutorialPage")
 
-        self.setStyleSheet("""
+        from widgets import page_background
+
+        self.setStyleSheet(page_background.LAYER_RULE + """
             QLabel { background: transparent; color: #0E2F76; }
 
             QFrame#tutorialCard {
@@ -375,6 +370,9 @@ class TutorialPage(ConstellationBackground):
 
         self.reflow_gestures(2)
         self.goToPage(0)
+
+        # Plain containers let the shared page background show through.
+        page_background.clear_layers(self)
 
     # ==========================================================
     # LAYOUT PIECES

@@ -41,11 +41,18 @@ LAYER_RULE = """
 """
 
 
-def page_colors():
-    """App theme colours with the shared page surfaces applied."""
+def page_colors(dark=None):
+    """App theme colours with the shared page surfaces applied.
 
-    c = dict(app_theme.colors())
-    c.update(DARK_SURFACES if app_theme.is_dark() else LIGHT_SURFACES)
+    Pages that are only styled for light mode pass dark=False so they
+    keep the light surfaces whatever theme is active.
+    """
+
+    if dark is None:
+        dark = app_theme.is_dark()
+
+    c = dict(app_theme.DARK if dark else app_theme.LIGHT)
+    c.update(DARK_SURFACES if dark else LIGHT_SURFACES)
     return c
 
 

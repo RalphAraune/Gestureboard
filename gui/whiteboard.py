@@ -1461,6 +1461,10 @@ class WhiteboardPage(QWidget):
 
         self.setup_ui()
 
+        from widgets import page_background
+
+        page_background.clear_layers(self)
+
     # ========================================================
     # SHOW EVENT
     # ========================================================
@@ -1571,6 +1575,16 @@ class WhiteboardPage(QWidget):
         self.camera_label.raise_()
 
     # ========================================================
+    # BACKGROUND
+    # ========================================================
+
+    def paintEvent(self, event):
+
+        from widgets import page_background
+
+        page_background.paint_page_background(self, self._page_colors)
+
+    # ========================================================
     # SETUP UI
     # ========================================================
 
@@ -1578,7 +1592,13 @@ class WhiteboardPage(QWidget):
         self
     ):
 
-        self.setStyleSheet("""
+        from widgets import page_background
+
+        # Same soft-blue page as Saved Files (painted in paintEvent). The
+        # whiteboard is styled for light mode only, so it stays light.
+        self._page_colors = page_background.page_colors(dark=False)
+
+        self.setStyleSheet(page_background.LAYER_RULE + """
             QWidget {
                 background-color: #F2F8FC;
                 color: #0E2F76;
@@ -1593,6 +1613,10 @@ class WhiteboardPage(QWidget):
                 background: transparent;
                 border: none;
                 color: #0E2F76;
+            }
+
+            QSlider {
+                background: transparent;
             }
 
             QSlider::groove:horizontal {
@@ -1610,20 +1634,20 @@ class WhiteboardPage(QWidget):
             }
 
             QFrame#toolbar {
-                background-color: #F8FDFF;
-                border: 1px solid #D7E5F3;
+                background-color: #EAF2FB;
+                border: 1px solid #BED2E9;
                 border-radius: 10px;
             }
 
             QFrame#controlBar {
-                background-color: #F8FDFF;
-                border: 1px solid #D7E5F3;
+                background-color: #EAF2FB;
+                border: 1px solid #BED2E9;
                 border-radius: 10px;
             }
 
             QFrame#canvasFrame {
                 background-color: #FFFFFF;
-                border: 1px solid #D7E5F3;
+                border: 1px solid #BED2E9;
                 border-radius: 12px;
             }
         """)
