@@ -82,6 +82,9 @@ def main():
 
     window = MainWindow()
 
+    # Frameless windows don't always inherit the app icon on Windows.
+    window.setWindowIcon(app.windowIcon())
+
     # --------------------------------------------------------
     # Show the application maximized
     # --------------------------------------------------------
