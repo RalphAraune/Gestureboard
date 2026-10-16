@@ -425,6 +425,8 @@ class PresentationPage(QWidget):
 
         page_background.clear_layers(self)
 
+        self.apply_theme()
+
         # ---------------------------------------------------------
         # CAMERA TIMER
         # ---------------------------------------------------------
@@ -472,87 +474,24 @@ class PresentationPage(QWidget):
 
     def build_ui(self):
 
-        from widgets import page_background
-
-        c = self._page_colors = page_background.page_colors()
-
-        # Shared soft-blue page (painted in paintEvent); containers and
-        # labels stay transparent so it shows through.
         self.setObjectName("presentationPage")
-        self.setStyleSheet(page_background.LAYER_RULE + f"""
-            QWidget#presentationPage {{
-                background: transparent;
-            }}
-
-            QLabel {{
-                background: transparent;
-            }}
-
-            QPushButton {{
-                background: {c['card']};
-                color: {c['text']};
-                border: 1px solid {c['input_border']};
-                border-radius: 8px;
-                font-weight: 600;
-                padding: 8px 14px;
-            }}
-
-            QPushButton:hover {{
-                background: {c['button_hover']};
-            }}
-
-            QComboBox {{
-                background: {c['card']};
-                color: {c['text']};
-                border: 1px solid {c['input_border']};
-                border-radius: 8px;
-                padding: 6px 12px;
-            }}
-
-            QComboBox:hover {{
-                border: 1px solid {c['primary']};
-            }}
-
-            QComboBox::drop-down {{
-                border: none;
-                width: 26px;
-            }}
-
-            QComboBox QAbstractItemView {{
-                background: {c['card']};
-                color: {c['text']};
-                selection-background-color: {c['button_hover']};
-                selection-color: {c['text']};
-            }}
-        """)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(30, 25, 30, 25)
-        main_layout.setSpacing(18)
+        main_layout.setContentsMargins(36, 28, 36, 28)
+        main_layout.setSpacing(14)
 
         # --------------------------------------------------------
         # TITLE
         # --------------------------------------------------------
 
         title = QLabel("Presentation Control")
-        title.setStyleSheet("""
-            QLabel {
-                font-size: 28px;
-                font-weight: 700;
-                color: #12377D;
-            }
-        """)
+        title.setObjectName("pageTitle")
 
         subtitle = QLabel(
             "Control your presentation using hand gestures."
         )
 
-        subtitle.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
-                color: #7183A6;
-            }
-        """)
+        subtitle.setObjectName("pageSubtitle")
 
         main_layout.addWidget(title)
         main_layout.addWidget(subtitle)
@@ -579,16 +518,8 @@ class PresentationPage(QWidget):
         ])
 
         self.file_status = QLabel("● No File Loaded")
-
-        self.file_status.setStyleSheet("""
-            QLabel {
-                background: #EAF2FF;
-                color: #5574A8;
-                padding: 10px 16px;
-                border-radius: 8px;
-                font-weight: 600;
-            }
-        """)
+        self.file_status.setObjectName("fileStatus")
+        self.file_status.setProperty("loaded", False)
 
         upload_layout.addWidget(self.upload_button)
         upload_layout.addWidget(self.file_type_combo)
@@ -616,13 +547,7 @@ class PresentationPage(QWidget):
         # --------------------------------------------------------
 
         preview_frame = QFrame()
-        preview_frame.setStyleSheet("""
-            .QFrame {
-                background: #EAF2FB;
-                border: 1px solid #BED2E9;
-                border-radius: 12px;
-            }
-        """)
+        preview_frame.setObjectName("panel")
 
         preview_layout = QGridLayout(preview_frame)
         preview_layout.setContentsMargins(16, 16, 16, 16)
@@ -677,6 +602,7 @@ class PresentationPage(QWidget):
         # --------------------------------------------------------
 
         self.start_button = QPushButton("Start Presentation")
+        self.start_button.setObjectName("startButton")
         self.start_button.setFixedHeight(42)
         self.start_button.clicked.connect(
             self.manual_start
@@ -684,19 +610,7 @@ class PresentationPage(QWidget):
 
         self.stop_button = QPushButton("Stop Presentation")
         self.stop_button.setFixedHeight(42)
-        self.stop_button.setStyleSheet("""
-            QPushButton {
-                background: #EAF8EF;
-                color: #2A9561;
-                border: 1px solid #B7E1C7;
-                border-radius: 6px;
-                font-weight: 600;
-                padding: 8px;
-            }
-            QPushButton:hover {
-                background: #D8F0E1;
-            }
-        """)
+        self.stop_button.setObjectName("stopButton")
         self.stop_button.clicked.connect(
             self.manual_stop
         )
@@ -742,13 +656,7 @@ class PresentationPage(QWidget):
         # --------------------------------------------------------
 
         gesture_frame = QFrame()
-        gesture_frame.setStyleSheet("""
-            .QFrame {
-                background: #EAF2FB;
-                border: 1px solid #BED2E9;
-                border-radius: 12px;
-            }
-        """)
+        gesture_frame.setObjectName("panel")
 
         gesture_layout = QVBoxLayout(gesture_frame)
         gesture_layout.setContentsMargins(14, 12, 14, 12)
@@ -756,71 +664,38 @@ class PresentationPage(QWidget):
 
         gesture_title = QLabel("Gesture Controls")
 
-        gesture_title.setStyleSheet("""
-            QLabel {
-                font-size: 16px;
-                font-weight: 700;
-                color: #12377D;
-            }
-        """)
+        gesture_title.setObjectName("panelTitle")
 
         gesture_layout.addWidget(gesture_title)
 
+        # Same gesture list the tutorial and Settings show.
+        from gui.tutorial import STEPS
+
         gestures = [
-            ("🤘", "Rock & Roll", "Start Presentation"),
-            ("👉", "Point Right", "Next Slide"),
-            ("👈", "Point Left", "Previous Slide"),
-            ("👍", "Thumbs Up", "Full Screen"),
-            ("👎", "Thumbs Down", "Exit Full Screen"),
-            ("☝️", "Index Finger", "Cursor / Pointer"),
-            ("🖖", "Three Fingers (Index + Middle + Ring fingers)", "Activate Annotation Mode"),
-            ("☝️ + 🖕 ", "Index + Middle fingers together", "Draw"),
-            ("✌️", "Peace Sign (Index + Middle fingers separated)", "Stop Drawing"),
-            ("✋", "Open Hand ", "Move Cursor / Select Tool"),
-            ("✊", " Closed Hand/Fist", "Click"),
-            
-            
+            gesture
+            for _title, items in STEPS[0]["groups"]
+            for gesture in items
         ]
 
         for icon, gesture, action in gestures:
 
             row = QHBoxLayout()
-            row.setSpacing(8)
+            row.setSpacing(10)
 
             icon_label = QLabel(icon)
-            icon_label.setFixedSize(30, 26)
+            icon_label.setObjectName("gestureIcon")
+            icon_label.setFixedSize(30, 28)
             icon_label.setAlignment(Qt.AlignCenter)
 
-            icon_label.setStyleSheet("""
-                QLabel {
-                    background: #E8F0FA;
-                    border-radius: 6px;
-                    font-size: 15px;
-                }
-            """)
-
             gesture_label = QLabel(gesture)
-
-            gesture_label.setStyleSheet("""
-                QLabel {
-                    color: #5273A9;
-                    font-weight: 600;
-                    font-size: 12px;
-                }
-            """)
+            gesture_label.setObjectName("gestureName")
 
             action_label = QLabel(action)
-
-            action_label.setStyleSheet("""
-                QLabel {
-                    color: #7183A6;
-                    font-size: 12px;
-                }
-            """)
+            action_label.setObjectName("gestureAction")
+            action_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
             row.addWidget(icon_label)
-            row.addWidget(gesture_label)
-            row.addStretch()
+            row.addWidget(gesture_label, 1)
             row.addWidget(action_label)
 
             gesture_layout.addLayout(row)
@@ -832,14 +707,7 @@ class PresentationPage(QWidget):
         # --------------------------------------------------------
 
         status_frame = QFrame()
-
-        status_frame.setStyleSheet("""
-            .QFrame {
-                background: #EAF2FB;
-                border: 1px solid #BED2E9;
-                border-radius: 12px;
-            }
-        """)
+        status_frame.setObjectName("panel")
 
         status_layout = QGridLayout(status_frame)
         status_layout.setContentsMargins(14, 12, 14, 12)
@@ -847,13 +715,7 @@ class PresentationPage(QWidget):
 
         status_title = QLabel("Presentation Status")
 
-        status_title.setStyleSheet("""
-            QLabel {
-                font-size: 16px;
-                font-weight: 700;
-                color: #12377D;
-            }
-        """)
+        status_title.setObjectName("panelTitle")
 
         status_layout.addWidget(status_title, 0, 0, 1, 2)
 
@@ -897,14 +759,7 @@ class PresentationPage(QWidget):
         # --------------------------------------------------------
 
         camera_frame = QFrame()
-
-        camera_frame.setStyleSheet("""
-            .QFrame {
-                background: #EAF2FB;
-                border: 1px solid #BED2E9;
-                border-radius: 12px;
-            }
-        """)
+        camera_frame.setObjectName("panel")
 
         camera_layout = QVBoxLayout(camera_frame)
 
@@ -914,13 +769,7 @@ class PresentationPage(QWidget):
 
         camera_title = QLabel("Camera")
 
-        camera_title.setStyleSheet("""
-            QLabel {
-                font-size: 16px;
-                font-weight: 700;
-                color: #12377D;
-            }
-        """)
+        camera_title.setObjectName("panelTitle")
 
         camera_layout.addWidget(camera_title)
 
@@ -930,13 +779,7 @@ class PresentationPage(QWidget):
 
         self.camera_label.setAlignment(Qt.AlignCenter)
 
-        self.camera_label.setStyleSheet("""
-            QLabel {
-                background: #CFDFF0;
-                border-radius: 8px;
-                color: #7890B5;
-            }
-        """)
+        self.camera_label.setObjectName("cameraWell")
 
         self.camera_label.setText("Starting Camera...")
 
@@ -947,16 +790,7 @@ class PresentationPage(QWidget):
 
         # Separate status block placed BELOW the feed so it never covers it.
         status_block = QFrame()
-        status_block.setStyleSheet("""
-            .QFrame {
-                background: #DFEAF6;
-                border: 1px solid #BED2E9;
-                border-radius: 8px;
-            }
-            QLabel {
-                background: transparent;
-            }
-        """)
+        status_block.setObjectName("statusBlock")
 
         status_block_layout = QVBoxLayout(status_block)
         status_block_layout.setContentsMargins(
@@ -968,12 +802,7 @@ class PresentationPage(QWidget):
             "● Camera Connecting..."
         )
 
-        self.camera_status.setStyleSheet("""
-            QLabel {
-                color: #5273A9;
-                font-weight: 600;
-            }
-        """)
+        self.camera_status.setObjectName("cameraStatus")
 
         status_block_layout.addWidget(self.camera_status)
 
@@ -981,12 +810,7 @@ class PresentationPage(QWidget):
             "Detected: None"
         )
 
-        self.detected_label.setStyleSheet("""
-            QLabel {
-                color: #12377D;
-                font-weight: 600;
-            }
-        """)
+        self.detected_label.setObjectName("detectedLabel")
 
         status_block_layout.addWidget(self.detected_label)
 
@@ -999,6 +823,7 @@ class PresentationPage(QWidget):
         # Wrap the right column in a scroll area so the page can shrink
         # vertically (responsive) instead of forcing a tall minimum height.
         right_scroll = QScrollArea()
+        right_scroll.setObjectName("rightScroll")
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.NoFrame)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1008,6 +833,209 @@ class PresentationPage(QWidget):
         content_layout.addWidget(right_scroll)
 
         main_layout.addLayout(content_layout)
+
+    # ============================================================
+    # THEME
+    #
+    # Every colour on this page lives in this one stylesheet, so
+    # MainWindow can re-apply it when the user switches light / dark.
+    # ============================================================
+
+    def apply_theme(self):
+
+        from settings import theme as app_theme
+        from widgets import page_background
+
+        c = self._page_colors = page_background.page_colors()
+
+        dark = app_theme.is_dark()
+        field = c["input_bg"] if dark else "#F5F9FD"
+        well = c["bg"] if dark else "#DCE7F3"
+        focus = c["accent"] if dark else c["sidebar_hover"]
+
+        if dark:
+            ok_bg, ok_text, ok_border = "#173B2E", "#5FD39A", "#245A45"
+            stop_bg, stop_text, stop_border = "#3A2230", "#F59A93", "#5A3040"
+        else:
+            ok_bg, ok_text, ok_border = "#E3F4EA", "#23804F", "#B7E1C7"
+            stop_bg, stop_text, stop_border = "#F8E3E1", "#B83227", "#EBC3BF"
+
+        self.setStyleSheet(
+            page_background.LAYER_RULE
+            + page_background.combo_rules(c, field)
+            + f"""
+            QWidget#presentationPage {{
+                background: transparent;
+            }}
+
+            QLabel {{
+                background: transparent;
+                color: {c['text']};
+            }}
+
+            QLabel#pageTitle {{
+                font-size: 28px;
+                font-weight: 800;
+            }}
+
+            QLabel#pageSubtitle {{
+                font-size: 14px;
+                color: {c['text_secondary']};
+                margin-bottom: 4px;
+            }}
+
+            QFrame#panel {{
+                background: {c['card']};
+                border: 1px solid {c['card_border']};
+                border-radius: 14px;
+            }}
+
+            QLabel#panelTitle {{
+                font-size: 16px;
+                font-weight: 700;
+                padding-bottom: 2px;
+            }}
+
+            /* ---------- Buttons ---------- */
+
+            QPushButton {{
+                background: {field};
+                color: {c['text']};
+                border: 1px solid {c['input_border']};
+                border-radius: 9px;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 8px 14px;
+            }}
+
+            QPushButton:hover {{
+                background: {c['button_hover']};
+            }}
+
+            QPushButton:focus {{
+                outline: none;
+                border: 2px solid {focus};
+            }}
+
+            QPushButton#startButton {{
+                background: {c['primary']};
+                color: {c['primary_text']};
+                border: none;
+                font-weight: 700;
+            }}
+
+            QPushButton#startButton:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+
+            QPushButton#stopButton {{
+                background: {stop_bg};
+                color: {stop_text};
+                border: 1px solid {stop_border};
+            }}
+
+            QPushButton#stopButton:hover {{
+                border: 1px solid {stop_text};
+            }}
+
+            /* ---------- File status pill ---------- */
+
+            QLabel#fileStatus {{
+                background: {c['button_hover']};
+                color: {c['text_secondary']};
+                padding: 10px 16px;
+                border-radius: 9px;
+                font-weight: 600;
+            }}
+
+            QLabel#fileStatus[loaded="true"] {{
+                background: {ok_bg};
+                color: {ok_text};
+                border: 1px solid {ok_border};
+            }}
+
+            /* ---------- Gesture list ---------- */
+
+            QLabel#gestureIcon {{
+                background: {c['button_hover']};
+                border-radius: 7px;
+                font-family: "Segoe UI Emoji";
+                font-size: 15px;
+            }}
+
+            QLabel#gestureName {{
+                font-size: 12px;
+                font-weight: 700;
+            }}
+
+            QLabel#gestureAction {{
+                font-size: 12px;
+                color: {c['text_secondary']};
+            }}
+
+            /* ---------- Status and camera ---------- */
+
+            QLabel#statusName {{
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#statusValue {{
+                font-weight: 700;
+            }}
+
+            QLabel#cameraWell {{
+                background: {well};
+                border-radius: 10px;
+                color: {c['text_secondary']};
+            }}
+
+            QFrame#statusBlock {{
+                background: {well};
+                border: 1px solid {c['card_border']};
+                border-radius: 9px;
+            }}
+
+            QLabel#cameraStatus {{
+                color: {c['text_secondary']};
+                font-weight: 600;
+            }}
+
+            QLabel#detectedLabel {{
+                font-weight: 600;
+            }}
+
+            /* ---------- Right column scrollbar ---------- */
+
+            QScrollArea#rightScroll QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0;
+            }}
+
+            QScrollArea#rightScroll QScrollBar::handle:vertical {{
+                background: {c['input_border']};
+                border-radius: 4px;
+                min-height: 30px;
+            }}
+
+            QScrollArea#rightScroll QScrollBar::add-line:vertical,
+            QScrollArea#rightScroll QScrollBar::sub-line:vertical,
+            QScrollArea#rightScroll QScrollBar::add-page:vertical,
+            QScrollArea#rightScroll QScrollBar::sub-page:vertical {{
+                background: transparent;
+                height: 0;
+            }}
+            """
+        )
+
+        self.update()
+
+    def _set_file_loaded(self, loaded):
+
+        self.file_status.setProperty("loaded", bool(loaded))
+        self.file_status.style().unpolish(self.file_status)
+        self.file_status.style().polish(self.file_status)
 
     # ============================================================
     # BACKGROUND
@@ -1026,19 +1054,9 @@ class PresentationPage(QWidget):
     def add_status_row(self, layout, row, title, value):
 
         title_label = QLabel(title)
+        title_label.setObjectName("statusName")
 
-        title_label.setStyleSheet("""
-            QLabel {
-                color: #7183A6;
-            }
-        """)
-
-        value.setStyleSheet("""
-            QLabel {
-                color: #12377D;
-                font-weight: 600;
-            }
-        """)
+        value.setObjectName("statusValue")
 
         layout.addWidget(title_label, row, 0)
         layout.addWidget(
@@ -1146,15 +1164,7 @@ class PresentationPage(QWidget):
                 + " — PDF Loaded"
             )
 
-            self.file_status.setStyleSheet("""
-                QLabel {
-                    background: #EAF8EF;
-                    color: #2A9561;
-                    padding: 10px 16px;
-                    border-radius: 8px;
-                    font-weight: 600;
-                }
-            """)
+            self._set_file_loaded(True)
 
             self.render_pdf_page()
 
@@ -1203,15 +1213,7 @@ class PresentationPage(QWidget):
                 + " — PowerPoint Loaded"
             )
 
-            self.file_status.setStyleSheet("""
-                QLabel {
-                    background: #EAF8EF;
-                    color: #2A9561;
-                    padding: 10px 16px;
-                    border-radius: 8px;
-                    font-weight: 600;
-                }
-            """)
+            self._set_file_loaded(True)
 
             self.render_pdf_page()
 

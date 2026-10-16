@@ -346,21 +346,28 @@ class CameraSetupPage(QWidget):
         page_background.paint_page_background(self, self._page_colors)
 
     # ========================================================
-    # BUILD UI
+    # THEME
+    #
+    # One stylesheet for the whole page, re-applied by MainWindow
+    # whenever the user switches between light and dark.
     # ========================================================
 
-    def build_ui(self):
+    def apply_theme(self):
 
+        from settings import theme as app_theme
         from widgets import page_background
 
         c = self._page_colors = page_background.page_colors()
 
-        self.setObjectName(
-            "cameraSetup"
-        )
+        dark = app_theme.is_dark()
+        field = c["input_bg"] if dark else "#F5F9FD"
+        well = c["bg"] if dark else "#DCE7F3"
+        focus = c["accent"] if dark else c["sidebar_hover"]
 
         self.setStyleSheet(
-            page_background.LAYER_RULE + f"""
+            page_background.LAYER_RULE
+            + page_background.combo_rules(c, field)
+            + f"""
             QWidget#cameraSetup {{
                 background: transparent;
             }}
@@ -400,46 +407,26 @@ class CameraSetupPage(QWidget):
 
             QFrame#preview, QFrame#controlsPanel {{
                 background: {c['card']};
-                border: 1px solid {c['border']};
+                border: 1px solid {c['card_border']};
                 border-radius: 16px;
             }}
 
             QFrame#cameraPlaceholder {{
-                background: {c['bg']};
-                border: 2px dashed {c['border']};
+                background: {well};
+                border: 2px dashed {c['input_border']};
                 border-radius: 12px;
             }}
 
             QFrame#status {{
-                background: {c['bg']};
-                border: 1px solid {c['border']};
+                background: {well};
+                border: 1px solid {c['card_border']};
                 border-radius: 10px;
             }}
 
-            QComboBox {{
-                background: {c['input_bg']};
-                color: {c['text']};
-                border: 1px solid {c['border']};
-                border-radius: 9px;
-                padding: 8px 12px;
-                font-size: 13px;
-            }}
-
-            QComboBox:hover {{
-                border: 1px solid {c['primary']};
-            }}
-
-            QComboBox QAbstractItemView {{
-                background: {c['input_bg']};
-                color: {c['text']};
-                selection-background-color: {c['button_hover']};
-                selection-color: {c['text']};
-            }}
-
             QPushButton {{
-                background: {c['bg']};
+                background: {field};
                 color: {c['text']};
-                border: 1px solid {c['border']};
+                border: 1px solid {c['input_border']};
                 border-radius: 9px;
                 padding: 9px;
                 font-size: 14px;
@@ -449,6 +436,11 @@ class CameraSetupPage(QWidget):
             QPushButton:hover {{
                 background: {c['button_hover']};
                 color: {c['text']};
+            }}
+
+            QPushButton:focus {{
+                outline: none;
+                border: 2px solid {focus};
             }}
 
             QPushButton#continue {{
@@ -461,11 +453,12 @@ class CameraSetupPage(QWidget):
 
             QPushButton#continue:hover {{
                 background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
             }}
 
             QPushButton#continue:disabled {{
-                background: {c['border']};
-                color: {c['bg']};
+                background: {c['card_border']};
+                color: {c['text_secondary']};
             }}
 
             QLabel#live {{
@@ -478,6 +471,21 @@ class CameraSetupPage(QWidget):
             }}
             """
         )
+
+        self.update()
+
+    # ========================================================
+    # BUILD UI
+    # ========================================================
+
+    def build_ui(self):
+
+        self.setObjectName(
+            "cameraSetup"
+        )
+
+        self.apply_theme()
+
 
         # ====================================================
         # MAIN LAYOUT

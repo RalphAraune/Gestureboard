@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -28,11 +29,11 @@ from widgets.sidebar import nav_pixmap, sidebar_logo
 # Section key, rail label, icon, one-line description under the title.
 SECTIONS = [
     ("general", "General", "settings",
-     "How GestureBoard looks."),
+     "How GestureBoard looks and how readily it responds to your hand."),
     ("camera", "Camera", "camera",
      "Which webcam GestureBoard watches, and how it captures."),
     ("gesture", "Gestures", "hand",
-     "How readily your hand movements turn into actions."),
+     "The hand signs each feature listens for."),
     ("presentation", "Presentation", "presentation",
      "Defaults for gesture-controlled slideshows."),
     ("storage", "Storage", "folder",
@@ -53,6 +54,7 @@ DEFAULTS = {
     "presentation_fullscreen": True,
     "save_annotations": True,
     "save_whiteboards": True,
+    "show_gesture_tips": True,
 }
 
 CONTENT_MAX_WIDTH = 820
@@ -303,7 +305,7 @@ class SettingsPage(QWidget):
 
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(18)
+        layout.setSpacing(12)
 
         # Header: icon tile, title, one line of description
         header = QHBoxLayout()
@@ -330,6 +332,7 @@ class SettingsPage(QWidget):
 
         header.addLayout(heading, 1)
         layout.addLayout(header)
+        layout.addSpacing(6)
 
         getattr(self, f"_fill_{key}")(layout)
 
@@ -471,6 +474,7 @@ class SettingsPage(QWidget):
 
     def _fill_general(self, layout):
 
+        layout.addWidget(self._group_title("Appearance"))
         group = self._group(layout)
 
         self.theme_combo = self._combo(["Light", "Dark", "System Default"])
@@ -479,9 +483,66 @@ class SettingsPage(QWidget):
 
         self._row(
             group, "Theme",
-            "Switch between the light and dark look.",
+            "Also switchable from the sun and moon button in the title bar.",
             self.theme_combo,
         )
+
+        layout.addWidget(self._group_title("Responsiveness"))
+        group = self._group(layout)
+
+        box, _ = self._slider("gesture_sensitivity", 0, 100, 1, "%")
+        self._row(
+            group, "Gesture sensitivity",
+            "Higher reacts to smaller, quicker movements.",
+            box,
+        )
+
+        box, self.cursor_slider = self._slider(
+            "cursor_sensitivity", 10, 100, 1, "%",
+            on_change=self._push_cursor_sensitivity,
+        )
+        self._row(
+            group, "Cursor sensitivity",
+            "How far the cursor moves for each hand movement. "
+            "Matches the slider on the Virtual mouse page.",
+            box,
+        )
+
+        box, _ = self._slider("click_delay_ms", 100, 1000, 50, " ms")
+        self._row(
+            group, "Click delay",
+            "How long a closed hand is held before it counts as a click.",
+            box,
+        )
+
+        layout.addWidget(self._group_title("Help"))
+        group = self._group(layout)
+
+        tips = self._toggle("show_gesture_tips")
+        tips.toggled.connect(self._apply_tips)
+        self._row(
+            group, "Gesture tips",
+            "Show a rotating gesture tip at the bottom of the sidebar.",
+            tips,
+        )
+
+        tutorial = ToggleSwitch(not prefs.tutorial_completed())
+        tutorial.toggled.connect(
+            lambda on: prefs.set_tutorial_completed(not on)
+        )
+        self.toggles.append(tutorial)
+        self._row(
+            group, "Tutorial on next start",
+            "Walk through the gestures again the next time GestureBoard opens.",
+            tutorial,
+        )
+
+    def _apply_tips(self, show):
+
+        sidebar = getattr(self.main_window, "sidebar", None)
+
+        if sidebar is not None and hasattr(sidebar, "set_show_tips"):
+            sidebar.set_show_tips(show)
 
     def _fill_camera(self, layout):
 
@@ -538,32 +599,97 @@ class SettingsPage(QWidget):
 
     def _fill_gesture(self, layout):
 
-        group = self._group(layout)
+        # Same gesture lists the tutorial teaches, grouped by feature.
+        from gui.tutorial import STEPS
 
-        box, _ = self._slider("gesture_sensitivity", 0, 100, 1, "%")
-        self._row(
-            group, "Gesture sensitivity",
-            "Higher reacts to smaller, quicker movements.",
-            box,
-        )
+        presentation, virtual_mouse, whiteboard = STEPS[:3]
+        slides, drawing = presentation["groups"][:2]
 
-        box, self.cursor_slider = self._slider(
-            "cursor_sensitivity", 10, 100, 1, "%",
-            on_change=self._push_cursor_sensitivity,
-        )
-        self._row(
-            group, "Cursor sensitivity",
-            "How far the cursor moves for each hand movement. "
-            "Matches the slider on the Virtual mouse page.",
-            box,
-        )
+        guides = [
+            ("Presentation control",
+             "Press Start Presentation, then face the camera.",
+             slides[1]),
+            ("Annotation",
+             "Draw on your slides while a presentation is running.",
+             drawing[1]),
+            ("Virtual mouse",
+             virtual_mouse["tip"],
+             virtual_mouse["groups"][0][1]),
+            ("Whiteboard",
+             "Start the Virtual mouse first. The whiteboard uses its camera.",
+             whiteboard["groups"][0][1]),
+        ]
 
-        box, _ = self._slider("click_delay_ms", 100, 1000, 50, " ms")
-        self._row(
-            group, "Click delay",
-            "How long a closed hand is held before it counts as a click.",
-            box,
-        )
+        for title, hint, gestures in guides:
+
+            layout.addWidget(self._group_title(title, hint))
+
+            card = QFrame()
+            card.setObjectName("group")
+
+            grid = QGridLayout(card)
+            grid.setContentsMargins(16, 14, 16, 14)
+            grid.setHorizontalSpacing(14)
+            grid.setVerticalSpacing(12)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+
+            for i, (icon, name, action) in enumerate(gestures):
+                grid.addWidget(self._gesture_cell(icon, name, action), i // 2, i % 2)
+
+            layout.addWidget(card)
+
+    def _gesture_cell(self, icon, name, action):
+
+        cell = QWidget()
+
+        layout = QHBoxLayout(cell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        icon_label = QLabel(icon)
+        icon_label.setObjectName("gestureIcon")
+        icon_label.setFixedSize(42, 42)
+        icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon_label, 0, Qt.AlignTop)
+
+        text = QVBoxLayout()
+        text.setSpacing(1)
+
+        name_label = QLabel(name)
+        name_label.setObjectName("gestureName")
+        name_label.setWordWrap(True)
+        text.addWidget(name_label)
+
+        action_label = QLabel(action)
+        action_label.setObjectName("gestureAction")
+        action_label.setWordWrap(True)
+        text.addWidget(action_label)
+
+        text.addStretch()
+        layout.addLayout(text, 1)
+
+        return cell
+
+    def _group_title(self, title, hint=None):
+
+        box = QWidget()
+
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(4, 10, 0, 0)
+        layout.setSpacing(2)
+
+        label = QLabel(title)
+        label.setObjectName("groupTitle")
+        layout.addWidget(label)
+
+        if hint:
+            hint_label = QLabel(hint)
+            hint_label.setObjectName("rowHint")
+            hint_label.setWordWrap(True)
+            layout.addWidget(hint_label)
+
+        return box
 
     def _fill_presentation(self, layout):
 
@@ -884,6 +1010,28 @@ class SettingsPage(QWidget):
             QLabel#rowValueText {{
                 font-size: 13px;
                 font-weight: 600;
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#groupTitle {{
+                font-size: 15px;
+                font-weight: 700;
+            }}
+
+            QLabel#gestureIcon {{
+                background: {c['button_hover']};
+                border-radius: 11px;
+                font-family: "Segoe UI Emoji";
+                font-size: 20px;
+            }}
+
+            QLabel#gestureName {{
+                font-size: 13px;
+                font-weight: 700;
+            }}
+
+            QLabel#gestureAction {{
+                font-size: 12px;
                 color: {c['text_secondary']};
             }}
 

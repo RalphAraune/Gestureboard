@@ -480,6 +480,11 @@ class Sidebar(QFrame):
         layout.addWidget(self.tip_card)
         layout.addSpacing(10)
 
+        # Settings > General can hide the tip card.
+        import settings.preferences as prefs
+        self.show_tips = bool(prefs.load().get("show_gesture_tips", True))
+        self.tip_card.setVisible(self.show_tips)
+
         self._tip_index = 0
         self._tip_timer = QTimer(self)
         self._tip_timer.timeout.connect(self._next_tip)
@@ -610,7 +615,7 @@ class Sidebar(QFrame):
         # Show/hide the text parts.
         self.camera_text.setVisible(not collapsed)
         self.fps_text.setVisible(not collapsed)
-        self.tip_card.setVisible(not collapsed)
+        self.tip_card.setVisible(not collapsed and self.show_tips)
 
         # Show icon-only buttons (with tooltips) when collapsed.
         for key, btn in self.nav_buttons.items():
@@ -620,6 +625,12 @@ class Sidebar(QFrame):
 
         # Re-apply the stylesheet so alignment/padding update.
         self.apply_theme()
+
+    def set_show_tips(self, show):
+        """Show or hide the rotating gesture tip card."""
+
+        self.show_tips = bool(show)
+        self.tip_card.setVisible(self.show_tips and not self.collapsed)
 
     def toggle_collapsed(self):
         self.set_collapsed(not self.collapsed)
@@ -711,123 +722,3 @@ class Sidebar(QFrame):
             btn.style().polish(btn)
         self.active_page = page_name
         self._apply_icons()
-
-
-class TitleBar(QFrame):
-    """Custom title bar with logo, status, and window controls."""
-
-    def __init__(self, main_window):
-        super().__init__()
-        self.main_window = main_window
-        self.setObjectName("titleBar")
-        self.setFixedHeight(44)
-        self.setStyleSheet(self._stylesheet())
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 0, 12, 0)
-        layout.setSpacing(12)
-
-        # Left: Logo + Title
-        title_layout = QHBoxLayout()
-        title_layout.setSpacing(10)
-
-        self.logo = QLabel("G")
-        self.logo.setFixedSize(26, 26)
-        self.logo.setAlignment(Qt.AlignCenter)
-        title = QLabel("GestureBoard")
-        title.setObjectName("titleText")
-        title_layout.addWidget(self.logo)
-        title_layout.addWidget(title)
-        layout.addLayout(title_layout)
-
-        layout.addStretch()
-
-        # Right: Status + Window controls
-        status_label = QLabel("●  System Ready")
-        status_label.setObjectName("statusReady")
-        layout.addWidget(status_label)
-
-        layout.addSpacing(8)
-
-        # Window controls
-        btn_min = QPushButton("—")
-        btn_min.setToolTip("Minimize")
-        btn_min.clicked.connect(main_window.showMinimized)
-
-        btn_max = QPushButton("□")
-        btn_max.setToolTip("Maximize/Restore")
-        btn_max.clicked.connect(self._toggle_maximize)
-
-        btn_close = QPushButton("✕")
-        btn_close.setObjectName("closeBtn")
-        btn_close.setToolTip("Close")
-        btn_close.clicked.connect(main_window.close)
-
-        layout.addWidget(btn_min)
-        layout.addWidget(btn_max)
-        layout.addWidget(btn_close)
-
-        # Track mouse for window dragging
-        self._drag_pos = None
-
-    def _stylesheet(self):
-
-        from settings import theme as app_theme
-
-        c = app_theme.colors()
-
-        return f"""
-            QFrame#titleBar {{
-                background: {c['sidebar']};
-                border-bottom: 1px solid {c['border']};
-            }}
-            QLabel {{ background: transparent; color: {c['sidebar_text']}; }}
-            QLabel#titleText {{ font-size: 15px; font-weight: 700; color: {c['sidebar_text']}; }}
-            QLabel#statusReady {{ color: {c['sidebar_text']}; font-size: 11px; font-weight: 600; }}
-            QPushButton {{
-                background: transparent;
-                border: none;
-                border-radius: 4px;
-                min-width: 36px;
-                min-height: 28px;
-                color: {c['sidebar_text']};
-            }}
-            QPushButton:hover {{
-                background: {c['sidebar_hover']};
-                color: {c['sidebar_text']};
-            }}
-            QPushButton#closeBtn:hover {{
-                background: #E81123;
-                color: #FFFFFF;
-            }}
-        """
-
-    def apply_theme(self):
-
-        from settings import theme as app_theme
-
-        c = app_theme.colors()
-
-        self.setStyleSheet(self._stylesheet())
-
-        if hasattr(self, "logo"):
-            self.logo.setStyleSheet(
-                f"background:{c['sidebar_text']}; border-radius:13px;"
-                f"color:{c['sidebar']}; font-size:14px; font-weight:800;"
-            )
-
-    def _toggle_maximize(self):
-        if self.main_window.isMaximized():
-            self.main_window.showNormal()
-        else:
-            self.main_window.showMaximized()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPos() - self.main_window.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and self._drag_pos:
-            self.main_window.move(event.globalPos() - self._drag_pos)
-            event.accept()

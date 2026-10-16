@@ -113,3 +113,94 @@ def clear_layers(root):
             viewport = widget.viewport()
             viewport.setProperty("pageLayer", True)
             viewport.setAutoFillBackground(False)
+
+
+_arrow_cache = {}
+
+
+def combo_arrow_url(color):
+    """Path to a small down-chevron PNG in `color`, for QComboBox::down-arrow.
+
+    Qt stylesheets can only draw arrows from image files, so the chevron is
+    rendered once per colour into the temp folder.
+    """
+
+    if color in _arrow_cache:
+        return _arrow_cache[color]
+
+    import tempfile
+    from pathlib import Path
+
+    from PyQt5.QtGui import QImage, QPainterPath, QPen
+
+    image = QImage(24, 24, QImage.Format_ARGB32)
+    image.fill(Qt.transparent)
+
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(color), 2.4)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+
+    path = QPainterPath()
+    path.moveTo(6, 9)
+    path.lineTo(12, 15)
+    path.lineTo(18, 9)
+    painter.drawPath(path)
+    painter.end()
+
+    name = "gestureboard_arrow_" + color.lstrip("#") + ".png"
+    target = Path(tempfile.gettempdir()) / name
+    image.save(str(target))
+
+    url = target.as_posix()
+    _arrow_cache[color] = url
+
+    return url
+
+
+def combo_rules(c, field=None):
+    """Shared QComboBox styling: rounded field and a themed chevron."""
+
+    field = field or c["input_bg"]
+
+    return f"""
+        QComboBox {{
+            background: {field};
+            color: {c['text']};
+            border: 1px solid {c['input_border']};
+            border-radius: 9px;
+            padding: 7px 12px;
+            font-size: 13px;
+            min-height: 22px;
+        }}
+
+        QComboBox:hover,
+        QComboBox:focus {{
+            border: 1px solid {c['primary']};
+        }}
+
+        QComboBox::drop-down {{
+            subcontrol-origin: padding;
+            subcontrol-position: center right;
+            border: none;
+            width: 28px;
+        }}
+
+        QComboBox::down-arrow {{
+            image: url("{combo_arrow_url(c['text_secondary'])}");
+            width: 14px;
+            height: 14px;
+        }}
+
+        QComboBox QAbstractItemView {{
+            background: {field};
+            color: {c['text']};
+            border: 1px solid {c['input_border']};
+            selection-background-color: {c['button_hover']};
+            selection-color: {c['text']};
+            outline: none;
+            padding: 4px;
+        }}
+    """

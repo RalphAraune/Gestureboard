@@ -10,7 +10,8 @@ from PyQt5.QtWidgets import (
 
 from PyQt5.QtCore import QEvent, QPoint, QRect, Qt
 
-from widgets.sidebar import TitleBar, Sidebar
+from widgets.sidebar import Sidebar
+from widgets.titlebar import TitleBar
 
 from gui.splash import SplashPage
 from gui.tutorial import TutorialPage
@@ -436,6 +437,9 @@ class MainWindow(QMainWindow):
             self.settings,
             self.dashboard,
             self.saved_files,
+            self.camera_setup,
+            self.presentation,
+            self.virtual_mouse,
         ):
 
             if hasattr(page, "apply_theme"):
