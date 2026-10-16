@@ -21,10 +21,10 @@ class SplashPage(QWidget):
         self.setObjectName("splashPage")
 
         self.setStyleSheet("""
-            QWidget#splashPage { background: #EEF2F7; }
+            QWidget#splashPage { background: #F2F8FC; }
             QLabel { background: transparent; color: #0E2F76; }
             QPushButton#getStarted {
-                background: #0E2F76; color: #EEF2F7; border: none; border-radius: 10px;
+                background: #0E2F76; color: #F2F8FC; border: none; border-radius: 10px;
                 min-height: 50px; min-width: 210px; font-size: 15px; font-weight: 700;
             }
             QPushButton#getStarted:hover { background: #1B4499; }
@@ -39,7 +39,7 @@ class SplashPage(QWidget):
         # (plays once, then stays on screen).
         self.logo = AnimatedLogo(
             self,
-            background="#EEF2F7",
+            background="#F2F8FC",
             tagline="Gesture-Controlled Presentation and Annotation System",
         )
         layout.addWidget(self.logo, 0, Qt.AlignCenter)

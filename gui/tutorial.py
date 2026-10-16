@@ -104,6 +104,10 @@ STEPS = [
 ]
 
 
+# Page colour: "Marble", a cool off-white that suits the navy / cyan brand.
+MARBLE = "#F2F8FC"
+
+
 # ==============================================================
 # BACKGROUND
 #
@@ -189,7 +193,7 @@ class ConstellationBackground(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        painter.fillRect(self.rect(), QColor("#EEF2F7"))
+        painter.fillRect(self.rect(), QColor(MARBLE))
 
         w, h = self.width(), self.height()
         s = min(w, h)
@@ -218,14 +222,14 @@ class TutorialPage(ConstellationBackground):
             QLabel { background: transparent; color: #0E2F76; }
 
             QFrame#tutorialCard {
-                background: #F7F9FC;
+                background: #F2F8FC;
                 border: 1px solid #C9D6EA;
                 border-radius: 20px;
             }
 
             /* ---------- step rail ---------- */
             QFrame#rail {
-                background: #E9EEF6;
+                background: #E4EEF6;
                 border: none;
                 border-top-left-radius: 20px;
                 border-bottom-left-radius: 20px;
@@ -242,7 +246,7 @@ class TutorialPage(ConstellationBackground):
                 font-size: 15px;
                 font-weight: 600;
             }
-            QPushButton#railStep:hover { background: #DFE7F2; color: #0E2F76; }
+            QPushButton#railStep:hover { background: #D9E6F1; color: #0E2F76; }
             QPushButton#railStep:checked {
                 background: #0E2F76;
                 color: #F5FEFF;
@@ -276,12 +280,12 @@ class TutorialPage(ConstellationBackground):
             QLabel#startText { color: #263B6A; font-size: 15px; }
 
             QFrame#gestureTile {
-                background: #FFFFFF;
-                border: 1px solid #D5E0EF;
+                background: #EAF3FA;
+                border: 1px solid #D3E1EE;
                 border-radius: 12px;
             }
             QLabel#gestureIcon {
-                background: #EAF0F8;
+                background: #DCE9F4;
                 border-radius: 10px;
                 font-family: "Segoe UI Emoji";
                 font-size: 22px;
@@ -308,7 +312,7 @@ class TutorialPage(ConstellationBackground):
             QPushButton#ghostButton {
                 background: transparent; color: #5A6B93; border: 1px solid #AAC0E1;
             }
-            QPushButton#ghostButton:hover { background: #E3EAF4; color: #0E2F76; }
+            QPushButton#ghostButton:hover { background: #E4EEF6; color: #0E2F76; }
             QPushButton#ghostButton:disabled { color: #B8C6DC; border-color: #D5E0EF; }
             QPushButton:focus { outline: none; border: 2px solid #22C3DE; }
 

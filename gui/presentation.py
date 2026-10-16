@@ -421,6 +421,10 @@ class PresentationPage(QWidget):
 
         self.build_ui()
 
+        from widgets import page_background
+
+        page_background.clear_layers(self)
+
         # ---------------------------------------------------------
         # CAMERA TIMER
         # ---------------------------------------------------------
@@ -467,6 +471,60 @@ class PresentationPage(QWidget):
     # ============================================================
 
     def build_ui(self):
+
+        from widgets import page_background
+
+        c = self._page_colors = page_background.page_colors()
+
+        # Shared soft-blue page (painted in paintEvent); containers and
+        # labels stay transparent so it shows through.
+        self.setObjectName("presentationPage")
+        self.setStyleSheet(page_background.LAYER_RULE + f"""
+            QWidget#presentationPage {{
+                background: transparent;
+            }}
+
+            QLabel {{
+                background: transparent;
+            }}
+
+            QPushButton {{
+                background: {c['card']};
+                color: {c['text']};
+                border: 1px solid {c['input_border']};
+                border-radius: 8px;
+                font-weight: 600;
+                padding: 8px 14px;
+            }}
+
+            QPushButton:hover {{
+                background: {c['button_hover']};
+            }}
+
+            QComboBox {{
+                background: {c['card']};
+                color: {c['text']};
+                border: 1px solid {c['input_border']};
+                border-radius: 8px;
+                padding: 6px 12px;
+            }}
+
+            QComboBox:hover {{
+                border: 1px solid {c['primary']};
+            }}
+
+            QComboBox::drop-down {{
+                border: none;
+                width: 26px;
+            }}
+
+            QComboBox QAbstractItemView {{
+                background: {c['card']};
+                color: {c['text']};
+                selection-background-color: {c['button_hover']};
+                selection-color: {c['text']};
+            }}
+        """)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(30, 25, 30, 25)
@@ -560,8 +618,8 @@ class PresentationPage(QWidget):
         preview_frame = QFrame()
         preview_frame.setStyleSheet("""
             .QFrame {
-                background: #F7F9FC;
-                border: 1px solid #D9E4F5;
+                background: #EAF2FB;
+                border: 1px solid #BED2E9;
                 border-radius: 12px;
             }
         """)
@@ -686,8 +744,8 @@ class PresentationPage(QWidget):
         gesture_frame = QFrame()
         gesture_frame.setStyleSheet("""
             .QFrame {
-                background: #F7F9FC;
-                border: 1px solid #D9E4F5;
+                background: #EAF2FB;
+                border: 1px solid #BED2E9;
                 border-radius: 12px;
             }
         """)
@@ -777,8 +835,8 @@ class PresentationPage(QWidget):
 
         status_frame.setStyleSheet("""
             .QFrame {
-                background: #F7F9FC;
-                border: 1px solid #D9E4F5;
+                background: #EAF2FB;
+                border: 1px solid #BED2E9;
                 border-radius: 12px;
             }
         """)
@@ -842,8 +900,8 @@ class PresentationPage(QWidget):
 
         camera_frame.setStyleSheet("""
             .QFrame {
-                background: #F7F9FC;
-                border: 1px solid #D9E4F5;
+                background: #EAF2FB;
+                border: 1px solid #BED2E9;
                 border-radius: 12px;
             }
         """)
@@ -874,7 +932,7 @@ class PresentationPage(QWidget):
 
         self.camera_label.setStyleSheet("""
             QLabel {
-                background: #E8EEF7;
+                background: #CFDFF0;
                 border-radius: 8px;
                 color: #7890B5;
             }
@@ -891,8 +949,8 @@ class PresentationPage(QWidget):
         status_block = QFrame()
         status_block.setStyleSheet("""
             .QFrame {
-                background: #F2F6FC;
-                border: 1px solid #D9E4F5;
+                background: #DFEAF6;
+                border: 1px solid #BED2E9;
                 border-radius: 8px;
             }
             QLabel {
@@ -950,6 +1008,16 @@ class PresentationPage(QWidget):
         content_layout.addWidget(right_scroll)
 
         main_layout.addLayout(content_layout)
+
+    # ============================================================
+    # BACKGROUND
+    # ============================================================
+
+    def paintEvent(self, event):
+
+        from widgets import page_background
+
+        page_background.paint_page_background(self, self._page_colors)
 
     # ============================================================
     # STATUS ROW

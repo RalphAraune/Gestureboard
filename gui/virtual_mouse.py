@@ -144,29 +144,18 @@ STATE_COLORS = {
 # ==============================================================
 # PAGE PALETTE
 #
-# In light mode this page uses a softer, greyer off-white than the
-# app theme so the camera feed and panels never glare.
+# Shared soft-blue page surfaces (same as Saved Files), plus a
+# slightly deeper "well" for the empty camera area.
 # ==============================================================
 
-LIGHT_SURFACES = {
-    "bg": "#E3E8EF",            # page background
-    "card": "#ECF0F5",          # camera frame and side panel
-    "well": "#D8DFE9",          # empty camera area
-    "button_hover": "#DCE4EE",
-}
-
-
 def page_colors():
-    """App theme colours with this page's softer light surfaces."""
+    """Shared page surfaces with this page's camera well."""
 
     from settings import theme as app_theme
+    from widgets import page_background
 
-    c = dict(app_theme.colors())
-
-    if app_theme.is_dark():
-        c["well"] = c["bg"]
-    else:
-        c.update(LIGHT_SURFACES)
+    c = page_background.page_colors()
+    c["well"] = c["bg"] if app_theme.is_dark() else "#CFDFF0"
 
     return c
 
@@ -572,6 +561,10 @@ class VirtualMousePage(QWidget):
 
         self.build_ui()
 
+        from widgets import page_background
+
+        page_background.clear_layers(self)
+
         self.apply_theme()
 
     # ==========================================================
@@ -581,7 +574,6 @@ class VirtualMousePage(QWidget):
     def build_ui(self):
 
         self.setObjectName("vmPage")
-        self.setAttribute(Qt.WA_StyledBackground, True)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(32, 24, 32, 24)
@@ -887,6 +879,16 @@ class VirtualMousePage(QWidget):
         return layout
 
     # ==========================================================
+    # BACKGROUND
+    # ==========================================================
+
+    def paintEvent(self, event):
+
+        from widgets import page_background
+
+        page_background.paint_page_background(self, self._page_colors)
+
+    # ==========================================================
     # THEME
     #
     # Every colour on this page comes from the app theme through
@@ -899,16 +901,18 @@ class VirtualMousePage(QWidget):
 
         self._theme_name = app_theme.current_name()
 
-        c = page_colors()
+        from widgets import page_background
+
+        c = self._page_colors = page_colors()
 
         self.state_colors = STATE_COLORS.get(
             "Dark" if app_theme.is_dark() else "Light"
         )
 
         self.setStyleSheet(
-            f"""
+            page_background.LAYER_RULE + f"""
             QWidget#vmPage {{
-                background: {c['bg']};
+                background: transparent;
             }}
 
             QLabel {{
@@ -1103,6 +1107,8 @@ class VirtualMousePage(QWidget):
 
         if hasattr(self, "screen_map"):
             self.screen_map.set_colors(c)
+
+        self.update()
 
         self.set_tracking_status(
             self.tracking_status.text(),

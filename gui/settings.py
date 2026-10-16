@@ -1,18 +1,157 @@
+from pathlib import Path
+import os
+
+from PyQt5.QtCore import Qt, QRectF, QSize, QVariantAnimation
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPen
 from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QAbstractButton,
+    QButtonGroup,
+    QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QComboBox,
-    QSlider,
-    QFrame,
+    QScrollArea,
     QSizePolicy,
-    QMessageBox,
+    QSlider,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
-from PyQt5.QtCore import Qt
+import settings.preferences as prefs
+from settings import theme as app_theme
+from widgets import page_background
+from widgets.sidebar import nav_pixmap, sidebar_logo
 
+
+# Section key, rail label, icon, one-line description under the title.
+SECTIONS = [
+    ("general", "General", "settings",
+     "How GestureBoard looks."),
+    ("camera", "Camera", "camera",
+     "Which webcam GestureBoard watches, and how it captures."),
+    ("gesture", "Gestures", "hand",
+     "How readily your hand movements turn into actions."),
+    ("presentation", "Presentation", "presentation",
+     "Defaults for gesture-controlled slideshows."),
+    ("storage", "Storage", "folder",
+     "What GestureBoard keeps after you close a board."),
+    ("about", "About", "info",
+     "Version and the libraries behind hand tracking."),
+]
+
+# Saved in settings/config.json next to the theme and camera choice.
+DEFAULTS = {
+    "camera_resolution": "1280 × 720",
+    "camera_fps": "30 FPS",
+    "camera_preview": True,
+    "gesture_sensitivity": 70,
+    "cursor_sensitivity": 50,
+    "click_delay_ms": 300,
+    "presentation_mode": "Auto detect",
+    "presentation_fullscreen": True,
+    "save_annotations": True,
+    "save_whiteboards": True,
+}
+
+CONTENT_MAX_WIDTH = 820
+
+
+def settings_colors():
+    """Shared page surfaces plus the tones used by fields and switches."""
+
+    c = page_background.page_colors()
+
+    if app_theme.is_dark():
+        c.update(field=c["input_bg"], knob="#E6EEF8")
+    else:
+        c.update(field="#F5F9FD", knob="#FFFFFF")
+
+    return c
+
+
+# ==============================================================
+# TOGGLE SWITCH
+# A real on/off switch; the knob slides when it changes.
+# ==============================================================
+
+class ToggleSwitch(QAbstractButton):
+
+    def __init__(self, checked=False, parent=None):
+        super().__init__(parent)
+
+        self.setCheckable(True)
+        self.setChecked(checked)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(46, 26)
+
+        self._on = QColor("#0E2F76")
+        self._off = QColor("#AAC0E1")
+        self._knob = QColor("#FFFFFF")
+        self._focus = QColor("#0E2F76")
+
+        self._offset = 1.0 if checked else 0.0
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(140)
+        self._anim.valueChanged.connect(self._set_offset)
+
+        self.toggled.connect(self._animate)
+
+    def set_colors(self, on, off, knob, focus):
+        self._on, self._off = QColor(on), QColor(off)
+        self._knob, self._focus = QColor(knob), QColor(focus)
+        self.update()
+
+    def sizeHint(self):
+        return QSize(46, 26)
+
+    def _set_offset(self, value):
+        self._offset = value
+        self.update()
+
+    def _animate(self, checked):
+        self._anim.stop()
+        self._anim.setStartValue(self._offset)
+        self._anim.setEndValue(1.0 if checked else 0.0)
+        self._anim.start()
+
+    def paintEvent(self, event):
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        t = self._offset
+        track = QColor(
+            int(self._off.red() + (self._on.red() - self._off.red()) * t),
+            int(self._off.green() + (self._on.green() - self._off.green()) * t),
+            int(self._off.blue() + (self._on.blue() - self._off.blue()) * t),
+        )
+
+        rect = QRectF(1, 1, self.width() - 2, self.height() - 2)
+
+        if self.hasFocus():
+            painter.setPen(QPen(self._focus, 2))
+        else:
+            painter.setPen(Qt.NoPen)
+
+        painter.setBrush(track)
+        painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+
+        knob = rect.height() - 6
+        x = rect.left() + 3 + (rect.width() - knob - 6) * t
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._knob)
+        painter.drawEllipse(QRectF(x, rect.top() + 3, knob, knob))
+
+        painter.end()
+
+
+# ==============================================================
+# SETTINGS PAGE
+# ==============================================================
 
 class SettingsPage(QWidget):
     """
@@ -25,31 +164,6 @@ class SettingsPage(QWidget):
         settings.setActiveCamera(index, name)
     """
 
-    # ==========================================================
-    # COLORS
-    # ==========================================================
-
-    NAVY = "#163B82"
-    NAVY_DARK = "#123575"
-
-    BACKGROUND = "#EEF2F7"
-    CARD = "#FBFEFF"
-    BORDER = "#D7E4F2"
-
-    TEXT = "#163B82"
-    SECONDARY = "#6685B7"
-
-    SELECTED = "#DCEAF7"
-    LIGHT_BLUE = "#AFC7E8"
-
-    WHITE = "#F7F9FC"
-
-    GREEN = "#21C46B"
-
-    # ==========================================================
-    # INITIALIZATION
-    # ==========================================================
-
     def __init__(self, main_window=None):
         super().__init__(main_window)
 
@@ -58,1047 +172,586 @@ class SettingsPage(QWidget):
         self.active_camera_index = None
         self.active_camera_name = "Default Webcam"
 
-        self.current_section = "Camera"
+        self.values = {**DEFAULTS, **{
+            k: v for k, v in prefs.load().items() if k in DEFAULTS
+        }}
 
-        # Pull the current theme colors so this page follows light/dark mode.
-        from settings import theme as app_theme
+        self.toggles = []
+        self.rail_buttons = {}
+        self.section_icons = {}
 
-        c = app_theme.colors()
-
-        self.NAVY = c["text"]
-        self.NAVY_DARK = c["text"]
-        self.BACKGROUND = c["bg"]
-        self.CARD = c["card"]
-        self.BORDER = c["border"]
-        self.TEXT = c["text"]
-        self.SECONDARY = c["text_secondary"]
-        self.SELECTED = c["button_hover"]
-        self.LIGHT_BLUE = c["accent"]
-        self.WHITE = c["input_bg"]
-        self.HOVER = c["button_hover"]
-        self.INPUT_BORDER = c["input_border"]
+        self.setObjectName("settingsPage")
 
         self.setup_ui()
 
-    def apply_theme(self):
-        """Re-apply theme colors (called when the user switches theme)."""
+        page_background.clear_layers(self)
 
-        from settings import theme as app_theme
+        self.apply_theme()
 
-        c = app_theme.colors()
+        # Virtual Mouse is created before Settings, so the saved cursor
+        # sensitivity can be handed to it straight away.
+        self._push_cursor_sensitivity(self.values["cursor_sensitivity"])
 
-        self.NAVY = c["text"]
-        self.NAVY_DARK = c["text"]
-        self.BACKGROUND = c["bg"]
-        self.CARD = c["card"]
-        self.BORDER = c["border"]
-        self.TEXT = c["text"]
-        self.SECONDARY = c["text_secondary"]
-        self.SELECTED = c["button_hover"]
-        self.LIGHT_BLUE = c["accent"]
-        self.WHITE = c["input_bg"]
-        self.HOVER = c["button_hover"]
-        self.INPUT_BORDER = c["input_border"]
-
-        self.setup_ui()
+        self.show_section("general")
 
     # ==========================================================
-    # MAIN UI
+    # PREFERENCES
     # ==========================================================
 
-    def _page_stylesheet(self):
+    def _set_value(self, key, value):
 
-        return f"""
-            QWidget#SettingsPage {{
-                background-color: {self.BACKGROUND};
-                color: {self.TEXT};
-            }}
+        self.values[key] = value
+        prefs.save({key: value})
 
-            QLabel {{
-                background: transparent;
-                color: {self.TEXT};
-            }}
-
-            QPushButton {{
-                border: none;
-                background: transparent;
-                color: {self.TEXT};
-            }}
-
-            QComboBox {{
-                background-color: {self.WHITE};
-                border: 1px solid {self.INPUT_BORDER};
-                border-radius: 8px;
-                padding: 7px 12px;
-                color: {self.TEXT};
-                min-height: 28px;
-            }}
-
-            QComboBox:hover {{
-                border: 1px solid {self.LIGHT_BLUE};
-            }}
-
-            QComboBox QAbstractItemView {{
-                background-color: {self.WHITE};
-                color: {self.TEXT};
-                selection-background-color: {self.SELECTED};
-            }}
-
-            QComboBox::drop-down {{
-                border: none;
-                width: 28px;
-            }}
-
-            QSlider::groove:horizontal {{
-                height: 4px;
-                background: {self.BORDER};
-                border-radius: 2px;
-            }}
-
-            QSlider::handle:horizontal {{
-                width: 12px;
-                height: 12px;
-                margin: -4px 0;
-                background: {self.NAVY};
-                border-radius: 6px;
-            }}
-
-            QSlider::sub-page:horizontal {{
-                background: {self.LIGHT_BLUE};
-                border-radius: 2px;
-            }}
-        """
-
-    def _clear_layout(self, layout):
-
-        if layout is None:
-            return
-
-        while layout.count():
-
-            item = layout.takeAt(0)
-
-            widget = item.widget()
-
-            if widget is not None:
-                widget.deleteLater()
-
-            else:
-                child = item.layout()
-
-                if child is not None:
-                    self._clear_layout(child)
+    # ==========================================================
+    # LAYOUT
+    # ==========================================================
 
     def setup_ui(self):
 
-        self.setObjectName("SettingsPage")
-
-        self.setStyleSheet(
-            self._page_stylesheet()
-        )
-
-        # Reuse the root layout so setup_ui() can be called again by
-        # apply_theme() to rebuild the page in the new theme colors.
-        root_layout = self.layout()
-
-        if root_layout is None:
-
-            root_layout = QVBoxLayout(self)
-
-        else:
-
-            self._clear_layout(root_layout)
-
-        root_layout.setContentsMargins(
-            42,
-            30,
-            42,
-            30
-        )
-
-        root_layout.setSpacing(0)
-
-        # ======================================================
-        # PAGE TITLE
-        # ======================================================
+        root = QVBoxLayout(self)
+        root.setContentsMargins(36, 28, 36, 28)
+        root.setSpacing(0)
 
         title = QLabel("Settings")
+        title.setObjectName("pageTitle")
+        root.addWidget(title)
 
-        title.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.NAVY};
-                font-size: 24px;
-                font-weight: 700;
-            }}
-            """
-        )
+        subtitle = QLabel("Choose how GestureBoard looks, sees and responds.")
+        subtitle.setObjectName("pageSubtitle")
+        root.addWidget(subtitle)
 
-        root_layout.addWidget(title)
+        root.addSpacing(22)
 
-        # ======================================================
-        # PAGE DESCRIPTION
-        # ======================================================
+        body = QHBoxLayout()
+        body.setSpacing(24)
+        root.addLayout(body, 1)
 
-        description = QLabel(
-            "Configure camera, gesture, presentation, and storage preferences."
-        )
+        body.addWidget(self._build_rail(), 0, Qt.AlignTop)
 
-        description.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.SECONDARY};
-                font-size: 13px;
-                margin-top: 2px;
-            }}
-            """
-        )
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        root_layout.addWidget(description)
+        holder = QWidget()
+        holder_layout = QVBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 8, 0)
+        holder_layout.setSpacing(0)
 
-        # ======================================================
-        # MAIN CONTENT
-        # ======================================================
+        self.stack = QStackedWidget()
+        self.stack.setMaximumWidth(CONTENT_MAX_WIDTH)
 
-        content_layout = QHBoxLayout()
+        self.section_pages = {}
 
-        content_layout.setContentsMargins(
-            0,
-            25,
-            0,
-            0
-        )
+        for key, label, icon, text in SECTIONS:
+            page = self._build_section(key, label, icon, text)
+            self.section_pages[key] = page
+            self.stack.addWidget(page)
 
-        content_layout.setSpacing(18)
+        holder_layout.addWidget(self.stack, 0, Qt.AlignTop | Qt.AlignLeft)
+        holder_layout.addStretch()
 
-        root_layout.addLayout(content_layout)
+        scroll.setWidget(holder)
+        body.addWidget(scroll, 1)
 
-        # ======================================================
-        # SETTINGS NAVIGATION
-        # ======================================================
+    # ----------------------------------------------------------
 
-        self.settings_nav = QVBoxLayout()
+    def _build_rail(self):
 
-        self.settings_nav.setContentsMargins(
-            0,
-            0,
-            0,
-            0
-        )
+        rail = QFrame()
+        rail.setObjectName("rail")
+        rail.setFixedWidth(220)
 
-        self.settings_nav.setSpacing(3)
+        layout = QVBoxLayout(rail)
+        layout.setContentsMargins(10, 10, 10, 14)
+        layout.setSpacing(4)
 
-        content_layout.addLayout(
-            self.settings_nav,
-            0
-        )
+        self.rail_group = QButtonGroup(self)
+        self.rail_group.setExclusive(True)
 
-        # Navigation buttons
+        for key, label, icon, _text in SECTIONS:
 
-        self.general_btn = self.create_nav_button(
-            "General"
-        )
-
-        self.camera_btn = self.create_nav_button(
-            "Camera"
-        )
-
-        self.gesture_btn = self.create_nav_button(
-            "Gesture"
-        )
-
-        self.presentation_btn = self.create_nav_button(
-            "Presentation"
-        )
-
-        self.storage_btn = self.create_nav_button(
-            "Storage"
-        )
-
-        self.about_btn = self.create_nav_button(
-            "About"
-        )
-
-        self.settings_nav.addWidget(
-            self.general_btn
-        )
-
-        self.settings_nav.addWidget(
-            self.camera_btn
-        )
-
-        self.settings_nav.addWidget(
-            self.gesture_btn
-        )
-
-        self.settings_nav.addWidget(
-            self.presentation_btn
-        )
-
-        self.settings_nav.addWidget(
-            self.storage_btn
-        )
-
-        self.settings_nav.addWidget(
-            self.about_btn
-        )
-
-        self.settings_nav.addStretch()
-
-        # ======================================================
-        # CONNECTIONS
-        # ======================================================
-
-        self.general_btn.clicked.connect(
-            lambda: self.change_section("General")
-        )
-
-        self.camera_btn.clicked.connect(
-            lambda: self.change_section("Camera")
-        )
-
-        self.gesture_btn.clicked.connect(
-            lambda: self.change_section("Gesture")
-        )
-
-        self.presentation_btn.clicked.connect(
-            lambda: self.change_section("Presentation")
-        )
-
-        self.storage_btn.clicked.connect(
-            lambda: self.change_section("Storage")
-        )
-
-        self.about_btn.clicked.connect(
-            lambda: self.change_section("About")
-        )
-
-        # ======================================================
-        # RIGHT CONTENT
-        # ======================================================
-
-        self.settings_content = QVBoxLayout()
-
-        self.settings_content.setContentsMargins(
-            0,
-            0,
-            0,
-            0
-        )
-
-        self.settings_content.setSpacing(14)
-
-        content_layout.addLayout(
-            self.settings_content,
-            1
-        )
-
-        # ======================================================
-        # DEFAULT SECTION
-        # ======================================================
-
-        # Restore the current section (so re-theming keeps the user's tab).
-        if self.current_section:
-
-            self.change_section(
-                self.current_section
+            button = QPushButton(label)
+            button.setObjectName("railItem")
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setIconSize(QSize(20, 20))
+            button.clicked.connect(
+                lambda checked=False, k=key: self.show_section(k)
             )
 
-        else:
+            self.rail_group.addButton(button)
+            self.rail_buttons[key] = (button, icon)
+            layout.addWidget(button)
 
-            self.show_camera_settings()
+        layout.addSpacing(14)
 
-    # ==========================================================
-    # NAVIGATION BUTTON
-    # ==========================================================
+        note = QLabel("Changes save automatically.")
+        note.setObjectName("railNote")
+        note.setWordWrap(True)
+        layout.addWidget(note)
 
-    def create_nav_button(self, text):
+        return rail
 
-        button = QPushButton(text)
+    # ----------------------------------------------------------
 
-        button.setFixedSize(
-            155,
-            32
-        )
+    def _build_section(self, key, label, icon, text):
 
-        button.setCursor(
-            Qt.PointingHandCursor
-        )
+        page = QWidget()
 
-        button.setStyleSheet(
-            f"""
-            QPushButton {{
-                text-align: left;
-                padding-left: 12px;
-                border-radius: 7px;
-                color: {self.SECONDARY};
-                font-size: 12px;
-                background: transparent;
-            }}
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(18)
 
-            QPushButton:hover {{
-                background-color: #EDF5FC;
-                color: {self.NAVY};
-            }}
-            """
-        )
+        # Header: icon tile, title, one line of description
+        header = QHBoxLayout()
+        header.setSpacing(14)
 
-        return button
+        tile = QLabel()
+        tile.setObjectName("sectionIcon")
+        tile.setFixedSize(48, 48)
+        tile.setAlignment(Qt.AlignCenter)
+        self.section_icons[key] = (tile, icon)
+        header.addWidget(tile, 0, Qt.AlignTop)
 
-    # ==========================================================
-    # ACTIVE NAVIGATION
-    # ==========================================================
+        heading = QVBoxLayout()
+        heading.setSpacing(2)
 
-    def update_nav_buttons(self):
+        title = QLabel(label)
+        title.setObjectName("sectionTitle")
+        heading.addWidget(title)
 
-        buttons = {
-            "General": self.general_btn,
-            "Camera": self.camera_btn,
-            "Gesture": self.gesture_btn,
-            "Presentation": self.presentation_btn,
-            "Storage": self.storage_btn,
-            "About": self.about_btn,
-        }
+        description = QLabel(text)
+        description.setObjectName("sectionText")
+        description.setWordWrap(True)
+        heading.addWidget(description)
 
-        for name, button in buttons.items():
+        header.addLayout(heading, 1)
+        layout.addLayout(header)
 
-            if name == self.current_section:
+        getattr(self, f"_fill_{key}")(layout)
 
-                button.setStyleSheet(
-                    f"""
-                    QPushButton {{
-                        text-align: left;
-                        padding-left: 12px;
-                        border-radius: 7px;
-                        color: {self.NAVY};
-                        font-size: 12px;
-                        font-weight: 600;
-                        background-color: {self.SELECTED};
-                    }}
-                    """
-                )
+        layout.addStretch()
 
-            else:
-
-                button.setStyleSheet(
-                    f"""
-                    QPushButton {{
-                        text-align: left;
-                        padding-left: 12px;
-                        border-radius: 7px;
-                        color: {self.SECONDARY};
-                        font-size: 12px;
-                        background-color: transparent;
-                    }}
-
-                    QPushButton:hover {{
-                        background-color: #EDF5FC;
-                        color: {self.NAVY};
-                    }}
-                    """
-                )
+        return page
 
     # ==========================================================
-    # CHANGE SECTION
+    # BUILDING BLOCKS
     # ==========================================================
 
-    def change_section(self, section):
+    def _group(self, parent_layout):
 
-        self.current_section = section
+        group = QFrame()
+        group.setObjectName("group")
 
-        self.update_nav_buttons()
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(0)
 
-        self.clear_content()
+        parent_layout.addWidget(group)
 
-        if section == "General":
+        return layout
 
-            self.show_general_settings()
+    def _row(self, group_layout, label, hint, control):
 
-        elif section == "Camera":
-
-            self.show_camera_settings()
-
-        elif section == "Gesture":
-
-            self.show_gesture_settings()
-
-        elif section == "Presentation":
-
-            self.show_presentation_settings()
-
-        elif section == "Storage":
-
-            self.show_storage_settings()
-
-        elif section == "About":
-
-            self.show_about_settings()
-
-    # ==========================================================
-    # CLEAR CONTENT
-    # ==========================================================
-
-    def clear_content(self):
-
-        while self.settings_content.count():
-
-            item = self.settings_content.takeAt(0)
-
-            widget = item.widget()
-
-            if widget:
-
-                widget.deleteLater()
-
-    # ==========================================================
-    # CARD
-    # ==========================================================
-
-    def create_card(self):
-
-        card = QFrame()
-
-        card.setStyleSheet(
-            f"""
-            .QFrame {{
-                background-color: {self.CARD};
-                border: 1px solid {self.BORDER};
-                border-radius: 12px;
-            }}
-            """
-        )
-
-        return card
-
-    # ==========================================================
-    # SETTING ROW
-    # ==========================================================
-
-    def create_row(self, label_text):
+        if group_layout.count():
+            divider = QFrame()
+            divider.setObjectName("rowDivider")
+            divider.setFixedHeight(1)
+            group_layout.addWidget(divider)
 
         row = QWidget()
 
         layout = QHBoxLayout(row)
+        layout.setContentsMargins(20, 14, 20, 14)
+        layout.setSpacing(24)
 
-        layout.setContentsMargins(
-            16,
-            10,
-            16,
-            10
-        )
+        text_box = QWidget()
+        text_box.setMinimumWidth(280)
+        text = QVBoxLayout(text_box)
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(3)
 
-        layout.setSpacing(10)
+        name = QLabel(label)
+        name.setObjectName("rowLabel")
+        text.addWidget(name)
 
-        label = QLabel(label_text)
+        hint_label = None
 
-        label.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.TEXT};
-                font-size: 12px;
-                font-weight: 500;
-            }}
-            """
-        )
+        if hint:
+            hint_label = QLabel(hint)
+            hint_label.setObjectName("rowHint")
+            hint_label.setWordWrap(True)
+            text.addWidget(hint_label)
 
-        layout.addWidget(
-            label
-        )
+        layout.addWidget(text_box, 1)
 
-        layout.addStretch()
+        if isinstance(control, QWidget):
+            layout.addWidget(control, 0, Qt.AlignVCenter)
+        elif control is not None:
+            layout.addLayout(control)
 
-        return row, layout
+        group_layout.addWidget(row)
+
+        return hint_label
+
+    def _combo(self, items, key=None, width=200):
+
+        combo = QComboBox()
+        combo.setFixedWidth(width)
+        combo.setCursor(Qt.PointingHandCursor)
+        combo.addItems(items)
+
+        if key:
+            found = combo.findText(self.values[key])
+            if found >= 0:
+                combo.setCurrentIndex(found)
+            combo.currentTextChanged.connect(
+                lambda text, k=key: self._set_value(k, text)
+            )
+
+        return combo
+
+    def _toggle(self, key):
+
+        toggle = ToggleSwitch(bool(self.values[key]))
+        toggle.toggled.connect(lambda on, k=key: self._set_value(k, on))
+        self.toggles.append(toggle)
+
+        return toggle
+
+    def _slider(self, key, minimum, maximum, step, unit, on_change=None):
+
+        box = QHBoxLayout()
+        box.setSpacing(12)
+
+        slider = QSlider(Qt.Horizontal)
+        slider.setFixedWidth(200)
+        slider.setRange(minimum, maximum)
+        slider.setSingleStep(step)
+        slider.setPageStep(step * 2)
+        slider.setCursor(Qt.PointingHandCursor)
+        slider.setValue(int(self.values[key]))
+
+        value = QLabel()
+        value.setObjectName("rowValue")
+        value.setFixedWidth(64)
+        value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        def changed(v):
+            if step > 1:
+                v = round(v / step) * step
+            value.setText(f"{v}{unit}")
+            self._set_value(key, v)
+            if on_change:
+                on_change(v)
+
+        slider.valueChanged.connect(changed)
+        value.setText(f"{slider.value()}{unit}")
+
+        box.addWidget(slider)
+        box.addWidget(value)
+
+        return box, slider
+
+    def _button(self, text, callback, primary=False):
+
+        button = QPushButton(text)
+        button.setObjectName("primaryButton" if primary else "secondaryButton")
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(callback)
+
+        return button
 
     # ==========================================================
-    # CAMERA SETTINGS
+    # SECTIONS
     # ==========================================================
 
-    def show_camera_settings(self):
+    def _fill_general(self, layout):
 
-        self.current_section = "Camera"
+        group = self._group(layout)
 
-        self.update_nav_buttons()
+        self.theme_combo = self._combo(["Light", "Dark", "System Default"])
+        self.theme_combo.setCurrentText(app_theme.current_name())
+        self.theme_combo.currentTextChanged.connect(self.on_theme_changed)
 
-        # ------------------------------------------------------
-        # CAMERA CARD
-        # ------------------------------------------------------
-
-        card = self.create_card()
-
-        card_layout = QVBoxLayout(card)
-
-        card_layout.setContentsMargins(
-            0,
-            0,
-            0,
-            0
+        self._row(
+            group, "Theme",
+            "Switch between the light and dark look.",
+            self.theme_combo,
         )
 
-        card_layout.setSpacing(0)
+    def _fill_camera(self, layout):
 
-        # Camera Device
+        group = self._group(layout)
 
-        row, row_layout = self.create_row(
-            "Camera Device"
-        )
+        picker = QHBoxLayout()
+        picker.setSpacing(8)
 
         self.camera_combo = QComboBox()
-
-        self.camera_combo.setFixedWidth(
-            220
-        )
-
+        self.camera_combo.setFixedWidth(220)
+        self.camera_combo.setCursor(Qt.PointingHandCursor)
         self.populate_camera_combo()
+        self.camera_combo.currentIndexChanged.connect(self.on_camera_selected)
+        picker.addWidget(self.camera_combo)
 
-        self.camera_combo.currentIndexChanged.connect(
-            self.on_camera_selected
+        refresh = self._button("Refresh", self.refresh_cameras)
+        refresh.setToolTip("Look for cameras again")
+        picker.addWidget(refresh)
+
+        self._row(
+            group, "Camera",
+            "Used by every gesture feature.",
+            picker,
         )
 
-        row_layout.addWidget(
-            self.camera_combo
+        self._row(
+            group, "Resolution",
+            "Higher is sharper but takes more processing.",
+            self._combo(
+                ["1280 × 720", "1920 × 1080", "640 × 480"],
+                "camera_resolution",
+            ),
         )
 
-        card_layout.addWidget(row)
-
-        self.add_separator(card_layout)
-
-        # Resolution
-
-        row, row_layout = self.create_row(
-            "Resolution"
+        self._row(
+            group, "Frame rate",
+            "Higher feels smoother if the camera supports it.",
+            self._combo(["30 FPS", "60 FPS", "24 FPS"], "camera_fps"),
         )
 
-        self.resolution_combo = QComboBox()
-
-        self.resolution_combo.setFixedWidth(
-            150
+        self._row(
+            group, "Camera preview",
+            "Show the live feed while you work.",
+            self._toggle("camera_preview"),
         )
 
-        self.resolution_combo.addItems(
-            [
-                "1280 × 720",
-                "1920 × 1080",
-                "640 × 480"
-            ]
+        group = self._group(layout)
+
+        self._row(
+            group, "Camera setup",
+            "Test the camera and check that your hand is tracked.",
+            self._button("Open camera setup", self._open_camera_setup, True),
         )
 
-        row_layout.addWidget(
-            self.resolution_combo
+    def _fill_gesture(self, layout):
+
+        group = self._group(layout)
+
+        box, _ = self._slider("gesture_sensitivity", 0, 100, 1, "%")
+        self._row(
+            group, "Gesture sensitivity",
+            "Higher reacts to smaller, quicker movements.",
+            box,
         )
 
-        card_layout.addWidget(row)
-
-        self.add_separator(card_layout)
-
-        # FPS
-
-        row, row_layout = self.create_row(
-            "FPS"
+        box, self.cursor_slider = self._slider(
+            "cursor_sensitivity", 10, 100, 1, "%",
+            on_change=self._push_cursor_sensitivity,
+        )
+        self._row(
+            group, "Cursor sensitivity",
+            "How far the cursor moves for each hand movement. "
+            "Matches the slider on the Virtual mouse page.",
+            box,
         )
 
-        self.fps_combo = QComboBox()
-
-        self.fps_combo.setFixedWidth(
-            110
+        box, _ = self._slider("click_delay_ms", 100, 1000, 50, " ms")
+        self._row(
+            group, "Click delay",
+            "How long a closed hand is held before it counts as a click.",
+            box,
         )
 
-        self.fps_combo.addItems(
-            [
-                "30 FPS",
-                "60 FPS",
-                "24 FPS"
-            ]
+    def _fill_presentation(self, layout):
+
+        group = self._group(layout)
+
+        self._row(
+            group, "File type",
+            "Auto detect reads the type from the file you upload.",
+            self._combo(["Auto detect", "Manual"], "presentation_mode"),
         )
 
-        row_layout.addWidget(
-            self.fps_combo
+        self._row(
+            group, "Open full screen",
+            "Start slideshows in full screen when you begin presenting.",
+            self._toggle("presentation_fullscreen"),
         )
 
-        card_layout.addWidget(row)
+    def _fill_storage(self, layout):
 
-        self.add_separator(card_layout)
+        group = self._group(layout)
 
-        # Camera Preview
-
-        row, row_layout = self.create_row(
-            "Camera Preview"
+        self._row(
+            group, "Save annotations",
+            "Keep drawings made on top of slides.",
+            self._toggle("save_annotations"),
         )
 
-        self.camera_preview_toggle = QPushButton()
-
-        self.camera_preview_toggle.setCheckable(
-            True
+        self._row(
+            group, "Save whiteboards",
+            "Keep whiteboard pages to open again later.",
+            self._toggle("save_whiteboards"),
         )
 
-        self.camera_preview_toggle.setChecked(
-            True
+        group = self._group(layout)
+
+        folder = Path(os.getcwd()) / "saved_files"
+
+        hint = self._row(
+            group, "Saved files folder",
+            str(folder),
+            self._button("Open saved files", self._open_saved_files),
         )
+        hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        self.camera_preview_toggle.setFixedSize(
-            36,
-            20
+    def _fill_about(self, layout):
+
+        group = self._group(layout)
+
+        card = QWidget()
+        card_layout = QHBoxLayout(card)
+        card_layout.setContentsMargins(20, 18, 20, 18)
+        card_layout.setSpacing(18)
+
+        self.about_logo = QLabel()
+        self.about_logo.setFixedWidth(84)
+        self.about_logo.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(self.about_logo, 0, Qt.AlignTop)
+
+        text = QVBoxLayout()
+        text.setSpacing(4)
+
+        name = QLabel("GestureBoard")
+        name.setObjectName("aboutName")
+        text.addWidget(name)
+
+        version = QLabel("Version 1.0")
+        version.setObjectName("rowHint")
+        text.addWidget(version)
+
+        info = QLabel(
+            "Control presentations, the mouse cursor and a whiteboard "
+            "with your hand, using an ordinary webcam."
         )
+        info.setObjectName("aboutText")
+        info.setWordWrap(True)
+        text.addSpacing(6)
+        text.addWidget(info)
 
-        self.camera_preview_toggle.clicked.connect(
-            self.toggle_camera_preview
-        )
+        card_layout.addLayout(text, 1)
+        group.addWidget(card)
 
-        self.update_toggle_style()
+        group = self._group(layout)
 
-        row_layout.addWidget(
-            self.camera_preview_toggle
-        )
+        for label, value in self._library_versions():
+            self._row(group, label, None, self._value_label(value))
 
-        card_layout.addWidget(row)
+    def _value_label(self, text):
 
-        self.settings_content.addWidget(
-            card
-        )
+        label = QLabel(text)
+        label.setObjectName("rowValueText")
+        return label
 
-        # ------------------------------------------------------
-        # GESTURE CARD
-        # ------------------------------------------------------
+    @staticmethod
+    def _library_versions():
 
-        gesture_card = self.create_card()
+        rows = []
 
-        gesture_layout = QVBoxLayout(
-            gesture_card
-        )
+        try:
+            import cv2
+            rows.append(("Camera capture", f"OpenCV {cv2.__version__}"))
+        except Exception:
+            rows.append(("Camera capture", "OpenCV not available"))
 
-        gesture_layout.setContentsMargins(
-            0,
-            0,
-            0,
-            0
-        )
+        try:
+            import mediapipe
+            rows.append(("Hand tracking", f"MediaPipe {mediapipe.__version__}"))
+        except Exception:
+            rows.append(("Hand tracking", "MediaPipe not available"))
 
-        gesture_layout.setSpacing(0)
+        try:
+            from PyQt5.QtCore import PYQT_VERSION_STR
+            rows.append(("Interface", f"PyQt {PYQT_VERSION_STR}"))
+        except Exception:
+            pass
 
-        gesture_title = QLabel(
-            "GESTURE"
-        )
-
-        gesture_title.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.LIGHT_BLUE};
-                font-size: 11px;
-                font-weight: 700;
-                letter-spacing: 1px;
-                padding: 14px 16px 4px 16px;
-            }}
-            """
-        )
-
-        gesture_layout.addWidget(
-            gesture_title
-        )
-
-        # Gesture Sensitivity
-
-        row, row_layout = self.create_row(
-            "Gesture Sensitivity"
-        )
-
-        slider = self.create_slider(
-            70
-        )
-
-        row_layout.addWidget(
-            slider
-        )
-
-        gesture_layout.addWidget(row)
-
-        self.add_separator(gesture_layout)
-
-        # Cursor Sensitivity
-
-        row, row_layout = self.create_row(
-            "Cursor Sensitivity"
-        )
-
-        slider = self.create_slider(
-            55
-        )
-
-        row_layout.addWidget(
-            slider
-        )
-
-        gesture_layout.addWidget(row)
-
-        self.add_separator(gesture_layout)
-
-        # Click Delay
-
-        row, row_layout = self.create_row(
-            "Click Delay"
-        )
-
-        slider = self.create_slider(
-            30
-        )
-
-        row_layout.addWidget(
-            slider
-        )
-
-        gesture_layout.addWidget(row)
-
-        self.add_separator(gesture_layout)
-
-        # Gesture Customization
-
-        row, row_layout = self.create_row(
-            "Gesture Customization"
-        )
-
-        manage_button = QComboBox()
-
-        manage_button.setFixedWidth(
-            120
-        )
-
-        manage_button.addItems(
-            [
-                "Manage",
-                "Default"
-            ]
-        )
-
-        row_layout.addWidget(
-            manage_button
-        )
-
-        gesture_layout.addWidget(row)
-
-        self.settings_content.addWidget(
-            gesture_card
-        )
-
-        # ------------------------------------------------------
-        # ABOUT CARD
-        # ------------------------------------------------------
-
-        about_card = self.create_card()
-
-        about_layout = QVBoxLayout(
-            about_card
-        )
-
-        about_layout.setContentsMargins(
-            16,
-            13,
-            16,
-            13
-        )
-
-        name = QLabel(
-            "GestureBoard"
-        )
-
-        name.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.NAVY};
-                font-size: 12px;
-                font-weight: 700;
-            }}
-            """
-        )
-
-        about_layout.addWidget(
-            name
-        )
-
-        version = QLabel(
-            "Version 1.0 - OpenCV 4.9 · MediaPipe 0.10"
-        )
-
-        version.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.SECONDARY};
-                font-size: 11px;
-                margin-top: 2px;
-            }}
-            """
-        )
-
-        about_layout.addWidget(
-            version
-        )
-
-        self.settings_content.addWidget(
-            about_card
-        )
-
-        self.settings_content.addStretch()
+        return rows
 
     # ==========================================================
-    # SLIDER
+    # NAVIGATION
     # ==========================================================
 
-    def create_slider(self, value):
+    def show_section(self, key):
 
-        slider = QSlider(
-            Qt.Horizontal
-        )
+        self.current_section = key
 
-        slider.setMinimum(
-            0
-        )
+        button, _icon = self.rail_buttons[key]
+        button.setChecked(True)
 
-        slider.setMaximum(
-            100
-        )
+        self.stack.setCurrentWidget(self.section_pages[key])
 
-        slider.setValue(
-            value
-        )
-
-        slider.setFixedWidth(
-            138
-        )
-
-        return slider
-
-    # ==========================================================
-    # SEPARATOR
-    # ==========================================================
-
-    def add_separator(self, layout):
-
-        line = QFrame()
-
-        line.setFrameShape(
-            QFrame.HLine
-        )
-
-        line.setFixedHeight(
-            1
-        )
-
-        line.setStyleSheet(
-            f"""
-            QFrame {{
-                background-color: {self.BORDER};
-                border: none;
-            }}
-            """
-        )
-
-        layout.addWidget(
-            line
-        )
-
-    # ==========================================================
-    # TOGGLE
-    # ==========================================================
-
-    def update_toggle_style(self):
-
-        if self.camera_preview_toggle.isChecked():
-
-            self.camera_preview_toggle.setStyleSheet(
-                """
-                QPushButton {
-                    background-color: #AFC7E8;
-                    border: none;
-                    border-radius: 10px;
-                }
-
-                QPushButton::indicator {
-                    width: 12px;
-                    height: 12px;
-                }
-                """
+        # Keep the stack only as tall as the visible section.
+        for k, page in self.section_pages.items():
+            page.setSizePolicy(
+                QSizePolicy.Preferred,
+                QSizePolicy.Preferred if k == key else QSizePolicy.Ignored,
             )
+        self.stack.adjustSize()
 
-        else:
+    # Kept for older callers that used section names.
+    def change_section(self, section):
 
-            self.camera_preview_toggle.setStyleSheet(
-                """
-                QPushButton {
-                    background-color: #DCE8F3;
-                    border: none;
-                    border-radius: 10px;
-                }
-                """
-            )
+        self.show_section(section.lower())
 
-    def toggle_camera_preview(self):
+    def _open_camera_setup(self):
 
-        self.update_toggle_style()
+        if self.main_window is not None and hasattr(
+            self.main_window, "showCameraSetup"
+        ):
+            self.main_window.showCameraSetup()
 
-    # ==========================================================
-    # GENERAL
-    # ==========================================================
+    def _open_saved_files(self):
 
-    def show_general_settings(self):
-
-        card = self.create_card()
-
-        layout = QVBoxLayout(card)
-
-        layout.setContentsMargins(
-            0,
-            0,
-            0,
-            0
-        )
-
-        row, row_layout = self.create_row(
-            "Application Theme"
-        )
-
-        self.theme_combo = QComboBox()
-
-        self.theme_combo.setFixedWidth(
-            150
-        )
-
-        self.theme_combo.addItems(
-            [
-                "Light",
-                "Dark",
-                "System Default"
-            ]
-        )
-
-        # Select the currently saved theme.
-        from settings import theme as app_theme
-
-        current_index = self.theme_combo.findText(
-            app_theme.current_name()
-        )
-
-        if current_index >= 0:
-
-            self.theme_combo.setCurrentIndex(
-                current_index
-            )
-
-        self.theme_combo.currentTextChanged.connect(
-            self.on_theme_changed
-        )
-
-        row_layout.addWidget(self.theme_combo)
-
-        layout.addWidget(row)
-
-        self.settings_content.addWidget(card)
-
-        self.settings_content.addStretch()
+        if self.main_window is not None and hasattr(
+            self.main_window, "showSavedFiles"
+        ):
+            self.main_window.showSavedFiles()
 
     # ==========================================================
-    # THEME CHANGE
+    # VIRTUAL MOUSE SYNC
+    # ==========================================================
+
+    def _virtual_mouse_slider(self):
+
+        vm = getattr(self.main_window, "virtual_mouse", None)
+        return getattr(vm, "sensitivity_slider", None)
+
+    def _push_cursor_sensitivity(self, value):
+
+        slider = self._virtual_mouse_slider()
+
+        if slider is not None and slider.value() != value:
+            slider.setValue(value)
+
+    def showEvent(self, event):
+
+        super().showEvent(event)
+
+        # The Virtual Mouse slider may have moved since the last visit.
+        slider = self._virtual_mouse_slider()
+
+        if slider is not None and slider.value() != self.cursor_slider.value():
+            self.cursor_slider.setValue(slider.value())
+
+    # ==========================================================
+    # THEME
     # ==========================================================
 
     def on_theme_changed(self, name):
-
-        from settings import theme as app_theme
 
         app_theme.set_theme(name)
 
@@ -1108,275 +761,293 @@ class SettingsPage(QWidget):
             self.main_window is not None
             and hasattr(self.main_window, "apply_theme")
         ):
-
             self.main_window.apply_theme()
 
         else:
-
             self.apply_theme()
 
-    # ==========================================================
-    # GESTURE
-    # ==========================================================
+    def apply_theme(self):
+        """Restyle the page in the current theme (no rebuild needed)."""
 
-    def show_gesture_settings(self):
+        c = self.colors = settings_colors()
+        dark = app_theme.is_dark()
 
-        card = self.create_card()
+        focus = c["accent"] if dark else c["sidebar_hover"]
 
-        layout = QVBoxLayout(card)
+        self.setStyleSheet(page_background.LAYER_RULE + f"""
+            QWidget#settingsPage {{
+                background: transparent;
+            }}
 
-        layout.setContentsMargins(
-            0,
-            0,
-            0,
-            0
-        )
-
-        row, row_layout = self.create_row(
-            "Gesture Sensitivity"
-        )
-
-        row_layout.addWidget(
-            self.create_slider(70)
-        )
-
-        layout.addWidget(row)
-
-        self.add_separator(layout)
-
-        row, row_layout = self.create_row(
-            "Cursor Sensitivity"
-        )
-
-        row_layout.addWidget(
-            self.create_slider(55)
-        )
-
-        layout.addWidget(row)
-
-        self.add_separator(layout)
-
-        row, row_layout = self.create_row(
-            "Click Delay"
-        )
-
-        row_layout.addWidget(
-            self.create_slider(30)
-        )
-
-        layout.addWidget(row)
-
-        self.settings_content.addWidget(card)
-
-        self.settings_content.addStretch()
-
-    # ==========================================================
-    # PRESENTATION
-    # ==========================================================
-
-    def show_presentation_settings(self):
-
-        card = self.create_card()
-
-        layout = QVBoxLayout(card)
-
-        layout.setContentsMargins(
-            0,
-            0,
-            0,
-            0
-        )
-
-        row, row_layout = self.create_row(
-            "Presentation Mode"
-        )
-
-        combo = QComboBox()
-
-        combo.setFixedWidth(
-            120
-        )
-
-        combo.addItems(
-            [
-                "Auto Detect",
-                "Manual"
-            ]
-        )
-
-        row_layout.addWidget(
-            combo
-        )
-
-        layout.addWidget(row)
-
-        self.add_separator(layout)
-
-        row, row_layout = self.create_row(
-            "Full Screen"
-        )
-
-        combo = QComboBox()
-
-        combo.setFixedWidth(
-            100
-        )
-
-        combo.addItems(
-            [
-                "Enabled",
-                "Disabled"
-            ]
-        )
-
-        row_layout.addWidget(combo)
-
-        layout.addWidget(row)
-
-        self.settings_content.addWidget(card)
-
-        self.settings_content.addStretch()
-
-    # ==========================================================
-    # STORAGE
-    # ==========================================================
-
-    def show_storage_settings(self):
-
-        card = self.create_card()
-
-        layout = QVBoxLayout(card)
-
-        layout.setContentsMargins(
-            0,
-            0,
-            0,
-            0
-        )
-
-        row, row_layout = self.create_row(
-            "Save Annotations"
-        )
-
-        combo = QComboBox()
-
-        combo.setFixedWidth(
-            120
-        )
-
-        combo.addItems(
-            [
-                "Enabled",
-                "Disabled"
-            ]
-        )
-
-        row_layout.addWidget(
-            combo
-        )
-
-        layout.addWidget(row)
-
-        self.add_separator(layout)
-
-        row, row_layout = self.create_row(
-            "Save Whiteboards"
-        )
-
-        combo = QComboBox()
-
-        combo.setFixedWidth(
-            120
-        )
-
-        combo.addItems(
-            [
-                "Enabled",
-                "Disabled"
-            ]
-        )
-
-        row_layout.addWidget(combo)
-
-        layout.addWidget(row)
-
-        self.settings_content.addWidget(card)
-
-        self.settings_content.addStretch()
-
-    # ==========================================================
-    # ABOUT
-    # ==========================================================
-
-    def show_about_settings(self):
-
-        card = self.create_card()
-
-        layout = QVBoxLayout(card)
-
-        layout.setContentsMargins(
-            18,
-            18,
-            18,
-            18
-        )
-
-        title = QLabel(
-            "GestureBoard"
-        )
-
-        title.setStyleSheet(
-            f"""
             QLabel {{
-                color: {self.NAVY};
-                font-size: 18px;
+                background: transparent;
+                color: {c['text']};
+            }}
+
+            QLabel#pageTitle {{
+                font-size: 28px;
+                font-weight: 800;
+            }}
+
+            QLabel#pageSubtitle {{
+                font-size: 14px;
+                color: {c['text_secondary']};
+                margin-top: 4px;
+            }}
+
+            /* ---------- Section rail ---------- */
+
+            QFrame#rail {{
+                background: {c['card']};
+                border: 1px solid {c['card_border']};
+                border-radius: 16px;
+            }}
+
+            QPushButton#railItem {{
+                text-align: left;
+                background: transparent;
+                color: {c['text_secondary']};
+                border: none;
+                border-radius: 10px;
+                padding: 10px 12px;
+                font-size: 14px;
+                font-weight: 600;
+            }}
+
+            QPushButton#railItem:hover {{
+                background: {c['button_hover']};
+                color: {c['text']};
+            }}
+
+            QPushButton#railItem:checked {{
+                background: {c['primary']};
+                color: {c['primary_text']};
+            }}
+
+            QPushButton#railItem:focus {{
+                outline: none;
+            }}
+
+            QLabel#railNote {{
+                color: {c['text_secondary']};
+                font-size: 12px;
+                padding: 0 12px;
+            }}
+
+            /* ---------- Section header ---------- */
+
+            QLabel#sectionIcon {{
+                background: {c['primary']};
+                border-radius: 14px;
+            }}
+
+            QLabel#sectionTitle {{
+                font-size: 22px;
+                font-weight: 800;
+            }}
+
+            QLabel#sectionText {{
+                font-size: 14px;
+                color: {c['text_secondary']};
+            }}
+
+            /* ---------- Groups and rows ---------- */
+
+            QFrame#group {{
+                background: {c['card']};
+                border: 1px solid {c['card_border']};
+                border-radius: 14px;
+            }}
+
+            QFrame#rowDivider {{
+                background: {c['card_border']};
+                border: none;
+                margin: 0 20px;
+            }}
+
+            QLabel#rowLabel {{
+                font-size: 14px;
                 font-weight: 700;
             }}
-            """
-        )
 
-        layout.addWidget(title)
-
-        version = QLabel(
-            "Version 1.0"
-        )
-
-        version.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.SECONDARY};
+            QLabel#rowHint {{
                 font-size: 12px;
+                color: {c['text_secondary']};
             }}
-            """
-        )
 
-        layout.addWidget(version)
-
-        info = QLabel(
-            "A gesture-controlled desktop application for "
-            "presentation navigation and digital annotation "
-            "using computer vision."
-        )
-
-        info.setWordWrap(
-            True
-        )
-
-        info.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.SECONDARY};
-                font-size: 12px;
-                margin-top: 8px;
+            QLabel#rowValue {{
+                font-size: 13px;
+                font-weight: 700;
+                color: {c['text']};
             }}
-            """
+
+            QLabel#rowValueText {{
+                font-size: 13px;
+                font-weight: 600;
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#aboutName {{
+                font-size: 18px;
+                font-weight: 800;
+            }}
+
+            QLabel#aboutText {{
+                font-size: 13px;
+                color: {c['text_secondary']};
+            }}
+
+            /* ---------- Controls ---------- */
+
+            QComboBox {{
+                background: {c['field']};
+                color: {c['text']};
+                border: 1px solid {c['input_border']};
+                border-radius: 9px;
+                padding: 7px 12px;
+                font-size: 13px;
+                min-height: 22px;
+            }}
+
+            QComboBox:hover,
+            QComboBox:focus {{
+                border: 1px solid {c['primary']};
+            }}
+
+            QComboBox::drop-down {{
+                border: none;
+                width: 26px;
+            }}
+
+            QComboBox QAbstractItemView {{
+                background: {c['field']};
+                color: {c['text']};
+                border: 1px solid {c['input_border']};
+                selection-background-color: {c['button_hover']};
+                selection-color: {c['text']};
+                outline: none;
+            }}
+
+            QPushButton#secondaryButton {{
+                background: {c['field']};
+                color: {c['text']};
+                border: 1px solid {c['input_border']};
+                border-radius: 9px;
+                padding: 8px 16px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+
+            QPushButton#secondaryButton:hover {{
+                background: {c['button_hover']};
+            }}
+
+            QPushButton#primaryButton {{
+                background: {c['primary']};
+                color: {c['primary_text']};
+                border: none;
+                border-radius: 9px;
+                padding: 9px 18px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+
+            QPushButton#primaryButton:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+
+            QPushButton#secondaryButton:focus,
+            QPushButton#primaryButton:focus {{
+                border: 2px solid {focus};
+            }}
+
+            QSlider::groove:horizontal {{
+                height: 5px;
+                background: {c['input_border']};
+                border-radius: 2px;
+            }}
+
+            QSlider::sub-page:horizontal {{
+                background: {c['primary']};
+                border-radius: 2px;
+            }}
+
+            QSlider {{
+                background: transparent;
+                border: none;
+                min-height: 22px;
+            }}
+
+            QSlider::handle:horizontal {{
+                width: 14px;
+                height: 14px;
+                margin: -6px 0;
+                background: {c['knob']};
+                border: 2px solid {c['primary']};
+                border-radius: 9px;
+            }}
+
+            QSlider::handle:horizontal:hover {{
+                border: 2px solid {focus};
+            }}
+
+            /* ---------- Scrolling ---------- */
+
+            QScrollArea#settingsScroll QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0;
+            }}
+
+            QScrollArea#settingsScroll QScrollBar::handle:vertical {{
+                background: {c['input_border']};
+                border-radius: 4px;
+                min-height: 30px;
+            }}
+
+            QScrollArea#settingsScroll QScrollBar::add-line:vertical,
+            QScrollArea#settingsScroll QScrollBar::sub-line:vertical,
+            QScrollArea#settingsScroll QScrollBar::add-page:vertical,
+            QScrollArea#settingsScroll QScrollBar::sub-page:vertical {{
+                background: transparent;
+                height: 0;
+            }}
+        """)
+
+        # Rail icons: muted when idle, light on the selected item.
+        for button, icon_name in self.rail_buttons.values():
+            icon = QIcon()
+            icon.addPixmap(
+                nav_pixmap(icon_name, c["text_secondary"], 20),
+                QIcon.Normal, QIcon.Off,
+            )
+            icon.addPixmap(
+                nav_pixmap(icon_name, c["primary_text"], 20),
+                QIcon.Normal, QIcon.On,
+            )
+            button.setIcon(icon)
+
+        for tile, icon_name in self.section_icons.values():
+            tile.setPixmap(nav_pixmap(icon_name, c["primary_text"], 26))
+
+        for toggle in self.toggles:
+            toggle.set_colors(c["primary"], c["input_border"], c["knob"], focus)
+
+        self.about_logo.setPixmap(
+            sidebar_logo(72, c["text"] if dark else None)
         )
 
-        layout.addWidget(info)
+        if hasattr(self, "theme_combo"):
+            self.theme_combo.blockSignals(True)
+            self.theme_combo.setCurrentText(app_theme.current_name())
+            self.theme_combo.blockSignals(False)
 
-        self.settings_content.addWidget(card)
+        self.update()
 
-        self.settings_content.addStretch()
+    def paintEvent(self, event):
+
+        page_background.paint_page_background(self, self.colors)
 
     # ==========================================================
     # CAMERA METHODS
@@ -1419,6 +1090,11 @@ class SettingsPage(QWidget):
             )
 
         return cameras
+
+    def refresh_cameras(self):
+
+        self.detect_cameras(force=True)
+        self.populate_camera_combo()
 
     def populate_camera_combo(self):
 
@@ -1482,20 +1158,15 @@ class SettingsPage(QWidget):
 
         self.active_camera_name = name
 
-        # Update camera dropdown if it is currently shown. The combo
-        # is rebuilt with each section, so it may already be deleted.
+        # Rebuild so a camera missing from the list (e.g. one restored
+        # from a previous session) is still shown.
+        try:
 
-        if hasattr(self, "camera_combo"):
+            self.populate_camera_combo()
 
-            try:
+        except RuntimeError:
 
-                # Rebuild so a camera missing from the list (e.g. one
-                # restored from a previous session) is still shown.
-                self.populate_camera_combo()
-
-            except RuntimeError:
-
-                pass
+            pass
 
     # ==========================================================
     # OPTIONAL CAMERA NAME METHOD
@@ -1507,24 +1178,22 @@ class SettingsPage(QWidget):
 
             self.active_camera_name = name
 
-        if hasattr(self, "camera_combo"):
+        try:
 
-            try:
+            found_index = self.camera_combo.findText(
+                self.active_camera_name
+            )
 
-                found_index = self.camera_combo.findText(
-                    self.active_camera_name
+            if found_index >= 0:
+
+                self.camera_combo.blockSignals(True)
+
+                self.camera_combo.setCurrentIndex(
+                    found_index
                 )
 
-                if found_index >= 0:
+                self.camera_combo.blockSignals(False)
 
-                    self.camera_combo.blockSignals(True)
+        except RuntimeError:
 
-                    self.camera_combo.setCurrentIndex(
-                        found_index
-                    )
-
-                    self.camera_combo.blockSignals(False)
-
-            except RuntimeError:
-
-                pass
+            pass

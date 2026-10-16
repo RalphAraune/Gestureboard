@@ -146,7 +146,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar = Sidebar(self)
 
-        self.sidebar.setFixedWidth(212)
+        self.sidebar.setFixedWidth(self.sidebar._expanded_width)
 
         self.bodyLayout.addWidget(
             self.sidebar
@@ -435,6 +435,7 @@ class MainWindow(QMainWindow):
         for page in (
             self.settings,
             self.dashboard,
+            self.saved_files,
         ):
 
             if hasattr(page, "apply_theme"):

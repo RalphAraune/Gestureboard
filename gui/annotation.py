@@ -478,7 +478,7 @@ class AnnotationPage(QWidget):
 
         self.setStyleSheet("""
             QWidget {
-                background-color: #EEF2F7;
+                background-color: #F2F8FC;
                 color: #163A7A;
                 font-family: "Segoe UI";
             }
@@ -488,7 +488,7 @@ class AnnotationPage(QWidget):
             }
 
             QPushButton {
-                background-color: #EEF2F7;
+                background-color: #F2F8FC;
                 border: 1px solid #C7D8EC;
                 border-radius: 7px;
                 padding: 7px 12px;
@@ -983,7 +983,7 @@ class AnnotationPage(QWidget):
 
             button.setStyleSheet("""
                 QPushButton {
-                    background-color: #EEF2F7;
+                    background-color: #F2F8FC;
                     border: 1px solid #C7D8EC;
                     border-radius: 7px;
                     padding: 7px 12px;

@@ -1580,7 +1580,7 @@ class WhiteboardPage(QWidget):
 
         self.setStyleSheet("""
             QWidget {
-                background-color: #EEF2F7;
+                background-color: #F2F8FC;
                 color: #0E2F76;
                 font-family: "Segoe UI";
             }
@@ -2307,7 +2307,7 @@ class WhiteboardPage(QWidget):
 
         menu.setStyleSheet("""
             QMenu {
-                background-color: #F7F9FC;
+                background-color: #EAF3FA;
                 border: 1px solid #D7E5F3;
                 padding: 5px;
             }
