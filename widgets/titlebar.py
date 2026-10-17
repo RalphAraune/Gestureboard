@@ -1,6 +1,6 @@
 """Custom title bar: logo, status, light / dark switch and window controls."""
 
-from PyQt5.QtCore import Qt, QPointF, QRectF, QSize, QVariantAnimation
+from PyQt5.QtCore import Qt, QPointF, QRectF, QSize, QTimer, QVariantAnimation
 from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton
 
@@ -287,8 +287,13 @@ class TitleBar(QFrame):
 
         app_theme.set_theme("Dark" if dark else "Light")
 
+        # Restyling the app blocks for a moment, so let the knob finish
+        # sliding first; otherwise the click looks frozen.
         if hasattr(self.main_window, "apply_theme"):
-            self.main_window.apply_theme()
+            QTimer.singleShot(
+                self.theme_switch._anim.duration(),
+                self.main_window.apply_theme
+            )
 
     def _toggle_maximize(self):
         if self.main_window.isMaximized():

@@ -1,7 +1,8 @@
 """Application light / dark theme handling.
 
 The chosen theme is persisted in settings/config.json under the "theme" key.
-`apply_theme()` applies it to the running QApplication and to the main shell.
+`global_stylesheet()` holds the dialog, tooltip and scrollbar rules the
+main window appends to its own stylesheet.
 """
 
 import settings.preferences as prefs
@@ -95,7 +96,7 @@ def is_dark():
 # ============================================================
 
 def global_stylesheet():
-    """Stylesheet applied to the QApplication.
+    """Dialog, tooltip and scrollbar rules for the main window stylesheet.
 
     Light mode keeps the existing per-page styling, so it returns an empty
     string. Dark mode also darkens generic dialogs/popups so they match.

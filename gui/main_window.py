@@ -62,16 +62,7 @@ class MainWindow(QMainWindow):
 
         c = app_theme.colors()
 
-        self.setStyleSheet(f"""
-            QMainWindow {{
-                background-color: {c['bg']};
-            }}
-
-            QWidget {{
-                background-color: {c['bg']};
-                color: {c['text']};
-            }}
-        """)
+        self.setStyleSheet(self._shell_stylesheet(c))
 
         # ==========================================================
         # CENTRAL WIDGET
@@ -79,13 +70,6 @@ class MainWindow(QMainWindow):
 
         self.central = QWidget()
         self.central.setObjectName("CentralWidget")
-
-        self.central.setStyleSheet(f"""
-            QWidget#CentralWidget {{
-                background-color: {c['bg']};
-                border: 1px solid {c['border']};
-            }}
-        """)
 
         self.setCentralWidget(self.central)
 
@@ -117,12 +101,6 @@ class MainWindow(QMainWindow):
         # ==========================================================
 
         self.body = QWidget()
-
-        self.body.setStyleSheet(f"""
-            QWidget {{
-                background-color: {c['bg']};
-            }}
-        """)
 
         self.bodyLayout = QHBoxLayout(
             self.body
@@ -162,13 +140,6 @@ class MainWindow(QMainWindow):
         self.stack.setObjectName(
             "MainStack"
         )
-
-        self.stack.setStyleSheet(f"""
-            QStackedWidget#MainStack {{
-                background-color: {c['bg']};
-                border: none;
-            }}
-        """)
 
         self.bodyLayout.addWidget(
             self.stack,
@@ -371,22 +342,26 @@ class MainWindow(QMainWindow):
 
         c = app_theme.colors()
 
-        # ----------------------------------------------------------
-        # Global stylesheet (dialogs, tooltips, scrollbars)
-        # ----------------------------------------------------------
+        # Hold repaints until every page is restyled, so the switch
+        # paints once instead of page by page.
+        self.setUpdatesEnabled(False)
 
-        app = QApplication.instance()
+        try:
+            self._apply_theme(c)
+        finally:
+            self.setUpdatesEnabled(True)
 
-        if app is not None:
-            app.setStyleSheet(
-                app_theme.global_stylesheet()
-            )
+    @staticmethod
+    def _shell_stylesheet(c):
+        """One stylesheet for the whole shell.
 
-        # ----------------------------------------------------------
-        # Shell
-        # ----------------------------------------------------------
+        Each setStyleSheet() re-polishes every widget below it, so the
+        central widget, body and page stack get their rules from here
+        (by object name) instead of three more nested stylesheets.
+        """
 
-        self.setStyleSheet(f"""
+        # Global rules go last so they win over the plain QWidget rule.
+        return f"""
             QMainWindow {{
                 background-color: {c['bg']};
             }}
@@ -395,27 +370,32 @@ class MainWindow(QMainWindow):
                 background-color: {c['bg']};
                 color: {c['text']};
             }}
-        """)
 
-        self.central.setStyleSheet(f"""
             QWidget#CentralWidget {{
                 background-color: {c['bg']};
                 border: 1px solid {c['border']};
             }}
-        """)
 
-        self.body.setStyleSheet(f"""
-            QWidget {{
-                background-color: {c['bg']};
-            }}
-        """)
-
-        self.stack.setStyleSheet(f"""
             QStackedWidget#MainStack {{
                 background-color: {c['bg']};
                 border: none;
             }}
-        """)
+        """ + app_theme.global_stylesheet()
+
+    def _apply_theme(self, c):
+
+        # ----------------------------------------------------------
+        # Shell + global rules (dialogs, tooltips, scrollbars)
+        # ----------------------------------------------------------
+        #
+        # The global rules sit on the main window rather than the
+        # QApplication: changing the application stylesheet re-polishes
+        # every widget in the app and took ~2 s per theme switch. Every
+        # dialog is parented inside this window, so they still cascade.
+        #
+        # ----------------------------------------------------------
+
+        self.setStyleSheet(self._shell_stylesheet(c))
 
         # ----------------------------------------------------------
         # Sidebar + title bar
@@ -641,14 +621,24 @@ class MainWindow(QMainWindow):
     # EVENT FILTER
     # ==============================================================
 
+    _RESIZE_EVENTS = frozenset((
+        QEvent.MouseButtonPress,
+        QEvent.MouseMove,
+        QEvent.MouseButtonRelease,
+    ))
+
     def eventFilter(
         self,
         watched,
         event
     ):
 
+        # Only mouse events matter here. Checking the type first keeps
+        # the app-wide filter cheap during restyles (tens of thousands
+        # of polish/style events per theme switch).
         if (
-            not isinstance(watched, QWidget)
+            event.type() not in self._RESIZE_EVENTS
+            or not isinstance(watched, QWidget)
             or watched.window() is not self
         ):
 
