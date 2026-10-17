@@ -24,6 +24,8 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QFrame,
     QMenu,
+    QButtonGroup,
+    QGridLayout,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -31,6 +33,8 @@ from PyQt5.QtCore import (
     QRect,
     QTimer,
     QStandardPaths,
+    QSize,
+    QEvent,
 )
 from PyQt5.QtGui import (
     QPainter,
@@ -40,6 +44,7 @@ from PyQt5.QtGui import (
     QCursor,
     QPolygon,
     QBrush,
+    QIcon,
 )
 
 
@@ -1287,6 +1292,159 @@ class DrawingCanvas(QWidget):
 # WHITEBOARD PAGE
 # ============================================================
 
+# ============================================================
+# TOOL ICONS
+#
+# One line-icon set (24 x 24 grid, rounded 1.8 px strokes), the
+# same style as the sidebar, instead of mixed Unicode symbols.
+# ============================================================
+
+def _tool_path(name):
+
+    from PyQt5.QtGui import QPainterPath, QTransform
+    from PyQt5.QtCore import QPointF, QRectF
+
+    path = QPainterPath()
+
+    if name == "select":
+        path.moveTo(6, 4); path.lineTo(6, 18.5); path.lineTo(9.8, 15)
+        path.lineTo(12.6, 20.5); path.lineTo(15, 19.4); path.lineTo(12.3, 14)
+        path.lineTo(17.5, 13.6); path.closeSubpath()
+
+    elif name == "pen":
+        path.moveTo(5, 19); path.lineTo(6, 15); path.lineTo(15.5, 5.5)
+        path.lineTo(18.5, 8.5); path.lineTo(9, 18); path.closeSubpath()
+        path.moveTo(13.5, 7.5); path.lineTo(16.5, 10.5)
+
+    elif name == "highlighter":
+        path.moveTo(9, 13); path.lineTo(15, 7); path.lineTo(19, 11)
+        path.lineTo(13, 17); path.closeSubpath()
+        path.moveTo(9, 13); path.lineTo(6.5, 17.5); path.lineTo(10, 17.5)
+        path.lineTo(13, 17)
+        path.moveTo(4, 21); path.lineTo(20, 21)
+
+    elif name == "eraser":
+        path.moveTo(4.5, 14.5); path.lineTo(11.5, 7.5); path.lineTo(17.5, 13.5)
+        path.lineTo(12.5, 18.5); path.lineTo(8.5, 18.5); path.closeSubpath()
+        path.moveTo(8, 11); path.lineTo(14, 17)
+        path.moveTo(12.5, 18.5); path.lineTo(20, 18.5)
+
+    elif name == "shape":
+        path.addRoundedRect(QRectF(3.5, 10, 10, 10), 1.5, 1.5)
+        path.addEllipse(QPointF(15.5, 8.5), 5, 5)
+
+    elif name in ("undo", "redo"):
+        path.moveTo(9, 5); path.lineTo(5, 9); path.lineTo(9, 13)
+        path.moveTo(5, 9); path.lineTo(14, 9)
+        path.cubicTo(17.5, 9, 20, 11.5, 20, 14.5)
+        path.cubicTo(20, 17.5, 17.5, 19.5, 14.5, 19.5)
+        path.lineTo(10, 19.5)
+
+        if name == "redo":
+            path = QTransform(-1, 0, 0, 1, 24, 0).map(path)
+
+    elif name == "clear":
+        path.moveTo(4.5, 7); path.lineTo(19.5, 7)
+        path.moveTo(9, 7); path.lineTo(9.6, 4.5); path.lineTo(14.4, 4.5); path.lineTo(15, 7)
+        path.moveTo(6.5, 7); path.lineTo(7.5, 20); path.lineTo(16.5, 20); path.lineTo(17.5, 7)
+        path.moveTo(10, 10.5); path.lineTo(10, 16.5)
+        path.moveTo(14, 10.5); path.lineTo(14, 16.5)
+
+    elif name == "save":
+        path.moveTo(12, 4); path.lineTo(12, 14.5)
+        path.moveTo(7.5, 10); path.lineTo(12, 14.5); path.lineTo(16.5, 10)
+        path.moveTo(4.5, 15); path.lineTo(4.5, 19.5); path.lineTo(19.5, 19.5); path.lineTo(19.5, 15)
+
+    return path
+
+
+def tool_pixmap(name, color, size=20):
+
+    scale = 2
+    pixmap = QPixmap(size * scale, size * scale)
+    pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(scale)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.scale(size / 24.0, size / 24.0)
+
+    pen = QPen(QColor(color), 1.8)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawPath(_tool_path(name))
+    painter.end()
+
+    return pixmap
+
+
+def tool_icon(name, color, size=20):
+
+    return QIcon(tool_pixmap(name, color, size))
+
+
+# ============================================================
+# BRUSH PREVIEW
+#
+# A dot showing exactly what the next stroke looks like: the picked
+# colour, at the brush size and opacity.
+# ============================================================
+
+class BrushPreview(QWidget):
+
+    def __init__(self, parent=None):
+
+        super().__init__(parent)
+
+        self.setFixedSize(34, 34)
+        self.setToolTip("Current brush")
+
+        self._color = QColor("#172033")
+        self._size = 4
+        self._opacity = 100
+        self._ring = QColor("#BED2E9")
+
+    def set_ring(self, color):
+
+        self._ring = QColor(color)
+        self.update()
+
+    def set_brush(self, color, size, opacity):
+
+        self._color = QColor(color)
+        self._size = size
+        self._opacity = opacity
+        self.update()
+
+    def paintEvent(self, event):
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # White well, like a dab on the board itself.
+        painter.setPen(QPen(self._ring, 1))
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawEllipse(QRect(1, 1, self.width() - 2, self.height() - 2))
+
+        color = QColor(self._color)
+        color.setAlphaF(self._opacity / 100.0)
+
+        diameter = max(3.0, min(26.0, self._size * 1.3))
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        painter.drawEllipse(
+            int(self.width() / 2 - diameter / 2),
+            int(self.height() / 2 - diameter / 2),
+            int(diameter),
+            int(diameter),
+        )
+
+        painter.end()
+
+
 class WhiteboardPage(QWidget):
 
     def __init__(
@@ -1437,16 +1595,21 @@ class WhiteboardPage(QWidget):
 
         self.camera_label.setStyleSheet("""
             QLabel {
-                background-color: #10264E;
+                background-color: #0E2F76;
                 border: 2px solid #FFFFFF;
-                border-radius: 8px;
-                color: #FFFFFF;
-                font-size: 9px;
+                border-radius: 10px;
+                color: #C9D8EE;
+                font-size: 10px;
+                font-weight: 600;
             }
         """)
 
         self.camera_label.setAlignment(
             Qt.AlignCenter
+        )
+
+        self.camera_label.setWordWrap(
+            True
         )
 
         self.camera_label.setText(
@@ -1508,8 +1671,11 @@ class WhiteboardPage(QWidget):
         )
 
         self.camera_status.setText(
-            "● Camera ON" if running else "● Camera OFF"
+            "●  Camera on" if running else "●  Camera off"
         )
+        self.camera_status.setProperty("on", bool(running))
+        self.camera_status.style().unpolish(self.camera_status)
+        self.camera_status.style().polish(self.camera_status)
 
     # ========================================================
     # HIDE EVENT
@@ -1543,29 +1709,29 @@ class WhiteboardPage(QWidget):
 
         self.position_camera_preview()
 
+        if getattr(self, "hint_chips", None):
+            needed = sum(c.sizeHint().width() + 8 for c in self.hint_chips)
+            self._reflow_hints(
+                len(self.hint_chips) if needed <= self.width() - 64 else 2
+            )
+
     # ========================================================
     # POSITION CAMERA
     # ========================================================
 
     def position_camera_preview(self):
 
-        margin = 12
+        margin = 14
 
-        x = (
-            self.width()
-            -
-            CAMERA_PREVIEW_WIDTH
-            -
-            margin
-        )
+        frame = getattr(self, "canvas_frame", None)
 
-        y = (
-            self.height()
-            -
-            CAMERA_PREVIEW_HEIGHT
-            -
-            margin
-        )
+        if frame is not None:
+            area = frame.geometry()
+        else:
+            area = self.rect()
+
+        x = area.right() - CAMERA_PREVIEW_WIDTH - margin
+        y = area.bottom() - CAMERA_PREVIEW_HEIGHT - margin
 
         self.camera_label.move(
             max(0, x),
@@ -1586,7 +1752,21 @@ class WhiteboardPage(QWidget):
 
     # ========================================================
     # SETUP UI
+    #
+    # One tool dock above the board: tools, history, colours and
+    # Save on top; brush size, opacity, a live brush preview and the
+    # gesture status underneath. Gesture hints sit under the board.
     # ========================================================
+
+    SWATCHES = [
+        ("#172033", "Ink"),
+        ("#F04444", "Red"),
+        ("#2876E8", "Blue"),
+        ("#28C76F", "Green"),
+        ("#FFB020", "Yellow"),
+        ("#FF8B32", "Orange"),
+        ("#9B51E0", "Purple"),
+    ]
 
     def setup_ui(
         self
@@ -1594,108 +1774,42 @@ class WhiteboardPage(QWidget):
 
         from widgets import page_background
 
-        # Same soft-blue page as Saved Files (painted in paintEvent). The
-        # whiteboard is styled for light mode only, so it stays light.
-        self._page_colors = page_background.page_colors(dark=False)
+        # Same soft-blue page as Saved Files (painted in paintEvent);
+        # apply_theme() swaps in the dark surfaces when needed.
+        self._page_colors = page_background.page_colors()
 
-        self.setStyleSheet(page_background.LAYER_RULE + """
-            QWidget {
-                background-color: #F2F8FC;
-                color: #0E2F76;
-                font-family: "Segoe UI";
-            }
-
-            QLabel {
-                background: transparent;
-            }
-
-            QPushButton {
-                background: transparent;
-                border: none;
-                color: #0E2F76;
-            }
-
-            QSlider {
-                background: transparent;
-            }
-
-            QSlider::groove:horizontal {
-                height: 4px;
-                background: #DCE8F5;
-                border-radius: 2px;
-            }
-
-            QSlider::handle:horizontal {
-                width: 11px;
-                height: 11px;
-                margin: -4px 0;
-                background: #0E2F76;
-                border-radius: 6px;
-            }
-
-            QFrame#toolbar {
-                background-color: #EAF2FB;
-                border: 1px solid #BED2E9;
-                border-radius: 10px;
-            }
-
-            QFrame#controlBar {
-                background-color: #EAF2FB;
-                border: 1px solid #BED2E9;
-                border-radius: 10px;
-            }
-
-            QFrame#canvasFrame {
-                background-color: #FFFFFF;
-                border: 1px solid #BED2E9;
-                border-radius: 12px;
-            }
-        """)
+        # Tool buttons and swatches are remembered so apply_theme()
+        # can recolour their icons and rings.
+        self._tool_buttons = []
+        self.swatch_buttons = {}
 
         main_layout = QVBoxLayout(
             self
         )
 
         main_layout.setContentsMargins(
+            32,
             24,
-            18,
-            24,
+            32,
             18
         )
 
         main_layout.setSpacing(
-            10
+            12
         )
 
         # ====================================================
         # HEADER
         # ====================================================
 
-        title = QLabel(
-            "GestureBoard Whiteboard"
-        )
-
-        title.setStyleSheet("""
-            QLabel {
-                font-size: 25px;
-                font-weight: 700;
-                color: #0E2F76;
-            }
-        """)
+        title = QLabel("Whiteboard")
+        title.setObjectName("pageTitle")
 
         subtitle = QLabel(
-            "Move the cursor with the Virtual Mouse (open palm) and draw with "
-            "your index + middle fingers held together."
+            "Draw with your hand through the Virtual Mouse, or with a regular mouse."
         )
+        subtitle.setObjectName("pageSubtitle")
 
-        subtitle.setStyleSheet("""
-            QLabel {
-                font-size: 13px;
-                color: #6482B1;
-            }
-        """)
-
-        # Header row: title + camera/gesture status pill.
         header_row = QHBoxLayout()
         header_row.setSpacing(12)
 
@@ -1707,18 +1821,9 @@ class WhiteboardPage(QWidget):
         header_row.addLayout(title_col)
         header_row.addStretch()
 
-        self.camera_status = QLabel("● Camera ON")
-
-        self.camera_status.setStyleSheet("""
-            QLabel {
-                background-color: #0E2F76;
-                color: #F5FEFF;
-                border-radius: 13px;
-                padding: 6px 14px;
-                font-size: 12px;
-                font-weight: 700;
-            }
-        """)
+        self.camera_status = QLabel("● Camera off")
+        self.camera_status.setObjectName("cameraPill")
+        self.camera_status.setProperty("on", False)
 
         header_row.addWidget(
             self.camera_status,
@@ -1728,468 +1833,160 @@ class WhiteboardPage(QWidget):
         main_layout.addLayout(header_row)
 
         # ====================================================
-        # TOOLBAR
+        # TOOL DOCK
         # ====================================================
 
-        toolbar = QFrame()
+        dock = QFrame()
+        dock.setObjectName("dock")
 
-        toolbar.setObjectName(
-            "toolbar"
-        )
+        dock_layout = QVBoxLayout(dock)
+        dock_layout.setContentsMargins(10, 8, 12, 8)
+        dock_layout.setSpacing(8)
 
-        toolbar.setFixedHeight(
-            52
-        )
+        # ---------- row 1: tools, history, colours, save ----------
 
-        toolbar_layout = QHBoxLayout(
-            toolbar
-        )
+        tools_row = QHBoxLayout()
+        tools_row.setSpacing(4)
 
-        toolbar_layout.setContentsMargins(
-            10,
-            6,
-            10,
-            6
-        )
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(True)
 
-        toolbar_layout.setSpacing(
-            5
-        )
+        self.select_button = self.create_tool_button("select", "Select and move (V)")
+        self.pen_button = self.create_tool_button("pen", "Pen (P)")
+        self.highlighter_button = self.create_tool_button("highlighter", "Highlighter (H)")
+        self.eraser_button = self.create_tool_button("eraser", "Eraser (E)")
 
-        # ====================================================
-        # SELECT
-        # ====================================================
-
-        self.select_button = (
-            self.create_tool_button(
-                "↖",
-                "Select"
+        for name, button in (
+            ("select", self.select_button),
+            ("pen", self.pen_button),
+            ("highlighter", self.highlighter_button),
+            ("eraser", self.eraser_button),
+        ):
+            button.setCheckable(True)
+            self.tool_group.addButton(button)
+            button.clicked.connect(
+                lambda checked=False, tool=name: self.set_tool(tool)
             )
+            tools_row.addWidget(button)
+
+        self.shape_button = self.create_tool_button("shape", "Shapes")
+        self.shape_button.clicked.connect(self.show_shape_menu)
+        tools_row.addWidget(self.shape_button)
+
+        tools_row.addWidget(self.create_separator())
+
+        undo_button = self.create_tool_button("undo", "Undo (Ctrl+Z)")
+        undo_button.clicked.connect(self.canvas_undo)
+        tools_row.addWidget(undo_button)
+
+        redo_button = self.create_tool_button("redo", "Redo (Ctrl+Y)")
+        redo_button.clicked.connect(self.canvas_redo)
+        tools_row.addWidget(redo_button)
+
+        clear_button = self.create_tool_button(
+            "clear", "Clear the whiteboard", danger=True
         )
+        clear_button.clicked.connect(self.clear_canvas)
+        tools_row.addWidget(clear_button)
 
-        self.select_button.clicked.connect(
-            lambda:
-            self.set_tool("select")
-        )
+        tools_row.addWidget(self.create_separator())
 
-        toolbar_layout.addWidget(
-            self.select_button
-        )
+        # Colour swatches: the picked one gets a cyan ring, which shows
+        # on every swatch (navy vanished around the ink colour).
+        self.swatch_group = QButtonGroup(self)
+        self.swatch_group.setExclusive(True)
 
-        # ====================================================
-        # PEN
-        # ====================================================
+        tools_row.addSpacing(4)
 
-        self.pen_button = (
-            self.create_tool_button(
-                "✎",
-                "Pen"
-            )
-        )
+        for color, name in self.SWATCHES:
 
-        self.pen_button.clicked.connect(
-            lambda:
-            self.set_tool("pen")
-        )
-
-        toolbar_layout.addWidget(
-            self.pen_button
-        )
-
-        # ====================================================
-        # HIGHLIGHTER
-        # ====================================================
-
-        self.highlighter_button = (
-            self.create_tool_button(
-                "▰",
-                "Highlighter"
-            )
-        )
-
-        self.highlighter_button.clicked.connect(
-            lambda:
-            self.set_tool("highlighter")
-        )
-
-        toolbar_layout.addWidget(
-            self.highlighter_button
-        )
-
-        # ====================================================
-        # ERASER
-        # ====================================================
-
-        self.eraser_button = (
-            self.create_tool_button(
-                "▱",
-                "Eraser"
-            )
-        )
-
-        self.eraser_button.clicked.connect(
-            lambda:
-            self.set_tool("eraser")
-        )
-
-        toolbar_layout.addWidget(
-            self.eraser_button
-        )
-
-        toolbar_layout.addWidget(
-            self.create_separator()
-        )
-
-        # ====================================================
-        # SHAPE
-        # ====================================================
-
-        self.shape_button = (
-            self.create_tool_button(
-                "□",
-                "Shape"
-            )
-        )
-
-        self.shape_button.clicked.connect(
-            self.show_shape_menu
-        )
-
-        toolbar_layout.addWidget(
-            self.shape_button
-        )
-
-        # ====================================================
-        # UNDO
-        # ====================================================
-
-        undo_button = (
-            self.create_tool_button(
-                "↶",
-                "Undo"
-            )
-        )
-
-        undo_button.clicked.connect(
-            self.canvas_undo
-        )
-
-        toolbar_layout.addWidget(
-            undo_button
-        )
-
-        # ====================================================
-        # REDO
-        # ====================================================
-
-        redo_button = (
-            self.create_tool_button(
-                "↷",
-                "Redo"
-            )
-        )
-
-        redo_button.clicked.connect(
-            self.canvas_redo
-        )
-
-        toolbar_layout.addWidget(
-            redo_button
-        )
-
-        # ====================================================
-        # CLEAR
-        # ====================================================
-
-        clear_button = (
-            self.create_tool_button(
-                "⌫",
-                "Clear Whiteboard"
-            )
-        )
-
-        clear_button.clicked.connect(
-            self.clear_canvas
-        )
-
-        toolbar_layout.addWidget(
-            clear_button
-        )
-
-        toolbar_layout.addWidget(
-            self.create_separator()
-        )
-
-        # ====================================================
-        # COLORS
-        # ====================================================
-
-        colors = [
-            "#172033",
-            "#F04444",
-            "#2876E8",
-            "#28C76F",
-            "#FFB020",
-            "#FF8B32",
-            "#9B51E0",
-        ]
-
-        for color in colors:
-
-            color_button = QPushButton()
-
-            color_button.setFixedSize(
-                28,
-                28
+            swatch = QPushButton()
+            swatch.setCheckable(True)
+            swatch.setFixedSize(30, 30)
+            swatch.setCursor(Qt.PointingHandCursor)
+            swatch.setToolTip(name)
+            swatch.clicked.connect(
+                lambda checked=False, c=color: self.set_color(c)
             )
 
-            color_button.setToolTip(
-                f"Color: {color}"
-            )
+            self.swatch_group.addButton(swatch)
+            self.swatch_buttons[color] = swatch
+            tools_row.addWidget(swatch)
 
-            color_button.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background-color: {color};
-                    border: 3px solid #FFFFFF;
-                    border-radius: 14px;
-                }}
+        tools_row.addStretch()
 
-                QPushButton:hover {{
-                    border: 3px solid #8FAED5;
-                }}
+        save_button = QPushButton("Save")
+        save_button.setObjectName("saveButton")
+        save_button.setCursor(Qt.PointingHandCursor)
+        save_button.setToolTip("Save the whiteboard as an image")
+        save_button.setIcon(tool_icon("save", "#F5FEFF", 18))
+        save_button.setIconSize(QSize(18, 18))
+        save_button.clicked.connect(self.save_whiteboard)
+        tools_row.addWidget(save_button)
 
-                QPushButton:pressed {{
-                    border: 3px solid #0E2F76;
-                }}
-                """
-            )
+        dock_layout.addLayout(tools_row)
 
-            color_button.clicked.connect(
-                lambda checked=False,
-                c=color:
-                self.set_color(c)
-            )
+        rule = QFrame()
+        rule.setObjectName("dockRule")
+        rule.setFixedHeight(1)
+        dock_layout.addWidget(rule)
 
-            toolbar_layout.addWidget(
-                color_button
-            )
+        # ---------- row 2: brush, preview, gesture status ----------
 
-        # ====================================================
-        # SPACER
-        # ====================================================
+        brush_row = QHBoxLayout()
+        brush_row.setContentsMargins(6, 0, 0, 0)
+        brush_row.setSpacing(10)
 
-        spacer = QWidget()
+        self.brush_preview = BrushPreview()
+        brush_row.addWidget(self.brush_preview)
 
-        spacer.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Preferred
-        )
+        brush_row.addSpacing(4)
 
-        toolbar_layout.addWidget(
-            spacer
-        )
+        size_label = QLabel("Size")
+        size_label.setObjectName("controlLabel")
+        brush_row.addWidget(size_label)
 
-        # ====================================================
-        # SAVE
-        # ====================================================
+        self.brush_slider = QSlider(Qt.Horizontal)
+        self.brush_slider.setRange(1, 20)
+        self.brush_slider.setValue(4)
+        self.brush_slider.setFixedWidth(130)
+        self.brush_slider.setCursor(Qt.PointingHandCursor)
+        self.brush_slider.valueChanged.connect(self.change_brush_size)
+        brush_row.addWidget(self.brush_slider)
 
-        save_button = (
-            self.create_tool_button(
-                "▣",
-                "Save Whiteboard"
-            )
-        )
+        self.brush_value = QLabel("4 px")
+        self.brush_value.setObjectName("controlValue")
+        self.brush_value.setFixedWidth(40)
+        brush_row.addWidget(self.brush_value)
 
-        save_button.clicked.connect(
-            self.save_whiteboard
-        )
+        brush_row.addSpacing(10)
 
-        toolbar_layout.addWidget(
-            save_button
-        )
+        opacity_label = QLabel("Opacity")
+        opacity_label.setObjectName("controlLabel")
+        brush_row.addWidget(opacity_label)
 
-        main_layout.addWidget(
-            toolbar
-        )
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(10, 100)
+        self.opacity_slider.setValue(100)
+        self.opacity_slider.setFixedWidth(130)
+        self.opacity_slider.setCursor(Qt.PointingHandCursor)
+        self.opacity_slider.valueChanged.connect(self.change_opacity)
+        brush_row.addWidget(self.opacity_slider)
 
-        # ====================================================
-        # CONTROL BAR
-        # ====================================================
+        self.opacity_value = QLabel("100%")
+        self.opacity_value.setObjectName("controlValue")
+        self.opacity_value.setFixedWidth(40)
+        brush_row.addWidget(self.opacity_value)
 
-        control_bar = QFrame()
+        brush_row.addStretch()
 
-        control_bar.setObjectName(
-            "controlBar"
-        )
+        self.gesture_status = QLabel()
+        self.gesture_status.setObjectName("statusPill")
+        brush_row.addWidget(self.gesture_status)
 
-        control_bar.setFixedHeight(
-            48
-        )
+        dock_layout.addLayout(brush_row)
 
-        controls = QHBoxLayout(
-            control_bar
-        )
-
-        controls.setContentsMargins(
-            12,
-            4,
-            12,
-            4
-        )
-
-        controls.setSpacing(
-            10
-        )
-
-        # ====================================================
-        # SIZE
-        # ====================================================
-
-        brush_label = QLabel(
-            "Size"
-        )
-
-        brush_label.setStyleSheet("""
-            QLabel {
-                color: #6682AC;
-                font-size: 12px;
-            }
-        """)
-
-        controls.addWidget(
-            brush_label
-        )
-
-        self.brush_slider = QSlider(
-            Qt.Horizontal
-        )
-
-        self.brush_slider.setRange(
-            1,
-            20
-        )
-
-        self.brush_slider.setValue(
-            4
-        )
-
-        self.brush_slider.setFixedWidth(
-            120
-        )
-
-        self.brush_slider.valueChanged.connect(
-            self.change_brush_size
-        )
-
-        controls.addWidget(
-            self.brush_slider
-        )
-
-        # ====================================================
-        # OPACITY
-        # ====================================================
-
-        opacity_label = QLabel(
-            "Opacity"
-        )
-
-        opacity_label.setStyleSheet("""
-            QLabel {
-                color: #6682AC;
-                font-size: 12px;
-            }
-        """)
-
-        controls.addWidget(
-            opacity_label
-        )
-
-        self.opacity_slider = QSlider(
-            Qt.Horizontal
-        )
-
-        self.opacity_slider.setRange(
-            10,
-            100
-        )
-
-        self.opacity_slider.setValue(
-            100
-        )
-
-        self.opacity_slider.setFixedWidth(
-            120
-        )
-
-        self.opacity_slider.valueChanged.connect(
-            self.change_opacity
-        )
-
-        controls.addWidget(
-            self.opacity_slider
-        )
-
-        # ----------------------------------------------------
-        # GESTURE GUIDE (aligned with the tools / size row)
-        # ----------------------------------------------------
-
-        self.guide_label = QLabel(
-            "🖐️ Open hand: cursor    •    "
-            "✊ Fist: click    •    "
-            "✌️ Peace: draw cursor    •    "
-            "✌️ Together: draw"
-        )
-
-        self.guide_label.setStyleSheet("""
-            QLabel {
-                color: #46638F;
-                font-size: 12px;
-                padding-left: 6px;
-            }
-        """)
-
-        controls.addWidget(
-            self.guide_label
-        )
-
-        controls_spacer = QWidget()
-
-        controls_spacer.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Preferred
-        )
-
-        controls.addWidget(
-            controls_spacer
-        )
-
-        # ====================================================
-        # GESTURE STATUS
-        # ====================================================
-
-        self.gesture_status = QLabel(
-            "● Open Palm = Cursor"
-        )
-
-        self.gesture_status.setStyleSheet("""
-            QLabel {
-                background-color: #E5F0FA;
-                color: #5474A8;
-                border-radius: 14px;
-                padding: 6px 14px;
-                font-size: 11px;
-                font-weight: 600;
-            }
-        """)
-
-        controls.addWidget(
-            self.gesture_status
-        )
-
-        main_layout.addWidget(
-            control_bar
-        )
+        main_layout.addWidget(dock)
 
         # ====================================================
         # CANVAS FRAME
@@ -2201,15 +1998,17 @@ class WhiteboardPage(QWidget):
             "canvasFrame"
         )
 
+        self.canvas_frame = canvas_frame
+
         canvas_layout = QVBoxLayout(
             canvas_frame
         )
 
         canvas_layout.setContentsMargins(
-            0,
-            0,
-            0,
-            0
+            3,
+            3,
+            3,
+            3
         )
 
         canvas_layout.setSpacing(
@@ -2236,6 +2035,40 @@ class WhiteboardPage(QWidget):
             1
         )
 
+        # Keep the camera preview tucked into the board's corner.
+        canvas_frame.installEventFilter(self)
+
+        # ====================================================
+        # GESTURE HINTS (same list as the tutorial)
+        # ====================================================
+
+        hints_row = QGridLayout()
+        hints_row.setHorizontalSpacing(8)
+        hints_row.setVerticalSpacing(6)
+
+        try:
+            from gui.tutorial import STEPS
+
+            hints = STEPS[2]["groups"][0][1]
+        except Exception:
+            hints = []
+
+        self.hint_chips = []
+
+        for icon, name, action in hints:
+            chip = QLabel(f"{icon}  <b>{name}</b>  {action}")
+            chip.setObjectName("hintChip")
+            chip.setTextFormat(Qt.RichText)
+            self.hint_chips.append(chip)
+
+        self.hints_grid = hints_row
+        self._hint_columns = 0
+        self._reflow_hints(len(self.hint_chips))
+
+        self.guide_label = None
+
+        main_layout.addLayout(hints_row)
+
         # ====================================================
         # DEFAULT
         # ====================================================
@@ -2244,7 +2077,324 @@ class WhiteboardPage(QWidget):
             "pen"
         )
 
+        self.swatch_buttons[self.current_color].setChecked(True)
+        self.brush_preview.set_brush(self.current_color, 4, 100)
+
+        self._set_gesture_status("Open palm moves the cursor", "info")
+
+        self.apply_theme()
+
         self.position_camera_preview()
+
+    # ========================================================
+    # THEME (light / dark)
+    # ========================================================
+
+    # The board itself stays white in both themes (it is a whiteboard,
+    # and saved images keep a white background); only the chrome
+    # around it follows the app theme.
+    LIGHT_PALETTE = {
+        "page": "#F2F8FC",
+        "text": "#0E2F76",
+        "muted": "#5A6B93",
+        "dock": "#EAF2FB",
+        "border": "#BED2E9",
+        "hover": "#C9DAEE",
+        "pressed": "#BED2E9",
+        "primary": "#0E2F76",
+        "primary_hover": "#1B4499",
+        "danger_hover": "#F3DCDA",
+        "groove": "#C9DAEE",
+        "handle": "#FFFFFF",
+        "pill": "#DCE7F3",
+        "move_bg": "#E3F4EA",
+        "move_text": "#23804F",
+        "click_bg": "#FFF0DD",
+        "click_text": "#A8621A",
+        "draw_bg": "#DCE6FA",
+        "draw_text": "#0E2F76",
+        "menu": "#F5F9FD",
+        "swatch_ring": "#EAF2FB",
+        "tool_icon": "#3D5A8A",
+        "danger_icon": "#B83227",
+    }
+
+    DARK_PALETTE = {
+        "page": "#0B1A30",
+        "text": "#E6EEF8",
+        "muted": "#9DB2CC",
+        "dock": "#132742",
+        "border": "#27496E",
+        "hover": "#1B3A63",
+        "pressed": "#27496E",
+        "primary": "#3E7CF7",
+        "primary_hover": "#5A92FA",
+        "danger_hover": "#4A2328",
+        "groove": "#27496E",
+        "handle": "#0B1A30",
+        "pill": "#1B3A63",
+        "move_bg": "#173B2E",
+        "move_text": "#5FD39A",
+        "click_bg": "#3D2C12",
+        "click_text": "#F2B45A",
+        "draw_bg": "#1B3060",
+        "draw_text": "#8FB4FF",
+        "menu": "#132742",
+        "swatch_ring": "#4A6F9A",
+        "tool_icon": "#9DB2CC",
+        "danger_icon": "#F07A70",
+    }
+
+    @property
+    def _palette(self):
+
+        from settings import theme as app_theme
+
+        return self.DARK_PALETTE if app_theme.is_dark() else self.LIGHT_PALETTE
+
+    def apply_theme(self):
+
+        from widgets import page_background
+
+        self._page_colors = page_background.page_colors()
+
+        p = self._palette
+
+        self.setStyleSheet(page_background.LAYER_RULE + f"""
+            QWidget {{
+                background-color: {p['page']};
+                color: {p['text']};
+                font-family: "Segoe UI";
+            }}
+
+            QLabel {{
+                background: transparent;
+            }}
+
+            QLabel#pageTitle {{
+                font-size: 28px;
+                font-weight: 800;
+            }}
+
+            QLabel#pageSubtitle {{
+                font-size: 14px;
+                color: {p['muted']};
+            }}
+
+            /* ---------- tool dock ---------- */
+
+            QFrame#dock {{
+                background-color: {p['dock']};
+                border: 1px solid {p['border']};
+                border-radius: 14px;
+            }}
+
+            QFrame#dockRule {{
+                background-color: {p['border']};
+                border: none;
+            }}
+
+            QFrame#divider {{
+                background-color: {p['border']};
+                border: none;
+            }}
+
+            QPushButton#tool {{
+                background: transparent;
+                border: none;
+                border-radius: 10px;
+            }}
+
+            QPushButton#tool:hover {{
+                background: {p['hover']};
+            }}
+
+            QPushButton#tool:pressed {{
+                background: {p['pressed']};
+            }}
+
+            QPushButton#tool:checked {{
+                background: {p['primary']};
+            }}
+
+            QPushButton#tool:focus {{
+                outline: none;
+            }}
+
+            QPushButton#dangerTool {{
+                background: transparent;
+                border: none;
+                border-radius: 10px;
+            }}
+
+            QPushButton#dangerTool:hover {{
+                background: {p['danger_hover']};
+            }}
+
+            QPushButton#saveButton {{
+                background: {p['primary']};
+                color: #F5FEFF;
+                border: none;
+                border-radius: 10px;
+                padding: 9px 18px 9px 14px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+
+            QPushButton#saveButton:hover {{
+                background: {p['primary_hover']};
+            }}
+
+            QLabel#controlLabel {{
+                font-size: 12px;
+                font-weight: 600;
+                color: {p['muted']};
+            }}
+
+            QLabel#controlValue {{
+                font-size: 12px;
+                font-weight: 700;
+            }}
+
+            QSlider {{
+                background: transparent;
+                min-height: 20px;
+            }}
+
+            QSlider::groove:horizontal {{
+                height: 5px;
+                background: {p['groove']};
+                border-radius: 2px;
+            }}
+
+            QSlider::sub-page:horizontal {{
+                background: {p['primary']};
+                border-radius: 2px;
+            }}
+
+            QSlider::handle:horizontal {{
+                width: 12px;
+                height: 12px;
+                margin: -5px 0;
+                background: {p['handle']};
+                border: 2px solid {p['primary']};
+                border-radius: 8px;
+            }}
+
+            /* ---------- status pills ---------- */
+
+            QLabel#statusPill, QLabel#cameraPill {{
+                background: {p['pill']};
+                color: {p['muted']};
+                border-radius: 13px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+
+            QLabel#statusPill[tone="move"], QLabel#cameraPill[on="true"] {{
+                background: {p['move_bg']};
+                color: {p['move_text']};
+            }}
+
+            QLabel#statusPill[tone="click"] {{
+                background: {p['click_bg']};
+                color: {p['click_text']};
+            }}
+
+            QLabel#statusPill[tone="draw"] {{
+                background: {p['draw_bg']};
+                color: {p['draw_text']};
+            }}
+
+            /* ---------- board and hints ---------- */
+
+            QFrame#canvasFrame {{
+                background-color: #FFFFFF;
+                border: 1px solid {p['border']};
+                border-radius: 8px;
+            }}
+
+            QLabel#hintChip {{
+                background: {p['dock']};
+                border: 1px solid {p['border']};
+                border-radius: 12px;
+                padding: 5px 12px;
+                font-size: 12px;
+                color: {p['muted']};
+            }}
+        """)
+
+        for button, icon, danger in self._tool_buttons:
+            self._paint_tool_icon(button, icon, danger)
+
+        for color, swatch in self.swatch_buttons.items():
+            swatch.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: {color};
+                    border: 3px solid {p['swatch_ring']};
+                    border-radius: 15px;
+                }}
+
+                QPushButton:hover {{
+                    border: 3px solid {p['hover']};
+                }}
+
+                QPushButton:checked {{
+                    border: 3px solid #22C3DE;
+                }}
+
+                QPushButton:focus {{
+                    outline: none;
+                }}
+                """
+            )
+
+        self.brush_preview.set_ring(p["border"])
+
+        self.update()
+
+    def _reflow_hints(self, columns):
+        """Lay the gesture hint chips out in `columns` columns."""
+
+        columns = max(1, columns)
+
+        if columns == self._hint_columns:
+            return
+
+        self._hint_columns = columns
+
+        for chip in self.hint_chips:
+            self.hints_grid.removeWidget(chip)
+
+        for i, chip in enumerate(self.hint_chips):
+            self.hints_grid.addWidget(
+                chip, i // columns, i % columns, Qt.AlignLeft
+            )
+
+        # Empty column after the chips soaks up the extra width.
+        for c in range(len(self.hint_chips) + 1):
+            self.hints_grid.setColumnStretch(c, 0)
+        self.hints_grid.setColumnStretch(columns, 1)
+
+    def eventFilter(self, watched, event):
+
+        if (
+            watched is getattr(self, "canvas_frame", None)
+            and event.type() in (QEvent.Resize, QEvent.Move)
+        ):
+            self.position_camera_preview()
+
+        return super().eventFilter(watched, event)
+
+    def _set_gesture_status(self, text, tone="info"):
+        """Update the status pill; tone is info, move, click or draw."""
+
+        self.gesture_status.setText(f"●  {text}")
+        self.gesture_status.setProperty("tone", tone)
+        self.gesture_status.style().unpolish(self.gesture_status)
+        self.gesture_status.style().polish(self.gesture_status)
 
     # ========================================================
     # TOOL BUTTON
@@ -2253,43 +2403,34 @@ class WhiteboardPage(QWidget):
     def create_tool_button(
         self,
         icon,
-        tooltip
+        tooltip,
+        danger=False
     ):
 
-        button = QPushButton(
-            icon
-        )
+        button = QPushButton()
+        button.setObjectName("dangerTool" if danger else "tool")
+        button.setFixedSize(40, 40)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(tooltip)
 
-        button.setFixedSize(
-            48,
-            44
-        )
+        button.setIconSize(QSize(20, 20))
 
-        button.setToolTip(
-            tooltip
-        )
-
-        button.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 9px;
-                color: #3D5A8A;
-                font-size: 24px;
-                font-weight: 600;
-            }
-
-            QPushButton:hover {
-                background-color: #E7F0FA;
-                color: #0E2F76;
-            }
-
-            QPushButton:pressed {
-                background-color: #D5E4F5;
-            }
-        """)
+        self._tool_buttons.append((button, icon, danger))
+        self._paint_tool_icon(button, icon, danger)
 
         return button
+
+    def _paint_tool_icon(self, button, icon, danger):
+
+        # Muted when idle, white on the "selected" fill.
+        p = self._palette
+        idle = p["danger_icon"] if danger else p["tool_icon"]
+
+        qicon = QIcon()
+        qicon.addPixmap(tool_pixmap(icon, idle, 20), QIcon.Normal, QIcon.Off)
+        qicon.addPixmap(tool_pixmap(icon, "#F5FEFF", 20), QIcon.Normal, QIcon.On)
+
+        button.setIcon(qicon)
 
     # ========================================================
     # SEPARATOR
@@ -2300,24 +2441,15 @@ class WhiteboardPage(QWidget):
     ):
 
         separator = QFrame()
+        separator.setObjectName("divider")
+        separator.setFixedSize(1, 26)
 
-        separator.setFrameShape(
-            QFrame.VLine
-        )
+        wrapper = QWidget()
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(6, 0, 6, 0)
+        layout.addWidget(separator, 0, Qt.AlignVCenter)
 
-        separator.setFixedHeight(
-            25
-        )
-
-        separator.setStyleSheet("""
-            QFrame {
-                color: #D7E3F1;
-                background-color: #D7E3F1;
-                border: none;
-            }
-        """)
-
-        return separator
+        return wrapper
 
     # ========================================================
     # SHAPE MENU
@@ -2329,26 +2461,38 @@ class WhiteboardPage(QWidget):
             self
         )
 
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #EAF3FA;
-                border: 1px solid #D7E5F3;
-                padding: 5px;
-            }
+        p = self._palette
 
-            QMenu::item {
-                padding: 8px 25px;
-                color: #0E2F76;
-            }
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {p['menu']};
+                border: 1px solid {p['border']};
+                border-radius: 10px;
+                padding: 6px;
+            }}
 
-            QMenu::item:selected {
-                background-color: #E7F0FA;
-            }
+            QMenu::item {{
+                padding: 8px 26px 8px 14px;
+                color: {p['text']};
+                border-radius: 6px;
+            }}
+
+            QMenu::item:selected {{
+                background-color: {p['pill']};
+            }}
+
+            QMenu::separator {{
+                height: 1px;
+                background: {p['border']};
+                margin: 4px 8px;
+            }}
         """)
 
         auto_action = menu.addAction(
-            "Automatic Shape"
+            "Automatic shape"
         )
+
+        menu.addSeparator()
 
         line_action = menu.addAction(
             "Line"
@@ -2374,7 +2518,7 @@ class WhiteboardPage(QWidget):
             self.shape_button.mapToGlobal(
                 QPoint(
                     0,
-                    self.shape_button.height()
+                    self.shape_button.height() + 4
                 )
             )
         )
@@ -2411,8 +2555,8 @@ class WhiteboardPage(QWidget):
             "pen"
         )
 
-        self.gesture_status.setText(
-            f"Shape Mode: {self.canvas.shape_mode.title()}"
+        self._set_gesture_status(
+            f"Shape: {self.canvas.shape_mode}", "draw"
         )
 
     # ========================================================
@@ -2431,51 +2575,14 @@ class WhiteboardPage(QWidget):
         )
 
         buttons = {
+            "select": self.select_button,
             "pen": self.pen_button,
             "highlighter": self.highlighter_button,
             "eraser": self.eraser_button,
         }
 
-        normal_style = """
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 8px;
-                color: #5474A8;
-                font-size: 19px;
-                font-weight: 500;
-            }
-
-            QPushButton:hover {
-                background-color: #E7F0FA;
-                color: #0E2F76;
-            }
-        """
-
-        active_style = """
-            QPushButton {
-                background-color: #B7CCEA;
-                border: none;
-                border-radius: 8px;
-                color: #0E2F76;
-                font-size: 19px;
-                font-weight: 700;
-            }
-        """
-
-        for button in buttons.values():
-
-            button.setStyleSheet(
-                normal_style
-            )
-
         if tool in buttons:
-
-            buttons[
-                tool
-            ].setStyleSheet(
-                active_style
-            )
+            buttons[tool].setChecked(True)
 
     # ========================================================
     # COLOR
@@ -2492,12 +2599,15 @@ class WhiteboardPage(QWidget):
             color
         )
 
-        self.set_tool(
-            "pen"
+        if color in getattr(self, "swatch_buttons", {}):
+            self.swatch_buttons[color].setChecked(True)
+
+        self.brush_preview.set_brush(
+            color, self.brush_slider.value(), self.opacity_slider.value()
         )
 
-        self.gesture_status.setText(
-            "Color Selected • Open Palm = Cursor"
+        self.set_tool(
+            "pen"
         )
 
     # ========================================================
@@ -2513,6 +2623,11 @@ class WhiteboardPage(QWidget):
             value
         )
 
+        self.brush_value.setText(f"{value} px")
+        self.brush_preview.set_brush(
+            self.current_color, value, self.opacity_slider.value()
+        )
+
     # ========================================================
     # OPACITY
     # ========================================================
@@ -2524,6 +2639,11 @@ class WhiteboardPage(QWidget):
 
         self.canvas.set_opacity(
             value
+        )
+
+        self.opacity_value.setText(f"{value}%")
+        self.brush_preview.set_brush(
+            self.current_color, self.brush_slider.value(), value
         )
 
     # ========================================================
@@ -2766,8 +2886,8 @@ class WhiteboardPage(QWidget):
 
             self.finish_gesture_drawing()
 
-            self.gesture_status.setText(
-                "No Hand Detected"
+            self._set_gesture_status(
+                "No hand detected", "info"
             )
 
         self.display_camera(
@@ -3005,20 +3125,9 @@ class WhiteboardPage(QWidget):
                 hand
             )
 
-            self.gesture_status.setText(
-                "● Open Palm = Cursor"
+            self._set_gesture_status(
+                "Open palm moves the cursor", "move"
             )
-
-            self.gesture_status.setStyleSheet("""
-                QLabel {
-                    background-color: #EAF8EF;
-                    color: #2A9561;
-                    border-radius: 14px;
-                    padding: 6px 14px;
-                    font-size: 11px;
-                    font-weight: 600;
-                }
-            """)
 
         # ====================================================
         # CLOSED PALM
@@ -3034,20 +3143,9 @@ class WhiteboardPage(QWidget):
 
             self.closed_palm_click()
 
-            self.gesture_status.setText(
-                "● Closed Palm = Left Click"
+            self._set_gesture_status(
+                "Closed hand clicks", "click"
             )
-
-            self.gesture_status.setStyleSheet("""
-                QLabel {
-                    background-color: #FFF2E2;
-                    color: #B56C19;
-                    border-radius: 14px;
-                    padding: 6px 14px;
-                    font-size: 11px;
-                    font-weight: 600;
-                }
-            """)
 
         # ====================================================
         # DRAW
@@ -3059,20 +3157,9 @@ class WhiteboardPage(QWidget):
                 hand
             )
 
-            self.gesture_status.setText(
-                "● Index + Middle Together = Draw"
+            self._set_gesture_status(
+                "Drawing with two fingers", "draw"
             )
-
-            self.gesture_status.setStyleSheet("""
-                QLabel {
-                    background-color: #EAF2FF;
-                    color: #0E2F76;
-                    border-radius: 14px;
-                    padding: 6px 14px;
-                    font-size: 11px;
-                    font-weight: 600;
-                }
-            """)
 
         # ====================================================
         # NONE
@@ -3082,20 +3169,9 @@ class WhiteboardPage(QWidget):
 
             self.finish_gesture_drawing()
 
-            self.gesture_status.setText(
-                "Open Palm = Cursor • Closed Palm = Click"
+            self._set_gesture_status(
+                "Show your hand to the camera", "info"
             )
-
-            self.gesture_status.setStyleSheet("""
-                QLabel {
-                    background-color: #E5F0FA;
-                    color: #5474A8;
-                    border-radius: 14px;
-                    padding: 6px 14px;
-                    font-size: 11px;
-                    font-weight: 600;
-                }
-            """)
 
         self.previous_gesture = gesture
 

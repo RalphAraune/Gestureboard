@@ -440,6 +440,7 @@ class MainWindow(QMainWindow):
             self.camera_setup,
             self.presentation,
             self.virtual_mouse,
+            self.whiteboard,
             self.splash,
         ):
 
