@@ -1,4 +1,6 @@
+import math
 import sys
+import threading
 import time
 from collections import deque
 
@@ -12,7 +14,9 @@ except Exception as e:
     print("MediaPipe import error:", e)
     mp = None
 
-from PyQt5.QtCore import Qt, QTimer, QSize, QRectF, QPointF
+from PyQt5.QtCore import (
+    Qt, QSize, QRectF, QPointF, QObject, pyqtSignal
+)
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QPen
 from PyQt5.QtWidgets import (
     QWidget,
@@ -92,6 +96,22 @@ def native_scroll(clicks):
     _user32.mouse_event(
         _MOUSEEVENTF_WHEEL, 0, 0, int(clicks * 120), 0
     )
+
+
+def native_move(x, y):
+    """Move the cursor instantly.
+
+    pyautogui.moveTo() sleeps for pyautogui.PAUSE after every call,
+    which on its own adds a visible delay to every camera frame.
+    """
+
+    if _user32 is None:
+
+        pyautogui.moveTo(int(x), int(y), duration=0, _pause=False)
+
+        return
+
+    _user32.SetCursorPos(int(x), int(y))
 
 
 # ==============================================================
@@ -268,6 +288,208 @@ class EdgeTrigger:
                 self.fired = False
 
         return False
+
+
+# ==============================================================
+# ONE EURO FILTER
+#
+# Adaptive smoothing (Casiez et al. 2012): heavy smoothing while the
+# hand is almost still (no jitter), almost none while it moves fast
+# (no lag). A fixed exponential filter can only trade one for the other.
+# ==============================================================
+
+class OneEuroFilter:
+
+    def __init__(self, min_cutoff=1.0, beta=0.01, d_cutoff=1.0):
+
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+
+        self.reset()
+
+    def reset(self):
+
+        self.x = None
+        self.dx = 0.0
+        self.t = None
+
+    @staticmethod
+    def _alpha(cutoff, dt):
+
+        tau = 1.0 / (2.0 * math.pi * cutoff)
+
+        return 1.0 / (1.0 + tau / dt)
+
+    def __call__(self, value, t):
+
+        if self.x is None:
+
+            self.x = value
+            self.t = t
+
+            return value
+
+        dt = max(1e-3, t - self.t)
+        self.t = t
+
+        dx = (value - self.x) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        self.dx = self.dx + a_d * (dx - self.dx)
+
+        cutoff = self.min_cutoff + self.beta * abs(self.dx)
+        a = self._alpha(cutoff, dt)
+        self.x = self.x + a * (value - self.x)
+
+        return self.x
+
+
+# ==============================================================
+# CAMERA WORKER
+#
+# Two background threads keep the UI thread free:
+#   * the grabber reads the webcam as fast as it delivers, keeping
+#     only the newest frame, so the driver never queues stale ones;
+#   * the detector runs MediaPipe on the newest frame and hands the
+#     result to the UI thread.
+# Results are dropped (not queued) while the UI is still busy with
+# the previous one, so the cursor always follows the current hand.
+# ==============================================================
+
+class _Bridge(QObject):
+
+    ready = pyqtSignal()
+
+
+class CameraWorker:
+
+    def __init__(self, camera, hands, mp_hands, mp_drawing):
+
+        self.camera = camera
+        self.hands = hands
+        self.mp_hands = mp_hands
+        self.mp_drawing = mp_drawing
+
+        self.bridge = _Bridge()
+        self.ready = self.bridge.ready
+
+        self.paused = False
+
+        self._stop = threading.Event()
+        self._new_frame = threading.Condition()
+
+        self._frame = None
+        self._frame_time = 0.0
+        self._frame_seq = 0
+
+        self._result_lock = threading.Lock()
+        self._result = None
+        self._pending = False
+
+        self._threads = [
+            threading.Thread(target=self._grab_loop, daemon=True),
+            threading.Thread(target=self._detect_loop, daemon=True),
+        ]
+
+    def start(self):
+
+        for thread in self._threads:
+            thread.start()
+
+    def stop(self):
+
+        self._stop.set()
+
+        with self._new_frame:
+            self._new_frame.notify_all()
+
+        for thread in self._threads:
+            thread.join(timeout=1.0)
+
+    def take(self):
+        """Return the newest (frame, hand, time) result, or None."""
+
+        with self._result_lock:
+
+            result = self._result
+            self._result = None
+            self._pending = False
+
+        return result
+
+    def _grab_loop(self):
+
+        while not self._stop.is_set():
+
+            ok, frame = self.camera.read()
+
+            if not ok:
+                time.sleep(0.01)
+                continue
+
+            with self._new_frame:
+
+                self._frame = frame
+                self._frame_time = time.monotonic()
+                self._frame_seq += 1
+
+                self._new_frame.notify()
+
+    def _detect_loop(self):
+
+        seen = 0
+
+        while not self._stop.is_set():
+
+            with self._new_frame:
+
+                while self._frame_seq == seen and not self._stop.is_set():
+                    self._new_frame.wait(0.2)
+
+                if self._stop.is_set():
+                    return
+
+                frame = self._frame
+                stamp = self._frame_time
+                seen = self._frame_seq
+
+            if self.paused:
+                continue
+
+            frame = cv2.flip(frame, 1)
+
+            hand = None
+
+            if self.hands is not None:
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb.flags.writeable = False
+
+                try:
+                    results = self.hands.process(rgb)
+                except Exception as exc:
+                    print("Virtual mouse: hand tracking failed:", exc)
+                    results = None
+
+                if results is not None and results.multi_hand_landmarks:
+
+                    hand = results.multi_hand_landmarks[0]
+
+                    self.mp_drawing.draw_landmarks(
+                        frame,
+                        hand,
+                        self.mp_hands.HAND_CONNECTIONS
+                    )
+
+            with self._result_lock:
+
+                self._result = (frame, hand, stamp)
+
+                notify = not self._pending
+                self._pending = True
+
+            if notify:
+                self.ready.emit()
 
 
 # ==============================================================
@@ -507,11 +729,10 @@ class VirtualMousePage(QWidget):
         self.previous_x = None
         self.previous_y = None
 
-        # Exponential smoothing for the cursor (lower = steadier, less shaky).
-        self.smoothing = 0.4
-
-        # Ignore sub-pixel hand jitter so the cursor does not tremble.
-        self.dead_zone = 4
+        # Adaptive cursor smoothing: steady when the hand is still,
+        # responsive when it moves (see OneEuroFilter).
+        self.filter_x = OneEuroFilter(min_cutoff=0.8, beta=0.015)
+        self.filter_y = OneEuroFilter(min_cutoff=0.8, beta=0.015)
 
         self.last_gesture = "None"
 
@@ -543,14 +764,10 @@ class VirtualMousePage(QWidget):
         self._frame_times = deque(maxlen=30)
 
         # ======================================================
-        # TIMER
+        # CAMERA WORKER (background capture + hand detection)
         # ======================================================
 
-        self.timer = QTimer(self)
-
-        self.timer.timeout.connect(
-            self.update_camera
-        )
+        self.worker = None
 
         # ======================================================
         # BUILD UI
@@ -1204,6 +1421,18 @@ class VirtualMousePage(QWidget):
         # FIXED CAMERA RESOLUTION
         # ------------------------------------------------------
 
+        # MJPG lets most USB webcams deliver full frame rate at this
+        # resolution (raw YUY2 often drops to 15 fps or less).
+        try:
+
+            self.camera.set(
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc(*"MJPG")
+            )
+
+        except Exception:
+            pass
+
         self.camera.set(
             cv2.CAP_PROP_FRAME_WIDTH,
             self.camera_width
@@ -1213,6 +1442,16 @@ class VirtualMousePage(QWidget):
             cv2.CAP_PROP_FRAME_HEIGHT,
             self.camera_height
         )
+
+        try:
+
+            self.camera.set(
+                cv2.CAP_PROP_FPS,
+                30
+            )
+
+        except Exception:
+            pass
 
         # ------------------------------------------------------
         # CAMERA STABILITY
@@ -1272,8 +1511,7 @@ class VirtualMousePage(QWidget):
 
         # Reset cursor smoothing so the cursor does not jump
         # from an old hand position when tracking starts.
-        self.previous_x = None
-        self.previous_y = None
+        self.reset_cursor_filter()
 
         self.frame_count = 0
         self._frame_times.clear()
@@ -1283,12 +1521,43 @@ class VirtualMousePage(QWidget):
             "live"
         )
 
-        # 25 ms ≈ 40 FPS target.
-        # OpenCV/MediaPipe may naturally run below this depending
-        # on the computer and webcam.
-        if not self.timer.isActive():
+        if self.worker is None:
 
-            self.timer.start(25)
+            self.worker = CameraWorker(
+                self.camera,
+                self.hands,
+                self.mp_hands,
+                self.mp_drawing
+            )
+
+            self.worker.ready.connect(self.update_camera)
+
+            self.worker.start()
+
+        self.worker.paused = False
+
+    def stop_worker(self):
+        """Stop the background threads before the camera is released."""
+
+        if self.worker is None:
+            return
+
+        try:
+            self.worker.ready.disconnect(self.update_camera)
+        except TypeError:
+            pass
+
+        self.worker.stop()
+        self.worker = None
+
+    def reset_cursor_filter(self):
+        """Forget the old hand position so the cursor does not jump."""
+
+        self.previous_x = None
+        self.previous_y = None
+
+        self.filter_x.reset()
+        self.filter_y.reset()
 
     # ==========================================================
     # PAUSE
@@ -1300,6 +1569,9 @@ class VirtualMousePage(QWidget):
             return
 
         self.camera_paused = True
+
+        if self.worker is not None:
+            self.worker.paused = True
 
         self.reset_gesture_status()
 
@@ -1320,8 +1592,7 @@ class VirtualMousePage(QWidget):
         # The user explicitly stopped tracking.
         self.camera_was_running = False
 
-        if self.timer.isActive():
-            self.timer.stop()
+        self.stop_worker()
 
         if self.camera:
 
@@ -1332,8 +1603,7 @@ class VirtualMousePage(QWidget):
         self.latest_frame = None
         self.latest_hand = None
 
-        self.previous_x = None
-        self.previous_y = None
+        self.reset_cursor_filter()
 
         self.last_gesture = "None"
 
@@ -1366,8 +1636,7 @@ class VirtualMousePage(QWidget):
         if self.camera_running:
             self.camera_was_running = True
 
-        if self.timer.isActive():
-            self.timer.stop()
+        self.stop_worker()
 
         if self.camera:
             self.camera.release()
@@ -1379,8 +1648,7 @@ class VirtualMousePage(QWidget):
         self.camera_running = False
         self.camera_paused = False
 
-        self.previous_x = None
-        self.previous_y = None
+        self.reset_cursor_filter()
 
         self.reset_gesture_status()
 
@@ -1420,29 +1688,23 @@ class VirtualMousePage(QWidget):
     # ==========================================================
 
     def update_camera(self):
+        """Handle the newest frame from the camera worker."""
 
-        if not self.camera:
+        if self.worker is None or self.camera_paused:
             return
 
-        if self.camera_paused:
+        result = self.worker.take()
+
+        if result is None:
             return
 
-        success, frame = self.camera.read()
+        # Mirrored, with landmarks already drawn by the worker.
+        frame, hand, stamp = result
 
-        if not success:
-            return
-
-        # ------------------------------------------------------
-        # MIRROR CAMERA
-        # ------------------------------------------------------
-
-        frame = cv2.flip(
-            frame,
-            1
-        )
+        self._frame_stamp = stamp
 
         # ------------------------------------------------------
-        # MEDIAPIPE
+        # GESTURES
         # ------------------------------------------------------
 
         gesture = "None"
@@ -1450,34 +1712,9 @@ class VirtualMousePage(QWidget):
         # If MediaPipe is unavailable, just show raw camera feed.
         if self.hands is not None:
 
-            rgb = cv2.cvtColor(
-                frame,
-                cv2.COLOR_BGR2RGB
-            )
-
-            rgb.flags.writeable = False
-
-            results = self.hands.process(
-                rgb
-            )
-
-            rgb.flags.writeable = True
-
-            # --------------------------------------------------
-            # HAND DETECTED
-            # --------------------------------------------------
-
-            if results.multi_hand_landmarks:
-
-                hand = results.multi_hand_landmarks[0]
+            if hand is not None:
 
                 self.latest_hand = hand
-
-                self.mp_drawing.draw_landmarks(
-                    frame,
-                    hand,
-                    self.mp_hands.HAND_CONNECTIONS
-                )
 
                 gesture = self.detect_gesture(
                     hand
@@ -1491,6 +1728,11 @@ class VirtualMousePage(QWidget):
             else:
 
                 self.latest_hand = None
+
+                # The filter must not blend an old hand position
+                # into the first frame after the hand comes back.
+                self.filter_x.reset()
+                self.filter_y.reset()
 
                 self.reset_gesture_status()
 
@@ -1751,6 +1993,10 @@ class VirtualMousePage(QWidget):
 
                 self.previous_x, self.previous_y = target
 
+                # Continue smoothing from the click point, not from
+                # where the closing hand had dragged the cursor.
+                self.filter_x.x, self.filter_y.x = map(float, target)
+
             else:
 
                 native_click(button=button)
@@ -1843,24 +2089,12 @@ class VirtualMousePage(QWidget):
             * self.screen_height
         )
 
-        if self.previous_x is None:
+        # Filter on the camera frame's capture time, so detection
+        # speed does not change how smooth the cursor feels.
+        t = getattr(self, "_frame_stamp", None) or time.monotonic()
 
-            self.previous_x = target_x
-            self.previous_y = target_y
-
-            self.move_to(target_x, target_y)
-
-            return
-
-        dx = target_x - self.previous_x
-        dy = target_y - self.previous_y
-
-        if abs(dx) <= self.dead_zone and abs(dy) <= self.dead_zone:
-
-            return
-
-        smooth_x = self.previous_x + dx * self.smoothing
-        smooth_y = self.previous_y + dy * self.smoothing
+        smooth_x = self.filter_x(float(target_x), t)
+        smooth_y = self.filter_y(float(target_y), t)
 
         smooth_x = max(
             0,
@@ -1872,7 +2106,8 @@ class VirtualMousePage(QWidget):
             min(self.screen_height - 1, int(smooth_y))
         )
 
-        self.move_to(smooth_x, smooth_y)
+        if (smooth_x, smooth_y) != (self.previous_x, self.previous_y):
+            self.move_to(smooth_x, smooth_y)
 
         self.previous_x = smooth_x
         self.previous_y = smooth_y
@@ -1885,15 +2120,11 @@ class VirtualMousePage(QWidget):
 
         try:
 
-            pyautogui.moveTo(
-                int(x),
-                int(y),
-                duration=0
-            )
+            native_move(x, y)
 
         except Exception:
 
-            # Never let a cursor-move error crash the camera timer.
+            # Never let a cursor-move error crash frame handling.
             pass
 
     # ==========================================================
@@ -2154,9 +2385,7 @@ class VirtualMousePage(QWidget):
 
     def close_camera(self):
 
-        if self.timer.isActive():
-
-            self.timer.stop()
+        self.stop_worker()
 
         if self.camera:
 
