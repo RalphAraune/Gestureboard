@@ -60,17 +60,30 @@ POLL_INTERVAL_MS = 15
 
 # MediaPipe hand landmark indexes.
 WRIST = 0
-INDEX_PIP, INDEX_TIP = 6, 8
-MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP = 9, 10, 12
+INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP = 5, 6, 7, 8
+MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP = 9, 10, 11, 12
 RING_PIP, RING_TIP = 14, 16
 PINKY_PIP, PINKY_TIP = 18, 20
 
-# Index + middle fingertip gap, as a fraction of the palm length.
-# Tips must be this close to START drawing, and may part a little
-# (up to KEEP) before the stroke ends. Spreading them wider lifts
-# the pen.
-DRAW_GAP_START = 0.32
-DRAW_GAP_KEEP = 0.40
+# "Together" means the index and middle fingers are touching along
+# their length, not just close. The gap between the fingertips, and
+# between the end joints, is compared with the gap between the two
+# knuckles (about one finger wide): touching fingers stay about that
+# far apart all the way up (ratio up to ~1), while fingers held only
+# near each other open wider towards the tips (~1.3 and more).
+#
+# The pen goes down below START and stays down below KEEP, so tiny
+# wobbles while drawing do not break the line.
+DRAW_TOUCH_START = 1.05
+DRAW_TOUCH_KEEP = 1.2
+
+# Also an absolute limit: tips more than this share of the palm
+# length apart are never "together", whatever the knuckles show.
+DRAW_GAP_MAX = 0.3
+
+# Frames in a row the fingers must touch before the pen goes down,
+# so passing through "together" while moving the hand never draws.
+DRAW_START_FRAMES = 2
 
 # A finger counts as straight when its tip is this much further from
 # the wrist than its middle knuckle.
@@ -1928,6 +1941,100 @@ def _perfect_ellipse(fit, loop):
     return "Oval", ("ellipse", cx, cy, rx, ry, _snap(angle, 90.0, 15.0))
 
 
+def _trim_ends(points, diagonal):
+    """Cut off an overshoot or a hook where a closed stroke meets
+    itself, so the extra bit of line is not read as more corners.
+
+    Looks for the closest pair of points between the start of the
+    stroke and its end; for a cleanly closed stroke that is simply
+    the first and last point, and nothing changes.
+    """
+
+    count = len(points)
+
+    head = max(2, count // 5)
+    tail = count - max(2, count * 2 // 5)
+
+    best = None
+
+    for i in range(head):
+        for j in range(tail, count):
+
+            d = _distance(points[i], points[j])
+
+            if best is None or d < best[0]:
+                best = (d, i, j)
+
+    d, i, j = best
+
+    if d < diagonal * 0.12 and j - i > count // 2:
+        return points[i:j + 1]
+
+    return points
+
+
+def _simplify(corners, loop, sides):
+    """Drop corners one at a time (each time the one the stroke
+    misses least) until `sides` corners remain."""
+
+    corners = list(corners)
+
+    while len(corners) > sides:
+
+        drop = min(
+            range(len(corners)),
+            key=lambda i: _polygon_error(loop, corners[:i] + corners[i + 1:]),
+        )
+
+        del corners[drop]
+
+    return corners
+
+
+def _four_fold(loop, fit):
+    """How strongly the stroke bulges out four times around its
+    centre, measured after stretching the fitted ellipse into a
+    circle (so ovals and rectangles count the same as circles and
+    squares).
+
+    Squares and rectangles, even with very rounded or cut corners,
+    score about 0.08 or more; circles, ovals, pentagons and hexagons
+    stay under about 0.05.
+    """
+
+    cx, cy, rx, ry, angle, _ = fit
+
+    cos_a = math.cos(math.radians(angle))
+    sin_a = math.sin(math.radians(angle))
+
+    real = imag = total = 0.0
+
+    for x, y in loop:
+
+        u = ((x - cx) * cos_a + (y - cy) * sin_a) / rx
+        v = (-(x - cx) * sin_a + (y - cy) * cos_a) / ry
+
+        r = math.hypot(u, v)
+        t = math.atan2(v, u)
+
+        real += r * math.cos(4 * t)
+        imag += r * math.sin(4 * t)
+        total += r
+
+    return math.hypot(real, imag) / total if total else 0.0
+
+
+# Above this four-fold bulge a closed stroke is four-sided, even when
+# a circle would fit it slightly better (a square with round corners).
+FOUR_FOLD_SQUARE = 0.07
+
+# A shape with fewer corners wins when it fits the stroke nearly as
+# well as the best fit (within this factor plus a small margin), so a
+# wobbly square is a square rather than a pentagon or hexagon.
+SIMPLER_SHAPE_FACTOR = 1.35
+SIMPLER_SHAPE_MARGIN = 0.006
+
+
 def recognise_shape(points):
     """Return (name, shape) for a rough stroke, or None to keep it.
 
@@ -1960,6 +2067,13 @@ def recognise_shape(points):
     if gap >= length * 0.92:
         return "Line", _straight_line(clean[0], clean[-1])
 
+    clean = _trim_ends(clean, diagonal)
+
+    if len(clean) < MIN_SHAPE_POINTS:
+        return None
+
+    gap = _distance(clean[0], clean[-1])
+
     # Open curves (ticks, waves, letters) stay as drawn.
     if gap > diagonal * 0.3:
         return None
@@ -1969,29 +2083,61 @@ def recognise_shape(points):
     corners = _find_corners(loop)
     count = len(corners)
 
-    polygon_error = (
-        _polygon_error(loop, corners) / diagonal if count >= 3 else 1.0
-    )
-
     fit = _fit_ellipse(loop)
 
     ellipse_error = fit[5] / diagonal if fit else 1.0
 
-    if 3 <= count <= 6 and polygon_error < 0.05 and polygon_error < ellipse_error:
+    # Best fit with 3, 4, 5 and 6 corners, then the fewest corners
+    # that fit about as well as the best of them.
+    candidates = {}
 
-        if count == 3:
-            result = _perfect_triangle(corners)
-        elif count == 4:
-            result = _perfect_quad(corners, loop)
-        else:
-            result = _perfect_regular(
-                corners, "Pentagon" if count == 5 else "Hexagon"
-            )
+    for sides in range(3, min(6, count) + 1):
 
-        if result:
-            return result
+        polygon = corners if sides == count else _simplify(corners, loop, sides)
 
-    if count == 10 and polygon_error < 0.05:
+        candidates[sides] = (
+            polygon,
+            _polygon_error(loop, polygon) / diagonal,
+        )
+
+    if candidates:
+
+        best_error = min(error for _, error in candidates.values())
+
+        sides = min(
+            s for s, (_, error) in candidates.items()
+            if error <= best_error * SIMPLER_SHAPE_FACTOR + SIMPLER_SHAPE_MARGIN
+        )
+
+        # Clearly four-sided, however round the corners: a square
+        # or rectangle, not a circle or a five / six-sided shape.
+        squarish = (
+            4 in candidates
+            and fit is not None
+            and candidates[4][1] < 0.06
+            and _four_fold(loop, fit) >= FOUR_FOLD_SQUARE
+        )
+
+        if squarish:
+            sides = 4
+
+        polygon, polygon_error = candidates[sides]
+
+        if squarish or (polygon_error < 0.05 and polygon_error < ellipse_error):
+
+            if sides == 3:
+                result = _perfect_triangle(polygon)
+            elif sides == 4:
+                result = _perfect_quad(polygon, loop)
+            else:
+                result = _perfect_regular(
+                    polygon, "Pentagon" if sides == 5 else "Hexagon"
+                )
+
+            if result:
+                return result
+
+    if count == 10 and _polygon_error(loop, corners) / diagonal < 0.05:
 
         result = _perfect_outline_star(corners)
 
@@ -2318,6 +2464,10 @@ class WhiteboardPage(QWidget):
         # Frames in a row without the draw gesture (see
         # DRAW_RELEASE_FRAMES).
         self._release_frames = 0
+
+        # Frames in a row with the fingers touching (see
+        # DRAW_START_FRAMES).
+        self._together_frames = 0
 
         # Steadied two-finger cursor position (global, float), or
         # None when the hand is not in a two-finger pose.
@@ -3678,6 +3828,8 @@ class WhiteboardPage(QWidget):
 
             self._steady = None
 
+            self._together_frames = 0
+
             self._set_gesture_status(
                 "Show your hand to the camera", "info"
             )
@@ -3692,12 +3844,30 @@ class WhiteboardPage(QWidget):
 
             self._release_frames = 0
 
-            self.draw_from_gesture(
-                hand,
-                vmouse
-            )
+            self._together_frames += 1
+
+            # A new stroke waits until the fingers have touched for
+            # DRAW_START_FRAMES frames; until then the pen only aims.
+            if (
+                self.gesture_drawing
+                or self._together_frames >= DRAW_START_FRAMES
+            ):
+
+                self.draw_from_gesture(
+                    hand,
+                    vmouse
+                )
+
+            else:
+
+                self.aim_from_gesture(
+                    hand,
+                    vmouse
+                )
 
             return
+
+        self._together_frames = 0
 
         # Pen is down but the fingers parted: lift it. One frame of
         # grace keeps a single bad detection from breaking the line.
@@ -3781,9 +3951,20 @@ class WhiteboardPage(QWidget):
         if straight(RING_TIP, RING_PIP) or straight(PINKY_TIP, PINKY_PIP):
             return None
 
-        limit = DRAW_GAP_KEEP if self.gesture_drawing else DRAW_GAP_START
+        # Touching: as close at the tips and end joints as at the
+        # knuckles (see DRAW_TOUCH_START).
+        knuckles = gap(lm[INDEX_MCP], lm[MIDDLE_MCP]) or 1e-6
 
-        if gap(lm[INDEX_TIP], lm[MIDDLE_TIP]) / palm < limit:
+        tips = gap(lm[INDEX_TIP], lm[MIDDLE_TIP])
+        joints = gap(lm[INDEX_DIP], lm[MIDDLE_DIP])
+
+        limit = DRAW_TOUCH_KEEP if self.gesture_drawing else DRAW_TOUCH_START
+
+        if (
+            tips / knuckles <= limit
+            and joints / knuckles <= limit
+            and tips / palm <= DRAW_GAP_MAX
+        ):
             return "together"
 
         return "apart"
