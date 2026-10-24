@@ -59,7 +59,7 @@ def main():
             import ctypes
 
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "GestureBoard.Desktop.2"
+                "GestureBoard.Desktop.3"
             )
         except Exception:
             pass
@@ -116,8 +116,11 @@ def main():
 
     import os
 
-    sys.stdout.flush()
-    sys.stderr.flush()
+    # Started from the desktop shortcut (pythonw.exe) there is no
+    # console, so stdout / stderr are None.
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            stream.flush()
 
     os._exit(exit_code)
 
