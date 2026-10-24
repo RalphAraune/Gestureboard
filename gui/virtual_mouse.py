@@ -354,6 +354,122 @@ class OneEuroFilter:
 
 
 # ==============================================================
+# HAND CHECKS
+#
+# MediaPipe sometimes "finds" a hand in a face, a sleeve, a mug or
+# a patterned background. A detection is only used when:
+#   * MediaPipe is confident it is a hand (HAND_MIN_SCORE),
+#   * its 21 points have the proportions of a real hand, and
+#   * it passes for HAND_CONFIRM_FRAMES frames in a row, so a
+#     one-frame false detection can never move or click.
+# ==============================================================
+
+# MediaPipe's confidence that the detection is a hand (0..1). Real
+# hands sit well above this; most false detections fall below it.
+HAND_MIN_SCORE = 0.8
+
+# Frames in a row a NEW hand must pass every check before it is used
+# (2 frames is about 0.07 s at 30 fps). A hand already being tracked
+# is checked every frame but needs no new confirmation.
+HAND_CONFIRM_FRAMES = 2
+
+# Smallest palm (wrist -> middle knuckle) accepted, as a fraction of
+# the frame. Tiny "hands" are almost always background noise.
+HAND_MIN_PALM = 0.04
+
+# Landmark indexes (MediaPipe hand model).
+_WRIST = 0
+_THUMB = (1, 2, 3, 4)
+_FINGERS = (
+    (5, 6, 7, 8),       # index:  knuckle, middle joint, end joint, tip
+    (9, 10, 11, 12),    # middle
+    (13, 14, 15, 16),   # ring
+    (17, 18, 19, 20),   # pinky
+)
+
+
+def _gap(a, b):
+
+    return math.hypot(a.x - b.x, a.y - b.y)
+
+
+def looks_like_hand(landmarks):
+    """Return True when the 21 points have real hand proportions.
+
+    Every length is compared with the palm (wrist -> middle knuckle),
+    so the test works at any distance from the camera. The limits
+    are wide enough for any pose a user makes, including a fist, a
+    pinch and a hand turned sideways, but a face, a shirt pattern or
+    an object rarely fits all of them at once.
+    """
+
+    lm = landmarks
+
+    wrist = lm[_WRIST]
+
+    palm = _gap(wrist, lm[9])
+
+    if palm < HAND_MIN_PALM:
+        return False
+
+    # The palm is rigid: wrist -> each knuckle is about one palm long
+    # (pinky a little shorter), whatever the fingers are doing.
+    for finger in _FINGERS:
+
+        ratio = _gap(wrist, lm[finger[0]]) / palm
+
+        if not 0.45 <= ratio <= 1.6:
+            return False
+
+    # Knuckles sit side by side across the palm, in order, evenly
+    # spaced. Turned sideways the row narrows, so only an upper limit
+    # applies to its width.
+    knuckles = [lm[finger[0]] for finger in _FINGERS]
+
+    width = _gap(knuckles[0], knuckles[3]) / palm
+
+    if width > 1.4:
+        return False
+
+    steps = [_gap(knuckles[i], knuckles[i + 1]) for i in range(3)]
+
+    if max(steps) > 0.8 * palm:
+        return False
+
+    if sum(steps) > 0 and max(steps) > 0.85 * sum(steps):
+        return False
+
+    # Finger bones: about half a palm each, so none is much longer
+    # than the palm and a whole finger is under about 2.5 palms, even
+    # when the palm is tilted away and looks short. (Pointing at the
+    # camera makes bones look very short, so there is no lower limit.)
+    for finger in _FINGERS + (_THUMB,):
+
+        bones = [
+            _gap(lm[finger[i]], lm[finger[i + 1]]) / palm
+            for i in range(3)
+        ]
+
+        if max(bones) > 1.3 or sum(bones) > 2.6:
+            return False
+
+    # Thumb base sits near the wrist, not out past the fingers.
+    if _gap(wrist, lm[_THUMB[0]]) / palm > 0.9:
+        return False
+
+    return True
+
+
+def hand_score(results):
+    """MediaPipe's confidence for the first hand, or 1.0 if unknown."""
+
+    try:
+        return results.multi_handedness[0].classification[0].score
+    except (AttributeError, IndexError, TypeError):
+        return 1.0
+
+
+# ==============================================================
 # CAMERA WORKER
 #
 # Two background threads keep the UI thread free:
@@ -395,6 +511,9 @@ class CameraWorker:
         self._result = None
         self._pending = False
 
+        # Frames in a row that passed the hand checks.
+        self._hand_streak = 0
+
         self._threads = [
             threading.Thread(target=self._grab_loop, daemon=True),
             threading.Thread(target=self._detect_loop, daemon=True),
@@ -425,6 +544,36 @@ class CameraWorker:
             self._pending = False
 
         return result
+
+    def _checked_hand(self, results):
+        """Return the detected hand if it passes every check, else None."""
+
+        hand = None
+
+        if results is not None and results.multi_hand_landmarks:
+
+            candidate = results.multi_hand_landmarks[0]
+
+            if (
+                hand_score(results) >= HAND_MIN_SCORE
+                and looks_like_hand(candidate.landmark)
+            ):
+                hand = candidate
+
+        if hand is None:
+
+            self._hand_streak = 0
+
+            return None
+
+        self._hand_streak += 1
+
+        # A new hand waits until it has passed several frames in a
+        # row; after that it is used on every frame that passes.
+        if self._hand_streak < HAND_CONFIRM_FRAMES:
+            return None
+
+        return hand
 
     def _grab_loop(self):
 
@@ -480,9 +629,11 @@ class CameraWorker:
                     print("Virtual mouse: hand tracking failed:", exc)
                     results = None
 
-                if results is not None and results.multi_hand_landmarks:
+                hand = self._checked_hand(results)
 
-                    hand = results.multi_hand_landmarks[0]
+                # Only a real, confirmed hand gets its skeleton drawn,
+                # so the feed shows exactly what the mouse responds to.
+                if hand is not None:
 
                     self.mp_drawing.draw_landmarks(
                         frame,
@@ -700,12 +851,18 @@ class VirtualMousePage(QWidget):
             self.mp_hands = mp.solutions.hands
             self.mp_drawing = mp.solutions.drawing_utils
 
+            # A little stricter than before: a weak guess is not acted
+            # on. Tracking confidence decides when a tracked "hand" is
+            # dropped and searched for again, so it is the higher one:
+            # a false lock does not linger. (Detection above about 0.6
+            # starts missing real hands, e.g. a thumbs-up.) More
+            # checks: HAND CHECKS.
             self.hands = self.mp_hands.Hands(
                 static_image_mode=False,
                 max_num_hands=1,
                 model_complexity=0,
-                min_detection_confidence=0.55,
-                min_tracking_confidence=0.55,
+                min_detection_confidence=0.6,
+                min_tracking_confidence=0.7,
             )
 
         else:
