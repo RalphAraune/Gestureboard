@@ -1,8 +1,33 @@
 from pathlib import Path
+import json
 import os
+import platform
+import re
+import socket
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 
-from PyQt5.QtCore import Qt, QRectF, QSize, QVariantAnimation
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPen
+from PyQt5.QtCore import (
+    Qt,
+    QObject,
+    QRectF,
+    QSize,
+    QUrl,
+    QVariantAnimation,
+    pyqtSignal,
+)
+from PyQt5.QtGui import (
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QTextCursor,
+)
 from PyQt5.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -11,6 +36,8 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -38,6 +65,8 @@ SECTIONS = [
      "Defaults for gesture-controlled slideshows."),
     ("storage", "Storage", "folder",
      "What GestureBoard keeps after you close a board."),
+    ("feedback", "Feedback", "feedback",
+     "Report a problem or share an idea with the GestureBoard team."),
     ("about", "About", "info",
      "Version and the libraries behind hand tracking."),
 ]
@@ -58,6 +87,186 @@ DEFAULTS = {
 }
 
 CONTENT_MAX_WIDTH = 820
+
+
+# ==============================================================
+# FEEDBACK
+#
+# GestureBoard works offline, but feedback is sent over the
+# internet. FormSubmit (formsubmit.co) relays the form to the
+# GestureBoard inbox, so no mail account or password lives in the
+# app. The first message ever sent triggers a one-time activation
+# email to FEEDBACK_EMAIL; until that link is clicked, messages are
+# not delivered.
+# ==============================================================
+
+FEEDBACK_EMAIL = "araune.ralphlawrence@cec.edu.ph"
+FEEDBACK_URL = f"https://formsubmit.co/ajax/{FEEDBACK_EMAIL}"
+FEEDBACK_HOST = "formsubmit.co"
+
+# FormSubmit only answers requests that say which site or app they
+# come from.
+FEEDBACK_REFERER = "https://github.com/RalphAraune/Gestureboard"
+
+FEEDBACK_TYPES = ["Bug or error", "Suggestion", "Other"]
+
+FEEDBACK_MIN_LENGTH = 10
+FEEDBACK_MAX_LENGTH = 5000
+
+APP_VERSION = "1.0"
+
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def has_internet(timeout=3.0):
+    """True when the feedback service can be reached."""
+
+    try:
+        with socket.create_connection((FEEDBACK_HOST, 443), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def send_feedback(fields, timeout=15.0):
+    """Send the feedback form. Returns (sent, message for the user)."""
+
+    request = urllib.request.Request(
+        FEEDBACK_URL,
+        data=json.dumps(fields).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": FEEDBACK_REFERER,
+            "User-Agent": f"GestureBoard/{APP_VERSION}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            reply = json.loads(response.read().decode("utf-8") or "{}")
+
+    except urllib.error.HTTPError as error:
+        return False, (
+            f"The feedback service had a problem (error {error.code}). "
+            "Please try again later."
+        )
+
+    except (urllib.error.URLError, OSError):
+        return False, (
+            "Could not reach the feedback service. Check that you are "
+            "connected to Wi-Fi, then try again."
+        )
+
+    except ValueError:
+        return False, "The feedback service sent an unexpected reply. Please try again later."
+
+    if str(reply.get("success")).lower() == "true":
+        return True, "Thank you! Your message was sent to the GestureBoard team."
+
+    note = str(reply.get("message") or "")
+
+    # FormSubmit holds messages for a new address until its owner
+    # clicks a one-time activation link it emails to FEEDBACK_EMAIL.
+    if "activat" in note.lower():
+        return False, (
+            "The feedback inbox is not ready yet, so your message could "
+            "not be delivered here. Press \"Send with Gmail instead\" to "
+            "send it now."
+        )
+
+    return False, (
+        (note or "Your message could not be sent.")
+        + " You can press \"Send with Gmail instead\" to send it now."
+    )
+
+
+def gmail_compose_url(fields):
+    """Gmail (in the browser) with the feedback already filled in."""
+
+    lines = [f"{key}: {value}" for key, value in fields.items() if not key.startswith("_")]
+
+    query = urllib.parse.urlencode({
+        "view": "cm",
+        "fs": "1",
+        "to": FEEDBACK_EMAIL,
+        "su": fields.get("_subject", "GestureBoard feedback"),
+        "body": "\n".join(lines),
+    })
+
+    return "https://mail.google.com/mail/?" + query
+
+
+class _Background(QObject):
+    """Runs slow network calls off the UI thread.
+
+    `done` is emitted on the UI thread with the task name and its
+    result (or the exception it raised).
+    """
+
+    done = pyqtSignal(str, object)
+
+    def run(self, name, func, *args):
+
+        def work():
+            try:
+                result = func(*args)
+            except Exception as exc:
+                result = exc
+            self.done.emit(name, result)
+
+        threading.Thread(target=work, daemon=True).start()
+
+
+def _feedback_path():
+    """Speech bubble with two lines of text (24 x 24 grid)."""
+
+    path = QPainterPath()
+    path.moveTo(5, 4.5)
+    path.lineTo(19, 4.5)
+    path.quadTo(21, 4.5, 21, 6.5)
+    path.lineTo(21, 14.5)
+    path.quadTo(21, 16.5, 19, 16.5)
+    path.lineTo(11, 16.5)
+    path.lineTo(7, 20)
+    path.lineTo(7, 16.5)
+    path.lineTo(5, 16.5)
+    path.quadTo(3, 16.5, 3, 14.5)
+    path.lineTo(3, 6.5)
+    path.quadTo(3, 4.5, 5, 4.5)
+    path.moveTo(7.5, 9)
+    path.lineTo(16.5, 9)
+    path.moveTo(7.5, 12.5)
+    path.lineTo(13.5, 12.5)
+
+    return path
+
+
+def section_pixmap(name, color, size):
+    """Sidebar-style line icon; "feedback" is drawn here, the rest
+    come from the shared sidebar set."""
+
+    if name != "feedback":
+        return nav_pixmap(name, color, size)
+
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(2)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.scale(size / 24.0, size / 24.0)
+
+    pen = QPen(QColor(color), 1.8)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawPath(_feedback_path())
+    painter.end()
+
+    return pixmap
 
 
 def settings_colors():
@@ -183,6 +392,10 @@ class SettingsPage(QWidget):
         self.section_icons = {}
 
         self.setObjectName("settingsPage")
+
+        # Network calls for the Feedback section run in the background.
+        self._background = _Background(self)
+        self._background.done.connect(self._on_background_done)
 
         self.setup_ui()
 
@@ -734,6 +947,333 @@ class SettingsPage(QWidget):
         )
         hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
+    def _fill_feedback(self, layout):
+
+        # ---------- Wi-Fi reminder and connection status ----------
+
+        notice = QFrame()
+        notice.setObjectName("notice")
+
+        notice_layout = QHBoxLayout(notice)
+        notice_layout.setContentsMargins(18, 14, 18, 14)
+        notice_layout.setSpacing(14)
+
+        notice_text = QVBoxLayout()
+        notice_text.setSpacing(3)
+
+        notice_title = QLabel("Connect to Wi-Fi before sending")
+        notice_title.setObjectName("noticeTitle")
+        notice_text.addWidget(notice_title)
+
+        notice_body = QLabel(
+            "GestureBoard works without internet, but sending feedback "
+            "needs a connection. Connect to Wi-Fi (or any network with "
+            "internet), then press Send."
+        )
+        notice_body.setObjectName("noticeText")
+        notice_body.setWordWrap(True)
+        notice_text.addWidget(notice_body)
+
+        self.connection_label = QLabel()
+        self.connection_label.setObjectName("connectionPill")
+        notice_text.addSpacing(4)
+        notice_text.addWidget(self.connection_label, 0, Qt.AlignLeft)
+
+        notice_layout.addLayout(notice_text, 1)
+
+        self.check_button = self._button("Check again", self._check_connection)
+        notice_layout.addWidget(self.check_button, 0, Qt.AlignVCenter)
+
+        layout.addWidget(notice)
+
+        # ---------- Form ----------
+
+        layout.addWidget(self._group_title(
+            "Send feedback",
+            f"Your message goes to the GestureBoard team at {FEEDBACK_EMAIL}.",
+        ))
+
+        group = self._group(layout)
+
+        form = QWidget()
+        form_layout = QVBoxLayout(form)
+        form_layout.setContentsMargins(20, 16, 20, 18)
+        form_layout.setSpacing(6)
+
+        def field_label(text):
+            label = QLabel(text)
+            label.setObjectName("fieldLabel")
+            form_layout.addSpacing(6)
+            form_layout.addWidget(label)
+
+        field_label("What is it about?")
+        self.feedback_type = self._combo(FEEDBACK_TYPES, width=240)
+        form_layout.addWidget(self.feedback_type, 0, Qt.AlignLeft)
+
+        names = QHBoxLayout()
+        names.setSpacing(16)
+
+        for attr, title, placeholder in (
+            ("feedback_name", "Your name", "e.g. Juan Dela Cruz"),
+            ("feedback_email", "Your email address", "So we can reply to you"),
+        ):
+            column = QVBoxLayout()
+            column.setSpacing(6)
+
+            label = QLabel(title)
+            label.setObjectName("fieldLabel")
+            column.addWidget(label)
+
+            edit = QLineEdit()
+            edit.setObjectName("field")
+            edit.setPlaceholderText(placeholder)
+            edit.setMaxLength(120)
+            column.addWidget(edit)
+
+            setattr(self, attr, edit)
+            names.addLayout(column, 1)
+
+        form_layout.addSpacing(6)
+        form_layout.addLayout(names)
+
+        field_label("Your message")
+
+        self.feedback_message = QPlainTextEdit()
+        self.feedback_message.setObjectName("field")
+        self.feedback_message.setPlaceholderText(
+            "Describe the problem or your idea. For a bug, say what you "
+            "were doing, what you expected, and what happened instead."
+        )
+        self.feedback_message.setMinimumHeight(150)
+        self.feedback_message.textChanged.connect(self._update_message_count)
+        form_layout.addWidget(self.feedback_message)
+
+        self.message_count = QLabel()
+        self.message_count.setObjectName("rowHint")
+        form_layout.addWidget(self.message_count, 0, Qt.AlignRight)
+
+        details = QHBoxLayout()
+        details.setSpacing(12)
+
+        details_text = QLabel(
+            "Include system details (app version, Windows version and "
+            "camera name) to help fix bugs"
+        )
+        details_text.setObjectName("rowHint")
+        details_text.setWordWrap(True)
+        details.addWidget(details_text, 1)
+
+        self.feedback_details = ToggleSwitch(True)
+        self.toggles.append(self.feedback_details)
+        details.addWidget(self.feedback_details, 0, Qt.AlignVCenter)
+
+        form_layout.addLayout(details)
+        form_layout.addSpacing(10)
+
+        footer = QHBoxLayout()
+        footer.setSpacing(14)
+
+        self.feedback_status = QLabel()
+        self.feedback_status.setObjectName("feedbackStatus")
+        self.feedback_status.setWordWrap(True)
+        footer.addWidget(self.feedback_status, 1)
+
+        buttons = QVBoxLayout()
+        buttons.setSpacing(8)
+
+        self.send_button = self._button("Send feedback", self._send_feedback, primary=True)
+        self.send_button.setMinimumWidth(190)
+        buttons.addWidget(self.send_button)
+
+        # Backup when the feedback service cannot deliver: Gmail opens
+        # in the browser with everything filled in.
+        self.gmail_button = self._button("Send with Gmail instead", self._send_with_gmail)
+        self.gmail_button.setMinimumWidth(190)
+        self.gmail_button.hide()
+        buttons.addWidget(self.gmail_button)
+
+        footer.addLayout(buttons)
+
+        self._unsent_fields = None
+
+        form_layout.addLayout(footer)
+
+        group.addWidget(form)
+
+        self._update_message_count()
+
+    # ----------------------------------------------------------
+    # FEEDBACK ACTIONS
+    # ----------------------------------------------------------
+
+    def _set_connection(self, state):
+        """state: "checking", "online" or "offline"."""
+
+        text = {
+            "checking": "●  Checking the connection…",
+            "online": "●  Connected to the internet",
+            "offline": "●  No internet connection",
+        }[state]
+
+        self.connection_label.setText(text)
+        self.connection_label.setProperty("state", state)
+        self.connection_label.style().unpolish(self.connection_label)
+        self.connection_label.style().polish(self.connection_label)
+
+    def _set_feedback_status(self, text, tone="info"):
+        """tone: info, error or success."""
+
+        self.feedback_status.setText(text)
+        self.feedback_status.setProperty("tone", tone)
+        self.feedback_status.style().unpolish(self.feedback_status)
+        self.feedback_status.style().polish(self.feedback_status)
+
+    def _check_connection(self):
+
+        self._set_connection("checking")
+        self.check_button.setEnabled(False)
+
+        self._background.run("check", has_internet)
+
+    def _update_message_count(self):
+
+        count = len(self.feedback_message.toPlainText())
+
+        self.message_count.setText(f"{count} / {FEEDBACK_MAX_LENGTH}")
+
+        if count > FEEDBACK_MAX_LENGTH:
+            # Trim pasted text that is too long, keeping the cursor
+            # at the end.
+            text = self.feedback_message.toPlainText()[:FEEDBACK_MAX_LENGTH]
+            self.feedback_message.setPlainText(text)
+            self.feedback_message.moveCursor(QTextCursor.End)
+
+    def _feedback_fields(self):
+        """Check the form; return the fields to send, or None."""
+
+        name = self.feedback_name.text().strip()
+        email = self.feedback_email.text().strip()
+        message = self.feedback_message.toPlainText().strip()
+        kind = self.feedback_type.currentText()
+
+        problem = None
+
+        if not name:
+            problem, field = "Please enter your name.", self.feedback_name
+        elif not _EMAIL_PATTERN.match(email):
+            problem, field = "Please enter a valid email address, like name@example.com.", self.feedback_email
+        elif len(message) < FEEDBACK_MIN_LENGTH:
+            problem, field = "Please write a little more in your message.", self.feedback_message
+
+        if problem:
+            self._set_feedback_status(problem, "error")
+            field.setFocus()
+            return None
+
+        fields = {
+            "name": name,
+            "email": email,
+            "_subject": f"GestureBoard {kind.lower()} from {name}",
+            "_template": "table",
+            "_captcha": "false",
+            "Type": kind,
+            "Message": message,
+        }
+
+        if self.feedback_details.isChecked():
+            fields["System"] = (
+                f"GestureBoard {APP_VERSION} | "
+                f"{platform.system()} {platform.release()} ({platform.version()}) | "
+                f"Python {platform.python_version()} | "
+                f"Camera: {self.active_camera_name}"
+            )
+
+        return fields
+
+    def _send_feedback(self):
+
+        fields = self._feedback_fields()
+
+        if fields is None:
+            return
+
+        self.gmail_button.hide()
+        self.send_button.setEnabled(False)
+        self.send_button.setText("Sending…")
+        self._set_feedback_status("Sending your message…", "info")
+
+        def check_then_send(data):
+            # Check first, so an offline user gets the Wi-Fi reminder
+            # straight away instead of waiting for a timeout.
+            if not has_internet():
+                return None
+            return send_feedback(data)
+
+        self._background.run("send", check_then_send, fields)
+
+    def _on_background_done(self, name, result):
+
+        if name == "check":
+
+            self.check_button.setEnabled(True)
+            self._set_connection("online" if result is True else "offline")
+            return
+
+        if name != "send":
+            return
+
+        self.send_button.setEnabled(True)
+        self.send_button.setText("Send feedback")
+
+        if result is None:
+            self._set_connection("offline")
+            self._set_feedback_status(
+                "You are not connected to the internet. Connect to Wi-Fi, "
+                "then press Send again. Your message is still here.",
+                "error",
+            )
+            return
+
+        if isinstance(result, Exception):
+            self._set_feedback_status(
+                "Something went wrong while sending. Please try again.", "error"
+            )
+            return
+
+        sent, message = result
+
+        self._set_connection("online")
+
+        if sent:
+            self.feedback_message.clear()
+            self.gmail_button.hide()
+            self._set_feedback_status(message, "success")
+        else:
+            # Online, but the service did not deliver: offer Gmail.
+            self._unsent_fields = self._feedback_fields()
+            self.gmail_button.setVisible(self._unsent_fields is not None)
+            self._set_feedback_status(message, "error")
+
+    def _send_with_gmail(self):
+
+        fields = self._feedback_fields() or self._unsent_fields
+
+        if fields is None:
+            return
+
+        if QDesktopServices.openUrl(QUrl(gmail_compose_url(fields))):
+            self._set_feedback_status(
+                "Gmail opened in your browser with your message filled in. "
+                "Press Send there to deliver it.",
+                "success",
+            )
+        else:
+            self._set_feedback_status(
+                f"Could not open the browser. Please email your message to "
+                f"{FEEDBACK_EMAIL}.",
+                "error",
+            )
+
     def _fill_about(self, layout):
 
         group = self._group(layout)
@@ -819,6 +1359,10 @@ class SettingsPage(QWidget):
         button.setChecked(True)
 
         self.stack.setCurrentWidget(self.section_pages[key])
+
+        # Show whether sending will work as soon as Feedback opens.
+        if key == "feedback":
+            self._check_connection()
 
         # Keep the stack only as tall as the visible section.
         for k, page in self.section_pages.items():
@@ -1140,6 +1684,85 @@ class SettingsPage(QWidget):
                 border: 2px solid {focus};
             }}
 
+            /* ---------- Feedback ---------- */
+
+            QFrame#notice {{
+                background: {c['button_hover']};
+                border: 1px solid {c['card_border']};
+                border-left: 4px solid {c['primary']};
+                border-radius: 12px;
+            }}
+
+            QLabel#noticeTitle {{
+                font-size: 15px;
+                font-weight: 800;
+            }}
+
+            QLabel#noticeText {{
+                font-size: 13px;
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#connectionPill {{
+                font-size: 12px;
+                font-weight: 700;
+                border-radius: 11px;
+                padding: 4px 12px;
+                background: {c['card']};
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#connectionPill[state="online"] {{
+                background: {'#173B2E' if dark else '#E3F4EA'};
+                color: {'#5FD39A' if dark else '#23804F'};
+            }}
+
+            QLabel#connectionPill[state="offline"] {{
+                background: {'#4A2328' if dark else '#F8E1DF'};
+                color: {'#F07A70' if dark else '#B83227'};
+            }}
+
+            QLabel#fieldLabel {{
+                font-size: 13px;
+                font-weight: 700;
+            }}
+
+            QLineEdit#field, QPlainTextEdit#field {{
+                background: {c['field']};
+                color: {c['text']};
+                border: 1px solid {c['input_border']};
+                border-radius: 9px;
+                padding: 8px 12px;
+                font-size: 14px;
+                selection-background-color: {c['primary']};
+                selection-color: {c['primary_text']};
+            }}
+
+            QLineEdit#field:focus, QPlainTextEdit#field:focus {{
+                border: 2px solid {focus};
+            }}
+
+            QLabel#feedbackStatus {{
+                font-size: 13px;
+                color: {c['text_secondary']};
+            }}
+
+            QLabel#feedbackStatus[tone="error"] {{
+                color: {'#F07A70' if dark else '#B83227'};
+                font-weight: 600;
+            }}
+
+            QLabel#feedbackStatus[tone="success"] {{
+                color: {'#5FD39A' if dark else '#23804F'};
+                font-weight: 700;
+            }}
+
+            QPushButton#primaryButton:disabled,
+            QPushButton#secondaryButton:disabled {{
+                background: {c['input_border']};
+                color: {c['text_secondary']};
+            }}
+
             /* ---------- Scrolling ---------- */
 
             QScrollArea#settingsScroll QScrollBar:vertical {{
@@ -1167,17 +1790,17 @@ class SettingsPage(QWidget):
         for button, icon_name in self.rail_buttons.values():
             icon = QIcon()
             icon.addPixmap(
-                nav_pixmap(icon_name, c["text_secondary"], 20),
+                section_pixmap(icon_name, c["text_secondary"], 20),
                 QIcon.Normal, QIcon.Off,
             )
             icon.addPixmap(
-                nav_pixmap(icon_name, c["primary_text"], 20),
+                section_pixmap(icon_name, c["primary_text"], 20),
                 QIcon.Normal, QIcon.On,
             )
             button.setIcon(icon)
 
         for tile, icon_name in self.section_icons.values():
-            tile.setPixmap(nav_pixmap(icon_name, c["primary_text"], 26))
+            tile.setPixmap(section_pixmap(icon_name, c["primary_text"], 26))
 
         for toggle in self.toggles:
             toggle.set_colors(c["primary"], c["input_border"], c["knob"], focus)
