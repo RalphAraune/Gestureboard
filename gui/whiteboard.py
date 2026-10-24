@@ -39,6 +39,7 @@ from PyQt5.QtGui import (
     QCursor,
     QPolygon,
     QPolygonF,
+    QPainterPath,
     QBrush,
     QIcon,
     QKeySequence,
@@ -82,6 +83,16 @@ DRAW_RELEASE_FRAMES = 2
 
 # Lift the pen when no new camera frame arrives for this long.
 HAND_TIMEOUT = 0.3
+
+# Anti-shake for the two-finger cursor (screen px). The pen hangs on a
+# short string of this length behind the hand: tremor smaller than the
+# string is ignored, larger moves pull the pen along smoothly. Larger =
+# steadier, but the pen trails the hand a little more.
+STEADY_RADIUS = 7.0
+
+# Extra smoothing after the string, 0..1: the share of the remaining
+# distance the pen covers each frame. Lower = smoother but laggier.
+STEADY_SMOOTHING = 0.5
 
 # Minimum points required before automatic shape recognition.
 MIN_SHAPE_POINTS = 12
@@ -355,6 +366,8 @@ class DrawingCanvas(QWidget):
 
         self.show_gesture_cursor = False
 
+        self.gesture_pen_down = False
+
         # Circle (brush) cursor that follows the pointer. Its size matches
         # the current tool width.
         self.mouse_pos = None
@@ -567,7 +580,8 @@ class DrawingCanvas(QWidget):
     def set_gesture_cursor(
         self,
         point,
-        visible=True
+        visible=True,
+        pen_down=True
     ):
 
         old = self.gesture_cursor_rect()
@@ -575,6 +589,9 @@ class DrawingCanvas(QWidget):
         self.gesture_cursor_pos = point
 
         self.show_gesture_cursor = visible
+
+        # Filled while drawing, an empty ring while only aiming.
+        self.gesture_pen_down = pen_down
 
         # Repaint only where the cursor was and where it is now;
         # a full-board repaint every camera frame is what made
@@ -1098,6 +1115,48 @@ class DrawingCanvas(QWidget):
         )
 
     # ========================================================
+    # DRAW PATH (smooth curve pieces of a hand stroke)
+    # ========================================================
+
+    def draw_path(
+        self,
+        path
+    ):
+
+        painter = QPainter(
+            self.canvas
+        )
+
+        painter.setRenderHint(
+            QPainter.Antialiasing,
+            True
+        )
+
+        pen = self.make_pen()
+
+        painter.setPen(
+            pen
+        )
+
+        painter.setBrush(
+            Qt.NoBrush
+        )
+
+        painter.drawPath(
+            path
+        )
+
+        painter.end()
+
+        reach = int(pen.widthF() / 2) + 3
+
+        self.update(
+            path.controlPointRect().toAlignedRect().adjusted(
+                -reach, -reach, reach, reach
+            )
+        )
+
+    # ========================================================
     # PAINT
     # ========================================================
 
@@ -1151,6 +1210,8 @@ class DrawingCanvas(QWidget):
 
             radius = self.gesture_cursor_radius()
 
+            # Pen down: tinted fill. Pen up (fingers apart): empty
+            # ring, so it is clear nothing will be drawn.
             painter.setBrush(
                 QColor(
                     14,
@@ -1158,6 +1219,8 @@ class DrawingCanvas(QWidget):
                     118,
                     25
                 )
+                if self.gesture_pen_down
+                else Qt.NoBrush
             )
 
             painter.setPen(
@@ -2256,6 +2319,10 @@ class WhiteboardPage(QWidget):
         # DRAW_RELEASE_FRAMES).
         self._release_frames = 0
 
+        # Steadied two-finger cursor position (global, float), or
+        # None when the hand is not in a two-finger pose.
+        self._steady = None
+
         # Last status / camera pill shown, so the pills are only
         # re-styled when they actually change.
         self._status_shown = None
@@ -2269,8 +2336,6 @@ class WhiteboardPage(QWidget):
         self.gesture_drawing = False
 
         self.gesture_points = []
-
-        self.last_draw_point = None
 
         # ====================================================
         # TOOL
@@ -3537,6 +3602,8 @@ class WhiteboardPage(QWidget):
 
             self._last_stamp = None
 
+            self._steady = None
+
             self.camera_label.setText(
                 "Camera off  (start Virtual Mouse)"
             )
@@ -3585,8 +3652,14 @@ class WhiteboardPage(QWidget):
     #
     # Open palm, closed hand and pinch are handled by the Virtual
     # Mouse itself (move, left click, right click). This page adds
-    # drawing: index and middle fingers held together draw, and
-    # spreading them apart lifts the pen.
+    # two two-finger poses (index and middle up, ring and pinky
+    # folded):
+    #
+    #   fingers apart     -> move the cursor with the pen up (aim)
+    #   fingers together  -> draw from where the cursor is
+    #
+    # Both steer through the same steadied cursor, so closing the
+    # fingers starts the line exactly where the ring was aiming.
     # ========================================================
 
     def process_hand(
@@ -3600,6 +3673,8 @@ class WhiteboardPage(QWidget):
 
             self.finish_gesture_drawing()
 
+            self._steady = None
+
             self._set_gesture_status(
                 "Show your hand to the camera", "info"
             )
@@ -3608,7 +3683,9 @@ class WhiteboardPage(QWidget):
 
         self._last_hand_time = time.monotonic()
 
-        if self.is_draw_gesture(hand):
+        pose = self.two_finger_pose(hand)
+
+        if pose == "together":
 
             self._release_frames = 0
 
@@ -3628,7 +3705,21 @@ class WhiteboardPage(QWidget):
             if self._release_frames < DRAW_RELEASE_FRAMES:
                 return
 
+            self.finish_gesture_drawing()
+
+        if pose == "apart":
+
+            self.aim_from_gesture(
+                hand,
+                vmouse
+            )
+
+            return
+
+        # Any other hand shape: the Virtual Mouse is in charge.
         self.finish_gesture_drawing()
+
+        self._steady = None
 
         gesture = getattr(vmouse, "last_gesture", "None")
 
@@ -3656,11 +3747,12 @@ class WhiteboardPage(QWidget):
                 "Hold index and middle together to draw", "info"
             )
 
-    def is_draw_gesture(
+    def two_finger_pose(
         self,
         hand
     ):
-        """Index and middle straight and touching, ring and pinky folded."""
+        """"together" or "apart" when only index and middle are up,
+        otherwise None."""
 
         lm = hand.landmark
 
@@ -3680,15 +3772,135 @@ class WhiteboardPage(QWidget):
             straight(INDEX_TIP, INDEX_PIP)
             and straight(MIDDLE_TIP, MIDDLE_PIP)
         ):
-            return False
+            return None
 
-        # An open hand with the fingers together is "move", not "draw".
+        # An open hand belongs to the Virtual Mouse ("move").
         if straight(RING_TIP, RING_PIP) or straight(PINKY_TIP, PINKY_PIP):
-            return False
+            return None
 
         limit = DRAW_GAP_KEEP if self.gesture_drawing else DRAW_GAP_START
 
-        return gap(lm[INDEX_TIP], lm[MIDDLE_TIP]) / palm < limit
+        if gap(lm[INDEX_TIP], lm[MIDDLE_TIP]) / palm < limit:
+            return "together"
+
+        return "apart"
+
+    # ========================================================
+    # STEADY CURSOR
+    # ========================================================
+
+    def steer_cursor(
+        self,
+        hand,
+        vmouse
+    ):
+        """Move the cursor with the hand; return the steadied point
+        in canvas coordinates (QPointF).
+
+        The Virtual Mouse's own mapping and smoothing place the
+        cursor first, so it lines up with open-palm movement. The
+        result then hangs on a short string (STEADY_RADIUS) behind
+        it, which soaks up hand tremor without making big moves slow.
+        """
+
+        if hasattr(vmouse, "move_cursor"):
+
+            try:
+                vmouse.move_cursor(hand)
+            except Exception:
+                pass
+
+        target = QCursor.pos()
+
+        tx, ty = float(target.x()), float(target.y())
+
+        if self._steady is None:
+
+            # Start where the cursor already is: no jump.
+            self._string = (tx, ty)
+            self._steady = (tx, ty)
+
+        else:
+
+            # The string end only moves once the hand pulls it taut.
+            ex, ey = self._string
+
+            distance = math.hypot(tx - ex, ty - ey)
+
+            if distance > STEADY_RADIUS:
+
+                pull = 1.0 - STEADY_RADIUS / distance
+
+                self._string = (
+                    ex + (tx - ex) * pull,
+                    ey + (ty - ey) * pull,
+                )
+
+            # Then glide towards it, rounding off what is left of
+            # the tremor while the hand is moving.
+            ex, ey = self._string
+            sx, sy = self._steady
+
+            self._steady = (
+                sx + (ex - sx) * STEADY_SMOOTHING,
+                sy + (ey - sy) * STEADY_SMOOTHING,
+            )
+
+        sx, sy = self._steady
+
+        steady = QPoint(int(round(sx)), int(round(sy)))
+
+        if steady != target:
+            QCursor.setPos(steady)
+
+        # Float position on the canvas, for smooth lines.
+        origin = self.canvas.mapToGlobal(QPoint(0, 0))
+
+        return QPointF(sx - origin.x(), sy - origin.y())
+
+    def on_canvas(
+        self,
+        point
+    ):
+
+        return (
+            0 <= point.x() < self.canvas.width()
+            and 0 <= point.y() < self.canvas.height()
+        )
+
+    # ========================================================
+    # AIM (fingers apart: move the pen without drawing)
+    # ========================================================
+
+    def aim_from_gesture(
+        self,
+        hand,
+        vmouse
+    ):
+
+        point = self.steer_cursor(
+            hand,
+            vmouse
+        )
+
+        if self.on_canvas(point):
+
+            self.canvas.set_gesture_cursor(
+                point.toPoint(),
+                True,
+                pen_down=False
+            )
+
+        elif self.canvas.show_gesture_cursor:
+
+            self.canvas.set_gesture_cursor(
+                None,
+                False
+            )
+
+        self._set_gesture_status(
+            "Fingers apart: moving  (close them to draw)", "move"
+        )
 
     # ========================================================
     # DRAW FROM GESTURE
@@ -3700,6 +3912,11 @@ class WhiteboardPage(QWidget):
         vmouse
     ):
 
+        point = self.steer_cursor(
+            hand,
+            vmouse
+        )
+
         if self.current_tool not in ("pen", "highlighter", "eraser"):
 
             self._set_gesture_status(
@@ -3708,21 +3925,7 @@ class WhiteboardPage(QWidget):
 
             return
 
-        # Steer the real cursor with the Virtual Mouse's own mapping
-        # and smoothing, so the pen lands where the open hand left
-        # the cursor and follows the hand the same way.
-        if hasattr(vmouse, "move_cursor"):
-
-            try:
-                vmouse.move_cursor(hand)
-            except Exception:
-                pass
-
-        point = self.canvas.mapFromGlobal(
-            QCursor.pos()
-        )
-
-        if not self.canvas.rect().contains(point):
+        if not self.on_canvas(point):
 
             self.finish_gesture_drawing()
 
@@ -3733,8 +3936,9 @@ class WhiteboardPage(QWidget):
             return
 
         self.canvas.set_gesture_cursor(
-            point,
-            True
+            point.toPoint(),
+            True,
+            pen_down=True
         )
 
         # ====================================================
@@ -3749,14 +3953,12 @@ class WhiteboardPage(QWidget):
                 point
             ]
 
-            self.last_draw_point = point
-
             self.canvas.save_state()
 
             # A dot, so a quick touch still marks the board.
             self.canvas.draw_gesture_line(
-                point,
-                point
+                point.toPoint(),
+                point.toPoint()
             )
 
             self._set_gesture_status(
@@ -3765,28 +3967,59 @@ class WhiteboardPage(QWidget):
 
             return
 
-        # ====================================================
-        # DRAW
-        # ====================================================
+        self.add_gesture_point(
+            point
+        )
 
-        # Ignore 1 px jitter.
-        if (
-            abs(point.x() - self.last_draw_point.x())
-            + abs(point.y() - self.last_draw_point.y())
-            < 2
-        ):
+    # ========================================================
+    # SMOOTH STROKE
+    #
+    # Camera frames give one point every ~33 ms, so joining them
+    # with straight lines leaves visible corners. Each new piece is
+    # instead a curve from the middle of the previous segment to the
+    # middle of the new one, bending through the point between them.
+    # ========================================================
+
+    @staticmethod
+    def _midpoint(a, b):
+
+        return QPointF(
+            (a.x() + b.x()) / 2.0,
+            (a.y() + b.y()) / 2.0
+        )
+
+    def add_gesture_point(
+        self,
+        point
+    ):
+
+        points = self.gesture_points
+
+        last = points[-1]
+
+        # Ignore tiny steps; they only add noise.
+        if abs(point.x() - last.x()) + abs(point.y() - last.y()) < 2:
             return
 
-        self.canvas.draw_gesture_line(
-            self.last_draw_point,
+        points.append(
             point
         )
 
-        self.gesture_points.append(
-            point
-        )
+        path = QPainterPath()
 
-        self.last_draw_point = point
+        if len(points) == 2:
+
+            path.moveTo(points[0])
+            path.lineTo(self._midpoint(points[0], points[1]))
+
+        else:
+
+            path.moveTo(self._midpoint(points[-3], points[-2]))
+            path.quadTo(points[-2], self._midpoint(points[-2], points[-1]))
+
+        self.canvas.draw_path(
+            path
+        )
 
     # ========================================================
     # FINISH GESTURE DRAWING
@@ -3813,11 +4046,20 @@ class WhiteboardPage(QWidget):
             self.gesture_points
         )
 
+        # The curve stops half way along the last segment; finish it.
+        if len(points) >= 2:
+
+            path = QPainterPath()
+            path.moveTo(self._midpoint(points[-2], points[-1]))
+            path.lineTo(points[-1])
+
+            self.canvas.draw_path(
+                path
+            )
+
         self.gesture_drawing = False
 
         self.gesture_points = []
-
-        self.last_draw_point = None
 
         self.canvas.set_gesture_cursor(
             None,
