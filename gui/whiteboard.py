@@ -2323,6 +2323,9 @@ class WhiteboardPage(QWidget):
         # None when the hand is not in a two-finger pose.
         self._steady = None
 
+        # True when the two-finger hand pointed past the board edge.
+        self._steer_outside = False
+
         # Last status / camera pill shown, so the pills are only
         # re-styled when they actually change.
         self._status_shown = None
@@ -3801,6 +3804,11 @@ class WhiteboardPage(QWidget):
         cursor first, so it lines up with open-palm movement. The
         result then hangs on a short string (STEADY_RADIUS) behind
         it, which soaks up hand tremor without making big moves slow.
+
+        Two-finger control only works on the drawing board: the
+        cursor stops at the board's edge, and `self._steer_outside`
+        says whether the hand was pointing beyond it. The toolbar is
+        reached with the open hand (move) and closed hand (click).
         """
 
         if hasattr(vmouse, "move_cursor"):
@@ -3812,7 +3820,17 @@ class WhiteboardPage(QWidget):
 
         target = QCursor.pos()
 
-        tx, ty = float(target.x()), float(target.y())
+        # Keep the target on the board.
+        origin = self.canvas.mapToGlobal(QPoint(0, 0))
+
+        left, top = origin.x(), origin.y()
+        right = left + self.canvas.width() - 1
+        bottom = top + self.canvas.height() - 1
+
+        tx = float(min(max(target.x(), left), right))
+        ty = float(min(max(target.y(), top), bottom))
+
+        self._steer_outside = (tx, ty) != (target.x(), target.y())
 
         if self._steady is None:
 
@@ -3854,19 +3872,7 @@ class WhiteboardPage(QWidget):
             QCursor.setPos(steady)
 
         # Float position on the canvas, for smooth lines.
-        origin = self.canvas.mapToGlobal(QPoint(0, 0))
-
-        return QPointF(sx - origin.x(), sy - origin.y())
-
-    def on_canvas(
-        self,
-        point
-    ):
-
-        return (
-            0 <= point.x() < self.canvas.width()
-            and 0 <= point.y() < self.canvas.height()
-        )
+        return QPointF(sx - left, sy - top)
 
     # ========================================================
     # AIM (fingers apart: move the pen without drawing)
@@ -3883,24 +3889,24 @@ class WhiteboardPage(QWidget):
             vmouse
         )
 
-        if self.on_canvas(point):
-
-            self.canvas.set_gesture_cursor(
-                point.toPoint(),
-                True,
-                pen_down=False
-            )
-
-        elif self.canvas.show_gesture_cursor:
-
-            self.canvas.set_gesture_cursor(
-                None,
-                False
-            )
-
-        self._set_gesture_status(
-            "Fingers apart: moving  (close them to draw)", "move"
+        self.canvas.set_gesture_cursor(
+            point.toPoint(),
+            True,
+            pen_down=False
         )
+
+        if self._steer_outside:
+
+            self._set_gesture_status(
+                "Two fingers work on the board only: open hand for the toolbar",
+                "info"
+            )
+
+        else:
+
+            self._set_gesture_status(
+                "Fingers apart: moving  (close them to draw)", "move"
+            )
 
     # ========================================================
     # DRAW FROM GESTURE
@@ -3925,12 +3931,20 @@ class WhiteboardPage(QWidget):
 
             return
 
-        if not self.on_canvas(point):
+        # Hand points past the board: lift the pen rather than drag
+        # a line along the edge. The ring waits at the edge.
+        if self._steer_outside:
 
             self.finish_gesture_drawing()
 
+            self.canvas.set_gesture_cursor(
+                point.toPoint(),
+                True,
+                pen_down=False
+            )
+
             self._set_gesture_status(
-                "Move onto the board to draw", "info"
+                "Move back onto the board to draw", "info"
             )
 
             return
