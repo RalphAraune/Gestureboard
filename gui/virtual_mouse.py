@@ -126,12 +126,12 @@ GESTURE_GUIDE = (
     ("move",        "🖐️", "Open palm",              "Move the cursor"),
     ("left",        "✊",  "Close your hand",        "Left click"),
     ("right",       "🤏",  "Touch thumb and index",  "Right click"),
-    ("scroll_up",   "↑",  "Hold cursor top-centre",  "Scroll up after 2 s"),
-    ("scroll_down", "↓",  "Hold cursor bottom-centre", "Scroll down after 2 s"),
+    ("scroll_up",   "↑",  "Hold cursor top-centre",  "Scroll up after 1 s"),
+    ("scroll_down", "↓",  "Hold cursor bottom-centre", "Scroll down after 1 s"),
 )
 
 # Seconds the cursor must stay inside a scroll zone before scrolling.
-SCROLL_DWELL_SECONDS = 2.0
+SCROLL_DWELL_SECONDS = 1.0
 
 # Seconds between scroll steps once scrolling has started.
 SCROLL_REPEAT_SECONDS = 0.12
@@ -158,6 +158,13 @@ STATE_COLORS = {
         "paused": "#E0A458",
         "error": "#F07470",
     },
+}
+
+# Warm amber for the Start / Pause / Stop button that is in use.
+# It is the complement of the navy / blue buttons around it.
+BUTTON_ACTIVE = {
+    "Light": "#D9822B",
+    "Dark": "#F2A65A",
 }
 
 
@@ -323,7 +330,9 @@ class OneEuroFilter:
 
     def __call__(self, value, t):
 
-        if self.x is None:
+        # self.t is None when x was snapped (after a click) with no
+        # earlier sample, so there is no time step to filter over yet.
+        if self.x is None or self.t is None:
 
             self.x = value
             self.t = t
@@ -496,7 +505,7 @@ class CameraWorker:
 # SCREEN MAP
 #
 # A miniature of the screen showing the cursor and the two scroll
-# zones. The active zone fills up while the 2 second hold counts down.
+# zones. The active zone fills up while the 1 second hold counts down.
 # ==============================================================
 
 class ScreenMap(QWidget):
@@ -951,7 +960,7 @@ class VirtualMousePage(QWidget):
         layout.addWidget(self.make_section("Scroll zones"))
 
         hint = QLabel(
-            "Hold the cursor still in a zone for 2 seconds to scroll. "
+            "Hold the cursor still in a zone for 1 second to scroll. "
             "Move out of the zone to stop."
         )
         hint.setObjectName("vmHint")
@@ -1268,17 +1277,24 @@ class VirtualMousePage(QWidget):
             }}
 
             QPushButton#vmSecondary {{
-                background: {c['bg']};
-                color: {c['text']};
-                border: 1px solid {c['border']};
+                background: {c['primary']};
+                color: {c['primary_text']};
+                border: none;
                 border-radius: 8px;
                 font-size: 13px;
-                font-weight: 600;
+                font-weight: 700;
                 padding: 0 6px;
             }}
 
             QPushButton#vmSecondary:hover {{
-                background: {c['button_hover']};
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+
+            QPushButton#vmPrimary[active="true"],
+            QPushButton#vmSecondary[active="true"] {{
+                background: {BUTTON_ACTIVE['Dark' if app_theme.is_dark() else 'Light']};
+                color: {'#1A1206' if app_theme.is_dark() else '#FFFFFF'};
             }}
 
             QPushButton:focus {{
@@ -1350,6 +1366,23 @@ class VirtualMousePage(QWidget):
         else:
 
             self.tracking_status.setStyleSheet("")
+
+        # Highlight the button that matches the current state.
+        active = {
+            "live": "start_button",
+            "paused": "pause_button",
+            "off": "stop_button",
+        }.get(state)
+
+        for name in ("start_button", "pause_button", "stop_button"):
+            button = getattr(self, name, None)
+
+            if button is None:
+                continue
+
+            button.setProperty("active", name == active)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def set_active_gesture(self, key):
         """Highlight the guide row for the gesture in use."""
@@ -2130,7 +2163,7 @@ class VirtualMousePage(QWidget):
     # ==========================================================
     # SCROLL ZONES
     #
-    # Hold the cursor in the upper-middle of the screen for 2 seconds
+    # Hold the cursor in the upper-middle of the screen for 1 second
     # to scroll up, or the lower-middle to scroll down. Scrolling
     # continues until the cursor leaves the zone.
     # ==========================================================
