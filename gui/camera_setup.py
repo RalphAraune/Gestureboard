@@ -1,7 +1,8 @@
 """GestureBoard Camera Setup and Live Hand Tracking Page."""
 
+import time
+
 import cv2
-import numpy as np
 
 # ============================================================
 # MEDIAPIPE
@@ -40,6 +41,22 @@ try:
     from cv2_enumerate_cameras import enumerate_cameras
 except ImportError:
     enumerate_cameras = None
+
+# ============================================================
+# TRACKING
+#
+# The test uses exactly what the Virtual Mouse uses: the same
+# camera size, the same MediaPipe settings and the same background
+# camera worker (with its real-hand checks). So "Hand detected"
+# here means the mouse will see that hand too, and reading the
+# camera and running MediaPipe never block the window.
+# ============================================================
+
+from gui.virtual_mouse import CameraWorker
+
+TRACK_WIDTH = 640
+TRACK_HEIGHT = 480
+TRACK_FPS = 30
 
 
 # ============================================================
@@ -249,14 +266,18 @@ class CameraSetupPage(QWidget):
         self.initialize_mediapipe()
 
         # ====================================================
-        # TIMER
+        # CAMERA WORKER (reads + detects in the background)
         # ====================================================
 
-        self.timer = QTimer(self)
+        self.worker = None
 
-        self.timer.timeout.connect(
-            self.update_preview
-        )
+        # Recent frame times, for the measured frame rate.
+        self._frame_times = []
+        self._fps_shown_at = 0.0
+
+        # Last tracking status shown, so it is only restyled when
+        # it changes (restyling on every frame added to the lag).
+        self._tracking_shown = None
 
         # ====================================================
         # UI
@@ -305,17 +326,21 @@ class CameraSetupPage(QWidget):
             # Create MediaPipe Hands
             # ------------------------------------------------
 
+            # Same settings as the Virtual Mouse. One hand with the
+            # light model takes about 20 ms a frame, inside the 33 ms
+            # a 30 fps camera allows; the old two-hand, heavier model
+            # took 35-70 ms and fell behind (lag).
             self.hands = self.mp_hands.Hands(
 
                 static_image_mode=False,
 
-                max_num_hands=2,
+                max_num_hands=1,
 
-                model_complexity=1,
+                model_complexity=0,
 
-                min_detection_confidence=0.4,
+                min_detection_confidence=0.6,
 
-                min_tracking_confidence=0.4
+                min_tracking_confidence=0.7
             )
 
             print(
@@ -441,6 +466,46 @@ class CameraSetupPage(QWidget):
             QPushButton:focus {{
                 outline: none;
                 border: 2px solid {focus};
+            }}
+
+            QPushButton#refresh {{
+                background: {c['primary']};
+                color: {c['primary_text']};
+                border: none;
+                border-radius: 9px;
+                padding: 0;
+                font-size: 20px;
+                font-weight: 700;
+            }}
+
+            QPushButton#refresh:hover {{
+                background: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
+            }}
+
+            QPushButton#refresh:pressed {{
+                background: {'#22C3DE' if dark else '#1A9DB8'};
+                color: #FFFFFF;
+            }}
+
+            QPushButton#refresh[busy="true"] {{
+                background: {'#22C3DE' if dark else '#1A9DB8'};
+                color: #FFFFFF;
+            }}
+
+            QPushButton#refresh:focus {{
+                border: 2px solid {focus};
+            }}
+
+            QLabel#resolutionValue {{
+                color: {c['text']};
+                font-size: 14px;
+                font-weight: 700;
+            }}
+
+            QLabel#resolutionHint {{
+                color: {c['text_secondary']};
+                font-size: 12px;
             }}
 
             QPushButton#continue {{
@@ -740,6 +805,10 @@ class CameraSetupPage(QWidget):
             "⟳"
         )
 
+        self.refresh_button.setObjectName(
+            "refresh"
+        )
+
         self.refresh_button.setToolTip(
             "Refresh and detect cameras"
         )
@@ -752,7 +821,7 @@ class CameraSetupPage(QWidget):
         self.refresh_button.setCursor(Qt.PointingHandCursor)
 
         self.refresh_button.clicked.connect(
-            self.refresh_cameras
+            self._refresh_clicked
         )
 
         camera_row.addWidget(
@@ -769,26 +838,36 @@ class CameraSetupPage(QWidget):
 
         controls.addSpacing(8)
 
+        # Not a choice: GestureBoard always tracks hands at
+        # TRACK_WIDTH x TRACK_HEIGHT (more pixels only slow MediaPipe
+        # down). After a test it shows what the camera really sends
+        # and how smoothly, which is what matters for lag.
         controls.addWidget(
-            self._caption("Resolution")
+            self._caption("Tracking resolution")
         )
 
-        self.resolution_combo = QComboBox()
+        self.resolution_info = QFrame()
+        self.resolution_info.setObjectName("status")
 
-        self.resolution_combo.setFixedHeight(
-            42
-        )
+        info_layout = QVBoxLayout(self.resolution_info)
+        info_layout.setContentsMargins(14, 10, 14, 10)
+        info_layout.setSpacing(4)
 
-        self.resolution_combo.addItems(
-            [
-                "1280 × 720",
-                "1920 × 1080",
-                "640 × 480"
-            ]
+        self.resolution_value = QLabel(
+            f"{TRACK_WIDTH} × {TRACK_HEIGHT} at {TRACK_FPS} fps"
         )
+        self.resolution_value.setObjectName("resolutionValue")
+        info_layout.addWidget(self.resolution_value)
+
+        self.resolution_hint = QLabel()
+        self.resolution_hint.setObjectName("resolutionHint")
+        self.resolution_hint.setWordWrap(True)
+        info_layout.addWidget(self.resolution_hint)
+
+        self._set_resolution_hint()
 
         controls.addWidget(
-            self.resolution_combo
+            self.resolution_info
         )
 
         # ----------------------------------------------------
@@ -959,6 +1038,65 @@ class CameraSetupPage(QWidget):
 
         return label
 
+
+    # ========================================================
+    # REFRESH BUTTON
+    #
+    # Turns cyan while it searches for cameras (the search briefly
+    # blocks the window, so the colour is painted first) and stays
+    # cyan for a moment after, so the click is clearly seen.
+    # ========================================================
+
+    def _set_refresh_busy(self, busy):
+
+        self.refresh_button.setProperty("busy", busy)
+        self.refresh_button.style().unpolish(self.refresh_button)
+        self.refresh_button.style().polish(self.refresh_button)
+        self.refresh_button.repaint()
+
+    def _refresh_clicked(self):
+
+        self._set_refresh_busy(True)
+        self.refresh_button.setEnabled(False)
+
+        try:
+            self.refresh_cameras()
+        finally:
+            self.refresh_button.setEnabled(True)
+            QTimer.singleShot(400, lambda: self._set_refresh_busy(False))
+
+    # ========================================================
+    # TRACKING RESOLUTION NOTE
+    # ========================================================
+
+    def _set_resolution_hint(self, actual=None, fps=None):
+
+        if actual is None:
+
+            self.resolution_hint.setText(
+                "GestureBoard always tracks hands at this size: enough "
+                "detail to follow fingers, light enough to stay fast. "
+                "Test the camera to see what it really delivers."
+            )
+
+            return
+
+        width, height = actual
+
+        text = f"Your camera delivers {width} × {height}"
+
+        if fps:
+            text += f" at about {fps:.0f} fps"
+
+        if fps and fps < 20:
+            text += (
+                ". That is slow, so the cursor may lag: add light, "
+                "close other camera apps, or try another camera."
+            )
+        else:
+            text += ", good for smooth tracking."
+
+        self.resolution_hint.setText(text)
 
     # ========================================================
     # REFRESH CAMERAS
@@ -1159,28 +1297,6 @@ class CameraSetupPage(QWidget):
         self.stop_preview()
 
         # ----------------------------------------------------
-        # Get resolution
-        # ----------------------------------------------------
-
-        resolution = (
-            self.resolution_combo
-            .currentText()
-            .replace(" ", "")
-        )
-
-        try:
-
-            width, height = map(
-                int,
-                resolution.split("×")
-            )
-
-        except Exception:
-
-            width = 1280
-            height = 720
-
-        # ----------------------------------------------------
         # Windows camera backend
         # ----------------------------------------------------
 
@@ -1196,23 +1312,24 @@ class CameraSetupPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Camera settings
+        # Camera settings (same as the Virtual Mouse)
         # ----------------------------------------------------
 
-        self.capture.set(
-            cv2.CAP_PROP_FRAME_WIDTH,
-            width
-        )
-
-        self.capture.set(
-            cv2.CAP_PROP_FRAME_HEIGHT,
-            height
-        )
-
-        self.capture.set(
-            cv2.CAP_PROP_FPS,
-            30
-        )
+        # MJPG lets most USB webcams send full frame rate; a
+        # one-frame buffer stops old frames piling up behind the
+        # hand (the delay that felt like lag). Cameras that do not
+        # support a setting simply ignore it.
+        for prop, value in (
+            (cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG")),
+            (cv2.CAP_PROP_FRAME_WIDTH, TRACK_WIDTH),
+            (cv2.CAP_PROP_FRAME_HEIGHT, TRACK_HEIGHT),
+            (cv2.CAP_PROP_FPS, TRACK_FPS),
+            (cv2.CAP_PROP_BUFFERSIZE, 1),
+        ):
+            try:
+                self.capture.set(prop, value)
+            except Exception:
+                pass
 
         # ----------------------------------------------------
         # Check camera
@@ -1329,13 +1446,30 @@ class CameraSetupPage(QWidget):
             """
         )
 
+        self._set_resolution_hint(
+            (frame.shape[1], frame.shape[0])
+        )
+
         # ----------------------------------------------------
-        # Start preview timer
+        # Start the background camera + hand detection
         # ----------------------------------------------------
 
-        self.timer.start(
-            30
+        self._frame_times = []
+        self._tracking_shown = None
+
+        self.worker = CameraWorker(
+            self.capture,
+            self.hands,
+            self.mp_hands,
+            self.mp_draw
         )
+
+        # Called once per processed frame, on the UI thread.
+        self.worker.ready.connect(
+            self.update_preview
+        )
+
+        self.worker.start()
 
 
     # ========================================================
@@ -1343,223 +1477,81 @@ class CameraSetupPage(QWidget):
     # ========================================================
 
     def update_preview(self):
+        """Show the newest frame from the camera worker.
 
-        if self.capture is None:
+        The worker has already read the camera, mirrored the frame,
+        run hand detection (with the Virtual Mouse's real-hand
+        checks) and drawn the hand, so this only displays it.
+        """
+
+        if self.worker is None:
             return
 
-        if not self.capture.isOpened():
+        result = self.worker.take()
 
-            self.stop_preview()
-
+        if result is None:
             return
 
-        # ----------------------------------------------------
-        # Read frame
-        # ----------------------------------------------------
-
-        ok, frame = self.capture.read()
-
-        if not ok or frame is None:
-
-            self.preview_label.setText(
-                "Camera feed was interrupted."
-            )
-
-            self.stop_preview()
-
-            return
+        frame, hand, _stamp = result
 
         # ====================================================
-        # MIRROR CAMERA
-        # ====================================================
-        #
-        # 1 = horizontal flip
-        #
-        # This makes the camera behave like a selfie camera.
-        #
-
-        frame = cv2.flip(
-            frame,
-            1
-        )
-
-        frame = np.ascontiguousarray(
-            frame
-        )
-
-        hand_detected = False
-
-        # ====================================================
-        # MEDIAPIPE HAND DETECTION
+        # MEASURED FRAME RATE (shown under Tracking resolution)
         # ====================================================
 
+        now = time.monotonic()
+
+        self._frame_times.append(now)
+        self._frame_times = self._frame_times[-30:]
+
+        # Refresh the note about twice a second.
         if (
-            self.hands is not None
-            and self.mp_hands is not None
-            and self.mp_draw is not None
+            len(self._frame_times) >= 10
+            and now - self._fps_shown_at >= 0.5
         ):
 
-            try:
+            span = self._frame_times[-1] - self._frame_times[0]
 
-                # ------------------------------------------------
-                # BGR → RGB
-                # ------------------------------------------------
+            if span > 0:
 
-                rgb_frame = cv2.cvtColor(
-                    frame,
-                    cv2.COLOR_BGR2RGB
-                )
+                self._fps_shown_at = now
 
-                # ------------------------------------------------
-                # MediaPipe doesn't need to modify the image
-                # ------------------------------------------------
-
-                rgb_frame.flags.writeable = False
-
-                # ------------------------------------------------
-                # PROCESS FRAME
-                # ------------------------------------------------
-
-                results = self.hands.process(
-                    rgb_frame
-                )
-
-                rgb_frame.flags.writeable = True
-
-                # ------------------------------------------------
-                # HAND FOUND
-                # ------------------------------------------------
-
-                if (
-                    results is not None
-                    and results.multi_hand_landmarks
-                ):
-
-                    hand_detected = True
-
-                    # ============================================
-                    # DRAW EVERY DETECTED HAND
-                    # ============================================
-
-                    for hand_landmarks in (
-                        results.multi_hand_landmarks
-                    ):
-
-                        # ------------------------------------------------
-                        # Draw landmark lines and dots
-                        # ------------------------------------------------
-
-                        if self.mp_drawing_styles is not None:
-
-                            self.mp_draw.draw_landmarks(
-
-                                frame,
-
-                                hand_landmarks,
-
-                                self.mp_hands.HAND_CONNECTIONS,
-
-                                self.mp_drawing_styles
-                                .get_default_hand_landmarks_style(),
-
-                                self.mp_drawing_styles
-                                .get_default_hand_connections_style()
-                            )
-
-                        else:
-
-                            self.mp_draw.draw_landmarks(
-
-                                frame,
-
-                                hand_landmarks,
-
-                                self.mp_hands.HAND_CONNECTIONS
-                            )
-
-            except Exception as error:
-
-                print(
-                    "MediaPipe preview error:",
-                    error
+                self._set_resolution_hint(
+                    (frame.shape[1], frame.shape[0]),
+                    (len(self._frame_times) - 1) / span
                 )
 
         # ====================================================
-        # UPDATE TRACKING STATUS
+        # TRACKING STATUS (restyled only when it changes)
         # ====================================================
 
-        if hand_detected:
+        hand_detected = hand is not None
 
-            self.tracking_status.setText(
-                "● Hand Detected — Tracking"
-            )
+        if hand_detected != self._tracking_shown:
 
-            self.tracking_status.setStyleSheet(
-                """
-                color: #2F9E62;
-                font-size: 10px;
-                font-weight: 700;
-                margin: 6px 0 0 0;
-                """
-            )
+            self._tracking_shown = hand_detected
 
-        else:
+            if hand_detected:
 
-            self.tracking_status.setText(
-                "● Camera Active — Show your hand"
-            )
+                self.tracking_status.setText(
+                    "● Hand Detected — Tracking"
+                )
 
-            self.tracking_status.setStyleSheet(
-                """
-                color: #E8A33D;
-                font-size: 10px;
-                font-weight: 700;
-                margin: 6px 0 0 0;
-                """
-            )
+                self.tracking_status.setStyleSheet(
+                    "color: #2F9E62;"
+                )
+
+            else:
+
+                self.tracking_status.setText(
+                    "● Camera Active — Show your hand"
+                )
+
+                self.tracking_status.setStyleSheet(
+                    "color: #E8A33D;"
+                )
 
         # ====================================================
-        # BGR → RGB FOR QT
-        # ====================================================
-
-        frame_rgb = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
-        )
-
-        height, width, channels = (
-            frame_rgb.shape
-        )
-
-        bytes_per_line = (
-            channels * width
-        )
-
-        # ====================================================
-        # CREATE QIMAGE
-        # ====================================================
-
-        image = QImage(
-
-            frame_rgb.data,
-
-            width,
-
-            height,
-
-            bytes_per_line,
-
-            QImage.Format_RGB888
-        )
-
-        # ----------------------------------------------------
-        # Copy image so Qt owns the data
-        # ----------------------------------------------------
-
-        image = image.copy()
-
-        # ====================================================
-        # SCALE PREVIEW
+        # SHOW THE FRAME
         # ====================================================
 
         target = self.preview_label.size()
@@ -1573,21 +1565,41 @@ class CameraSetupPage(QWidget):
                 self.camera_placeholder.size()
             )
 
-        pixmap = QPixmap.fromImage(
-            image
+        # Resize with OpenCV first (fast), so Qt converts and draws
+        # only the pixels that are actually shown.
+        height, width = frame.shape[:2]
+
+        scale = min(
+            target.width() / width,
+            target.height() / height
         )
 
-        pixmap = pixmap.scaled(
+        if scale > 0 and abs(scale - 1.0) > 0.01:
 
-            target,
+            frame = cv2.resize(
+                frame,
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+            )
 
-            Qt.KeepAspectRatio,
-
-            Qt.SmoothTransformation
+        frame_rgb = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2RGB
         )
 
+        height, width, channels = frame_rgb.shape
+
+        image = QImage(
+            frame_rgb.data,
+            width,
+            height,
+            channels * width,
+            QImage.Format_RGB888
+        )
+
+        # fromImage copies the pixels, so the numpy buffer may go.
         self.preview_label.setPixmap(
-            pixmap
+            QPixmap.fromImage(image)
         )
 
 
@@ -1661,12 +1673,18 @@ class CameraSetupPage(QWidget):
 
     def stop_preview(self):
 
-        try:
+        # Stop the background threads before the camera is released,
+        # so they never read from a closed camera.
+        if self.worker is not None:
 
-            self.timer.stop()
+            try:
+                self.worker.ready.disconnect(self.update_preview)
+            except TypeError:
+                pass
 
-        except Exception:
-            pass
+            self.worker.stop()
+
+            self.worker = None
 
         # ----------------------------------------------------
         # Release camera
@@ -1715,6 +1733,8 @@ class CameraSetupPage(QWidget):
             self,
             "tracking_status"
         ):
+
+            self._tracking_shown = None
 
             self.tracking_status.setText(
                 "● Not Tracking"
