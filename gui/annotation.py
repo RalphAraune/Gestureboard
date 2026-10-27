@@ -1,6 +1,7 @@
 import os
+import shutil
 
-from PyQt5.QtCore import Qt, QPointF, QRectF, QSize
+from PyQt5.QtCore import Qt, QPointF, QRectF, QSize, QStandardPaths
 from PyQt5.QtGui import (
     QPainter,
     QPainterPath,
@@ -28,7 +29,8 @@ from PyQt5.QtWidgets import (
 
 from settings import theme as app_theme
 from widgets import page_background
-from gui.whiteboard import BrushPreview, WhiteboardPage, tool_pixmap
+from gui.whiteboard import BrushPreview, WhiteboardPage, tool_icon, tool_pixmap
+from widgets.sidebar import nav_pixmap
 
 try:
     import fitz
@@ -311,6 +313,17 @@ class AnnotationCanvas(QWidget):
     def set_pen_width(self, width):
         self.pen_width = width
 
+    def render_image(self):
+        """The sheet with its ink, at the page's full resolution."""
+
+        image = self.page.copy()
+
+        painter = QPainter(image)
+        painter.drawImage(0, 0, self.ink)
+        painter.end()
+
+        return image
+
     # ========================================================
     # HISTORY
     # ========================================================
@@ -428,6 +441,77 @@ class AnnotationPage(QWidget):
         main_layout.addLayout(header_row)
 
         # ====================================================
+        # LIVE: DRAW ON THE SLIDES WHILE PRESENTING
+        #
+        # Start shows the floating toolbar over the slides in
+        # Presentation Control; Pause hides it and keeps the
+        # drawings; Stop ends it and clears them.
+        # ====================================================
+
+        live = QFrame()
+        live.setObjectName("liveCard")
+
+        live_layout = QHBoxLayout(live)
+        live_layout.setContentsMargins(14, 10, 12, 10)
+        live_layout.setSpacing(12)
+
+        self.live_icon = QLabel()
+        self.live_icon.setFixedSize(30, 30)
+        live_layout.addWidget(self.live_icon)
+
+        live_text = QVBoxLayout()
+        live_text.setSpacing(1)
+
+        live_title_row = QHBoxLayout()
+        live_title_row.setSpacing(10)
+
+        live_title = QLabel("Draw on your slides while presenting")
+        live_title.setObjectName("liveTitle")
+        live_title_row.addWidget(live_title)
+
+        self.live_pill = QLabel()
+        self.live_pill.setObjectName("livePill")
+        live_title_row.addWidget(self.live_pill)
+        live_title_row.addStretch()
+
+        self.live_status = QLabel()
+        self.live_status.setObjectName("liveStatus")
+        self.live_status.setWordWrap(True)
+
+        live_text.addLayout(live_title_row)
+        live_text.addWidget(self.live_status)
+
+        live_layout.addLayout(live_text, 1)
+
+        self.live_start = QPushButton("▶  Start")
+        self.live_start.setObjectName("liveStart")
+        self.live_start.clicked.connect(self.start_live)
+
+        self.live_pause = QPushButton("❚❚  Pause")
+        self.live_pause.setObjectName("liveButton")
+        self.live_pause.setToolTip("Hide the toolbar. Your drawings stay on the slides.")
+        self.live_pause.clicked.connect(self.pause_live)
+
+        self.live_stop = QPushButton("■  Stop")
+        self.live_stop.setObjectName("liveButton")
+        self.live_stop.setToolTip("Stop annotating and clear the drawings on every slide")
+        self.live_stop.clicked.connect(self.stop_live)
+
+        for button in (self.live_start, self.live_pause, self.live_stop):
+            button.setFixedHeight(44)
+            button.setMinimumWidth(104)
+            button.setCursor(Qt.PointingHandCursor)
+            # Never narrower than its text ("Resume" is longer than "Start").
+            button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            live_layout.addWidget(button)
+
+        main_layout.addWidget(live)
+
+        presentation = self._presentation()
+        if presentation is not None:
+            presentation.liveAnnotationChanged.connect(self.refresh_live)
+
+        # ====================================================
         # TOOL DOCK
         # ====================================================
 
@@ -487,6 +571,18 @@ class AnnotationPage(QWidget):
         self.open_button.setMinimumHeight(56)
         self.open_button.clicked.connect(self.upload_pdf)
         tools_row.addWidget(self.open_button)
+
+        tools_row.addSpacing(4)
+
+        self.save_button = QPushButton("Save")
+        self.save_button.setObjectName("saveButton")
+        self.save_button.setCursor(Qt.PointingHandCursor)
+        self.save_button.setToolTip("Save this page with its ink as an image (Ctrl+S)")
+        self.save_button.setIcon(tool_icon("save", "#F5FEFF", 22))
+        self.save_button.setIconSize(QSize(22, 22))
+        self.save_button.setMinimumHeight(56)
+        self.save_button.clicked.connect(self.save_annotation)
+        tools_row.addWidget(self.save_button)
 
         dock_layout.addLayout(tools_row)
 
@@ -609,6 +705,7 @@ class AnnotationPage(QWidget):
             ("Ctrl+Z", self.canvas_undo),
             ("Ctrl+Y", self.canvas_redo),
             ("Ctrl+O", self.upload_pdf),
+            ("Ctrl+S", self.save_annotation),
             ("Left", self.previous_page),
             ("PgUp", self.previous_page),
             ("Right", self.next_page),
@@ -630,6 +727,100 @@ class AnnotationPage(QWidget):
         self.update_page_label()
 
         self.apply_theme()
+
+        self.refresh_live()
+
+    # ========================================================
+    # LIVE ANNOTATION  (Start / Pause / Stop)
+    # ========================================================
+
+    def _presentation(self):
+        return getattr(self.main_window, "presentation", None)
+
+    def showEvent(self, event):
+
+        super().showEvent(event)
+
+        # Slides may have been opened in Presentation Control since.
+        self.refresh_live()
+
+    def start_live(self):
+
+        presentation = self._presentation()
+
+        if presentation is None or not presentation.start_live_annotation():
+            return
+
+        # The toolbar is over the slides: go there.
+        if hasattr(self.main_window, "showPresentation"):
+            self.main_window.showPresentation()
+
+    def pause_live(self):
+
+        presentation = self._presentation()
+
+        if presentation is not None:
+            presentation.pause_live_annotation()
+
+    def stop_live(self):
+
+        presentation = self._presentation()
+
+        if presentation is None:
+            return
+
+        if presentation.slide_ink.has_any():
+            reply = QMessageBox.question(
+                self,
+                "Stop annotating",
+                "Stop annotating and clear the drawings on every slide?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        presentation.stop_live_annotation()
+
+    def refresh_live(self, *_):
+
+        presentation = self._presentation()
+
+        has_slides = presentation is not None and presentation._has_slides()
+        state = presentation.live_annotation if presentation is not None else "off"
+
+        if not has_slides and state == "off":
+            text = "Open your slides in Presentation Control first, then press Start here."
+        elif state == "on":
+            text = (
+                "The floating toolbar is on your slides in Presentation Control. "
+                "Each slide keeps its own drawing."
+            )
+        elif state == "paused":
+            text = "Your drawings stay on the slides. Press Resume to carry on drawing."
+        else:
+            text = (
+                "Press Start to show a floating toolbar on your slides in "
+                "Presentation Control."
+            )
+
+        self.live_status.setText(text)
+
+        self.live_pill.setText({"on": "On", "paused": "Paused"}.get(state, "Off"))
+        self.live_pill.setProperty("state", state)
+        self.live_pill.style().unpolish(self.live_pill)
+        self.live_pill.style().polish(self.live_pill)
+        self.live_pill.updateGeometry()
+
+        self.live_start.setText("▶  Resume" if state == "paused" else "▶  Start")
+        self.live_start.updateGeometry()
+        self.live_start.setEnabled(has_slides and state != "on")
+        self.live_start.setToolTip(
+            "Show the floating toolbar on your slides"
+            if has_slides else
+            "Open slides in Presentation Control first"
+        )
+        self.live_pause.setEnabled(state == "on")
+        self.live_stop.setEnabled(state != "off")
 
     # ========================================================
     # THEME
@@ -687,6 +878,77 @@ class AnnotationPage(QWidget):
                 color: {p['text']};
             }}
 
+            /* ---------- live annotation card ---------- */
+
+            QFrame#liveCard {{
+                background-color: {p['dock']};
+                border: 1px solid {p['border']};
+                border-radius: 14px;
+            }}
+
+            QLabel#liveTitle {{
+                font-size: 16px;
+                font-weight: 700;
+            }}
+
+            QLabel#liveStatus {{
+                font-size: 14px;
+                color: {p['muted']};
+            }}
+
+            QLabel#livePill {{
+                background: {p['pill']};
+                color: {p['muted']};
+                border-radius: 10px;
+                padding: 2px 10px;
+                font-size: 12px;
+                font-weight: 700;
+            }}
+
+            QLabel#livePill[state="on"] {{
+                background: {p['move_bg']};
+                color: {p['move_text']};
+            }}
+
+            QLabel#livePill[state="paused"] {{
+                background: {p['click_bg']};
+                color: {p['click_text']};
+            }}
+
+            QPushButton#liveStart {{
+                background: {p['primary']};
+                color: #F5FEFF;
+                border: none;
+                border-radius: 12px;
+                padding: 0 18px;
+                font-size: 15px;
+                font-weight: 700;
+            }}
+
+            QPushButton#liveStart:hover {{
+                background: {p['primary_hover']};
+            }}
+
+            QPushButton#liveButton {{
+                background: transparent;
+                color: {p['text']};
+                border: 1px solid {p['border']};
+                border-radius: 12px;
+                padding: 0 18px;
+                font-size: 15px;
+                font-weight: 600;
+            }}
+
+            QPushButton#liveButton:hover {{
+                background: {p['hover']};
+            }}
+
+            QPushButton#liveStart:disabled, QPushButton#liveButton:disabled {{
+                background: transparent;
+                color: {p['border']};
+                border: 1px dashed {p['border']};
+            }}
+
             /* ---------- tool dock ---------- */
 
             QFrame#dock {{
@@ -736,16 +998,30 @@ class AnnotationPage(QWidget):
             }}
 
             QPushButton#openButton {{
-                background: {p['primary']};
-                color: #F5FEFF;
-                border: none;
+                background: transparent;
+                color: {p['text']};
+                border: 2px solid {p['primary']};
                 border-radius: 12px;
-                padding: 10px 24px;
+                padding: 8px 22px;
                 font-size: 17px;
                 font-weight: 700;
             }}
 
             QPushButton#openButton:hover {{
+                background: {p['hover']};
+            }}
+
+            QPushButton#saveButton {{
+                background: {p['primary']};
+                color: #F5FEFF;
+                border: none;
+                border-radius: 12px;
+                padding: 10px 24px 10px 18px;
+                font-size: 17px;
+                font-weight: 700;
+            }}
+
+            QPushButton#saveButton:hover {{
                 background: {p['primary_hover']};
             }}
 
@@ -846,6 +1122,8 @@ class AnnotationPage(QWidget):
             )
 
         self.brush_preview.set_ring(p["border"])
+
+        self.live_icon.setPixmap(nav_pixmap("presentation", p["tool_icon"], 30))
 
         self.canvas.desk = QColor(desk)
         self.canvas.sheet_border = QColor(p["border"])
@@ -1027,6 +1305,69 @@ class AnnotationPage(QWidget):
 
         self.canvas.show_placeholder = False
         self.show_page(0, keep_current=False)
+
+    # ========================================================
+    # SAVE
+    #
+    # Saves the page on screen with its ink, at the PDF's full
+    # resolution. A copy goes to saved_files/annotations so it shows
+    # up on the Saved Files page, as the Whiteboard does.
+    # ========================================================
+
+    def save_annotation(self):
+
+        if self.pdf_document is not None:
+            stem = os.path.splitext(os.path.basename(self.pdf_path))[0]
+            name = f"{stem} - page {self.current_page + 1}.png"
+        else:
+            name = "annotation.png"
+
+        default_dir = (
+            QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
+            or os.path.expanduser("~")
+        )
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save annotation",
+            os.path.join(default_dir, name),
+            "PNG Image (*.png)"
+        )
+
+        if not file_path:
+            return
+
+        if not file_path.lower().endswith(".png"):
+            file_path += ".png"
+
+        if not self.canvas.render_image().save(file_path, "PNG"):
+            QMessageBox.critical(
+                self,
+                "Couldn't save",
+                f"The image couldn't be written to:\n\n{file_path}\n\n"
+                "Choose another folder and try again."
+            )
+            return
+
+        try:
+            saved_dir = os.path.join(os.getcwd(), "saved_files", "annotations")
+            os.makedirs(saved_dir, exist_ok=True)
+
+            destination = os.path.join(saved_dir, os.path.basename(file_path))
+            if os.path.abspath(destination) != os.path.abspath(file_path):
+                shutil.copyfile(file_path, destination)
+
+            page = getattr(self.main_window, "saved_files", None)
+            if page is not None and hasattr(page, "refresh_files"):
+                page.refresh_files()
+        except Exception:
+            pass
+
+        QMessageBox.information(
+            self,
+            "Annotation saved",
+            f"Saved to:\n\n{file_path}\n\nIt also appears on the Saved Files page."
+        )
 
     # ========================================================
     # PAGES

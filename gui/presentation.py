@@ -22,7 +22,9 @@ try:
 except Exception:
     pyautogui = None
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect, QRectF, QSize
+from PyQt5.QtCore import (
+    Qt, QTimer, pyqtSignal, QObject, QPoint, QPointF, QRect, QRectF, QSize
+)
 from PyQt5.QtGui import (
     QImage, QPixmap, QPainter, QPainterPath, QFont, QColor, QBrush, QPen
 )
@@ -49,6 +51,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.gesture_detector import GestureDetector
+from widgets.annotation_bar import FloatingAnnotationBar
 from core.presentation_controller import PresentationController
 
 try:
@@ -58,231 +61,321 @@ except Exception:
 
 
 # ============================================================
-# SLIDE VIEW  (slide image + temporary transparent annotation layer)
+# SLIDE INK  (drawings kept per slide)
+#
+# One store shared by the slide preview and the full screen view,
+# so a drawing made in either shows in both. Each slide keeps its
+# own ink: going to the next slide shows that slide's (empty) ink,
+# and coming back shows the drawing again. Ink is kept in slide
+# image pixels, so it stays on what it marked at any window size.
 # ============================================================
 
-class SlideView(QWidget):
-    """Shows a slide and lets the user draw a TEMPORARY transparent
-    overlay on top of it.
+INK_UNDO_LIMIT = 30
 
-    The annotation layer is cleared automatically whenever the slide
-    changes, so every slide starts clean and nothing is ever saved.
-    """
+MARKER_ALPHA = 100
+
+
+class SlideInk(QObject):
+
+    # The ink on screen changed (stroke, undo, slide change, ...).
+    changed = pyqtSignal()
+
+    # Drawing was switched on or off.
+    enabledChanged = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.slide = None          # QPixmap of the current slide
-        self.layer = None          # QImage (ARGB) annotation overlay
+        # slide index -> [ink image, undo list, redo list]
+        self.pages = {}
 
-        self.tool = "pen"          # pen / highlighter / eraser
+        self.index = 0
+        self.size = QSize()
+
+        self.enabled = False
+
+        self.tool = "pen"              # pen / highlighter / eraser
         self.color = QColor("#E81123")
-        self.brush_size = 4
+        self.brush_size = 4            # on-screen pixels
 
-        self.drawing = False
-        self.last_point = QPoint()
+        self._base = None
+        self._path = None
+        self._last = None
 
-        self.undo_stack = []
-        self.redo_stack = []
+    # --------------------------------------------------------
+
+    def set_enabled(self, enabled):
+
+        enabled = bool(enabled)
+
+        if enabled != self.enabled:
+            self.enabled = enabled
+            self.enabledChanged.emit(enabled)
+
+    def set_slide(self, index, size):
+
+        self.end_stroke()
+        self.index = index
+        self.size = QSize(size)
+        self.changed.emit()
+
+    def ink(self):
+
+        entry = self.pages.get(self.index)
+        return entry[0] if entry else None
+
+    def has_any(self):
+        """True when some slide still has something drawn on it."""
+
+        blank = None
+
+        for ink, _undo, _redo in self.pages.values():
+            if blank is None or blank.size() != ink.size():
+                blank = QImage(ink.size(), ink.format())
+                blank.fill(Qt.transparent)
+            if ink != blank:
+                return True
+
+        return False
+
+    def _entry(self):
+
+        entry = self.pages.get(self.index)
+
+        if entry is None and not self.size.isEmpty():
+            ink = QImage(self.size, QImage.Format_ARGB32_Premultiplied)
+            ink.fill(Qt.transparent)
+            entry = self.pages[self.index] = [ink, [], []]
+
+        return entry
+
+    def stroke_width(self):
+        """Width of the current tool on screen, in pixels."""
+
+        if self.tool == "eraser":
+            return self.brush_size * 4
+        if self.tool == "highlighter":
+            return max(10, self.brush_size * 3)
+        return self.brush_size
+
+    # --------------------------------------------------------
+    # STROKES  (points in slide pixels)
+    # --------------------------------------------------------
+
+    def begin_stroke(self, point, width):
+
+        entry = self._entry()
+
+        if entry is None or not self.enabled:
+            return
+
+        self._base = entry[0].copy()
+        self._width = width
+        self._last = QPointF(point)
+
+        # A tiny first segment so a single click leaves a dot.
+        self._path = QPainterPath(self._last)
+        self._path.lineTo(self._last + QPointF(0.01, 0.01))
+
+        self._paint(self._last)
+
+    def extend_stroke(self, point):
+
+        if self._path is None:
+            return
+
+        point = QPointF(point)
+        self._path.lineTo(point)
+        self._paint(point)
+
+    def end_stroke(self):
+
+        if self._path is None:
+            return
+
+        entry = self._entry()
+        entry[1].append(self._base)
+        if len(entry[1]) > INK_UNDO_LIMIT:
+            entry[1].pop(0)
+        entry[2].clear()
+
+        self._base = None
+        self._path = None
+
+    def _paint(self, point):
+
+        entry = self._entry()
+
+        if self.tool == "eraser":
+            # Erase as the cursor moves; the slide itself is never touched.
+            painter = QPainter(entry[0])
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            painter.setPen(QPen(Qt.black, self._width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawLine(self._last, point)
+            painter.end()
+
+        else:
+            # Redraw the whole stroke over the ink from before it, so a
+            # see-through marker stays even where its segments overlap.
+            color = QColor(self.color)
+            color.setAlpha(MARKER_ALPHA if self.tool == "highlighter" else 235)
+
+            entry[0] = self._base.copy()
+
+            painter = QPainter(entry[0])
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(QPen(color, self._width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(self._path)
+            painter.end()
+
+        self._last = point
+        self.changed.emit()
+
+    # --------------------------------------------------------
+    # HISTORY
+    # --------------------------------------------------------
+
+    def undo(self):
+
+        entry = self.pages.get(self.index)
+
+        if not entry or not entry[1]:
+            return
+
+        entry[2].append(entry[0])
+        entry[0] = entry[1].pop()
+        self.changed.emit()
+
+    def redo(self):
+
+        entry = self.pages.get(self.index)
+
+        if not entry or not entry[2]:
+            return
+
+        entry[1].append(entry[0])
+        entry[0] = entry[2].pop()
+        self.changed.emit()
+
+    def clear_slide(self):
+        """Clear this slide's drawing (undo brings it back)."""
+
+        self.end_stroke()
+
+        entry = self.pages.get(self.index)
+
+        if not entry:
+            return
+
+        entry[1].append(entry[0])
+        if len(entry[1]) > INK_UNDO_LIMIT:
+            entry[1].pop(0)
+        entry[2].clear()
+
+        blank = QImage(entry[0].size(), QImage.Format_ARGB32_Premultiplied)
+        blank.fill(Qt.transparent)
+        entry[0] = blank
+
+        self.changed.emit()
+
+    def clear_all(self):
+        """Forget the drawings on every slide."""
+
+        self._base = None
+        self._path = None
+        self.pages = {}
+        self.changed.emit()
+
+
+# ============================================================
+# SLIDE VIEW  (slide image + its ink)
+# ============================================================
+
+class SlideView(QWidget):
+    """Shows a slide with its ink from a shared SlideInk.
+
+    The page preview and the full screen view each have one; both
+    draw into the same SlideInk while drawing is switched on.
+    """
+
+    def __init__(self, ink, background="#0B1A30", empty_text="", parent=None):
+        super().__init__(parent)
+
+        self.ink = ink
+        self.slide = None              # QPixmap of the current slide
+        self._scaled = None            # slide scaled to the current size
+        self.background = QColor(background)
+        self.empty_text = empty_text
 
         self.setMinimumSize(240, 150)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
-        self.setStyleSheet("background: #0B1A30; border-radius: 6px;")
 
-    # --------------------------------------------------------
+        ink.changed.connect(self.update)
+        ink.enabledChanged.connect(self._sync_cursor)
+        self._sync_cursor(ink.enabled)
 
-    def _ensure_layer(self):
+    def _sync_cursor(self, enabled):
 
-        if (
-            self.layer is None
-            or self.layer.size() != self.size()
-            or self.size().isEmpty()
-        ):
+        self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
 
-            new_layer = QImage(
-                max(1, self.width()),
-                max(1, self.height()),
-                QImage.Format_ARGB32
-            )
-
-            new_layer.fill(Qt.transparent)
-
-            if self.layer is not None:
-
-                painter = QPainter(new_layer)
-
-                painter.drawImage(0, 0, self.layer)
-
-                painter.end()
-
-            self.layer = new_layer
-
-    def resizeEvent(self, event):
-
-        self._ensure_layer()
-
-        super().resizeEvent(event)
-
-    # --------------------------------------------------------
-    # SLIDE
     # --------------------------------------------------------
 
     def set_slide(self, pixmap):
-        """Show a new slide and CLEAR any previous annotations."""
 
         self.slide = pixmap
-
-        self.clear_annotations()
-
+        self._scaled = None
         self.update()
 
     def has_slide(self):
         return self.slide is not None
 
     def slide_rect(self):
-        """Return the rect the slide is drawn into (centred, KeepAspect)."""
+        """The rect the slide is drawn into (centred, keeping its shape)."""
 
         if self.slide is None:
-            return self.rect()
+            return QRect(self.rect())
 
-        scaled = self.slide.scaled(
-            self.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
-        )
+        size = self.slide.size().scaled(self.size(), Qt.KeepAspectRatio)
+        rect = QRect(QPoint(0, 0), size)
+        rect.moveCenter(self.rect().center())
+        return rect
 
-        x = (self.width() - scaled.width()) // 2
-        y = (self.height() - scaled.height()) // 2
+    def _to_slide(self, pos):
 
-        return QRect(x, y, scaled.width(), scaled.height())
-
-    # --------------------------------------------------------
-    # ANNOTATION
-    # --------------------------------------------------------
-
-    def clear_annotations(self):
-
-        self._ensure_layer()
-
-        self.layer.fill(Qt.transparent)
-
-        self.undo_stack = []
-        self.redo_stack = []
-
-        self.update()
-
-    def save_state(self):
-
-        if self.layer is None:
-            return
-
-        self.undo_stack.append(self.layer.copy())
-
-        if len(self.undo_stack) > 30:
-            self.undo_stack.pop(0)
-
-        self.redo_stack.clear()
-
-    def undo(self):
-
-        if not self.undo_stack:
-            return
-
-        self.redo_stack.append(self.layer.copy())
-        self.layer = self.undo_stack.pop()
-        self.update()
-
-    def redo(self):
-
-        if not self.redo_stack:
-            return
-
-        self.undo_stack.append(self.layer.copy())
-        self.layer = self.redo_stack.pop()
-        self.update()
-
-    def _width(self):
-
-        if self.tool == "eraser":
-            return self.brush_size * 4
-
-        if self.tool == "highlighter":
-            return max(10, self.brush_size * 3)
-
-        return self.brush_size
-
-    def _draw(self, start, end):
-
-        self._ensure_layer()
-
-        painter = QPainter(self.layer)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-
-        if self.tool == "eraser":
-
-            painter.setCompositionMode(QPainter.CompositionMode_Clear)
-            pen = QPen(Qt.transparent, self._width())
-
-        elif self.tool == "highlighter":
-
-            color = QColor(self.color)
-            color.setAlpha(90)
-            pen = QPen(color, self._width())
-
-        else:
-
-            color = QColor(self.color)
-            color.setAlpha(235)
-            pen = QPen(color, self._width())
-
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(pen)
-
-        painter.drawLine(start, end)
-
-        painter.end()
-
-        self.update()
+        rect = self.slide_rect()
+        scale = self.slide.width() / max(1, rect.width())
+        return QPointF((pos.x() - rect.x()) * scale, (pos.y() - rect.y()) * scale), scale
 
     # --------------------------------------------------------
-    # MOUSE (driven by the Virtual Mouse style gestures)
+    # MOUSE  (a real mouse, or the hand cursor pressing it)
     # --------------------------------------------------------
 
     def mousePressEvent(self, event):
 
-        if event.button() != Qt.LeftButton:
+        if event.button() != Qt.LeftButton or self.slide is None:
             return
 
-        if self.slide is None:
+        if not self.ink.enabled:
             return
 
-        self.save_state()
-
-        self.drawing = True
-        self.last_point = event.pos()
-
-        self._draw(self.last_point, self.last_point)
+        point, scale = self._to_slide(event.pos())
+        self.ink.begin_stroke(point, self.ink.stroke_width() * scale)
 
     def mouseMoveEvent(self, event):
 
-        if not self.drawing:
+        if not (event.buttons() & Qt.LeftButton) or self.slide is None:
             return
 
-        if not (event.buttons() & Qt.LeftButton):
-            return
-
-        point = event.pos()
-
-        self._draw(self.last_point, point)
-
-        self.last_point = point
+        point, _scale = self._to_slide(event.pos())
+        self.ink.extend_stroke(point)
 
     def mouseReleaseEvent(self, event):
 
         if event.button() == Qt.LeftButton:
-            self.drawing = False
+            self.ink.end_stroke()
 
     # --------------------------------------------------------
 
@@ -290,35 +383,31 @@ class SlideView(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
-        painter.fillRect(self.rect(), QColor("#0B1A30"))
+        painter.fillRect(self.rect(), self.background)
 
         if self.slide is not None:
 
             rect = self.slide_rect()
 
-            scaled = self.slide.scaled(
-                rect.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
+            # Scale once per size, not on every stroke repaint.
+            if self._scaled is None or self._scaled.size() != rect.size():
+                self._scaled = self.slide.scaled(
+                    rect.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
 
-            painter.drawPixmap(rect.topLeft(), scaled)
+            painter.drawPixmap(rect.topLeft(), self._scaled)
 
-        else:
+            ink = self.ink.ink()
+            if ink is not None and ink.size() == self.slide.size():
+                painter.drawImage(QRectF(rect), ink)
+
+        elif self.empty_text:
 
             painter.setPen(QColor("#7890B5"))
             painter.setFont(QFont("Segoe UI", 14))
-            painter.drawText(
-                self.rect(),
-                Qt.AlignCenter,
-                "No slides yet\n\n"
-                "Press Choose file to open a PDF or PowerPoint."
-            )
-
-        if self.layer is not None:
-
-            painter.drawImage(0, 0, self.layer)
+            painter.drawText(self.rect(), Qt.AlignCenter, self.empty_text)
 
         painter.end()
 
@@ -471,6 +560,17 @@ class PresentationPage(QWidget):
     # Signal can be connected to your MainWindow if needed.
     presentationAction = pyqtSignal(str)
 
+    # Live annotation state changed: "off", "on" or "paused".
+    liveAnnotationChanged = pyqtSignal(str)
+
+    # Hold thumbs down this long (seconds) to clear the slide's drawing.
+    CLEAR_HOLD_SECONDS = 1.0
+
+    @property
+    def annotation_mode(self):
+        """Drawing is on (the hand gestures draw instead of presenting)."""
+        return self.live_annotation == "on"
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -523,17 +623,29 @@ class PresentationPage(QWidget):
         self.current_action = "Ready"
 
         # ---------------------------------------------------------
-        # ANNOTATION OVERLAY (temporary, on top of the slide)
+        # ANNOTATION WHILE PRESENTING
         # ---------------------------------------------------------
 
-        # Annotation mode is toggled with the Three Fingers gesture while
-        # presenting. It draws on a temporary transparent overlay above the
-        # current slide; the overlay is cleared on every slide change.
-        self.annotation_mode = False
+        # Drawings on the slides, kept per slide and shared by the
+        # preview and the full screen view.
+        self.slide_ink = SlideInk(self)
+
+        # Started, paused and stopped from the Annotation page (or with
+        # the Three Fingers gesture): "off", "on" or "paused". While
+        # "on" the floating toolbar shows over the slides and drawing
+        # works; "paused" keeps the drawings but hides the toolbar.
+        self.live_annotation = "off"
+
+        # True between Pause and Resume, so Start picks up where the
+        # presentation left off.
+        self.presentation_paused = False
 
         self.annotation_toolbar = None
 
         self._annot_drawing = False
+
+        # When the thumbs-down hold (clear this slide) began.
+        self._clear_hold_start = None
 
         self.left_click_cooldown = 0
 
@@ -608,16 +720,15 @@ class PresentationPage(QWidget):
         the user is on another page.
         """
 
+        # Leaving the page while presenting pauses the presentation, so
+        # Start resumes on the same slide.
+        if self.gestures_enabled:
+            self.presentation_paused = True
+
         self.gestures_enabled = False
+        self.end_annotation_draw()
         self.exit_fullscreen()
         self._refresh_controls()
-
-        # Leaving the page also ends annotation mode and clears the
-        # temporary overlay (annotations are never kept).
-        try:
-            self.set_annotation_mode(False)
-        except Exception:
-            pass
 
     # ============================================================
     # UI
@@ -661,7 +772,7 @@ class PresentationPage(QWidget):
 
         self.status_gesture = ToneLabel(
             "● Gestures off",
-            [("on", "good"), ("annotating", "warn")],
+            [("on", "good"), ("annotating", "warn"), ("paused", "warn")],
         )
         self.status_gesture.setObjectName("gesturePill")
         self.status_gesture.setToolTip(
@@ -758,8 +869,14 @@ class PresentationPage(QWidget):
         preview_layout = QGridLayout(preview_holder)
         preview_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Slide + temporary transparent annotation overlay.
-        self.slide_view = SlideView()
+        # Slide with its drawings.
+        self.slide_view = SlideView(
+            self.slide_ink,
+            empty_text=(
+                "No slides yet\n\n"
+                "Press Choose file to open a PDF or PowerPoint."
+            ),
+        )
         self.preview_label = self.slide_view
 
         self.slide_counter = QLabel("")
@@ -772,12 +889,10 @@ class PresentationPage(QWidget):
             self.slide_counter, 0, 0, Qt.AlignTop | Qt.AlignRight
         )
 
-        # Floating annotation toolbar (shown only in Annotation Mode).
-        self.annotation_toolbar = self._build_annotation_toolbar()
-
-        preview_layout.addWidget(
-            self.annotation_toolbar, 0, 0, Qt.AlignTop | Qt.AlignLeft
-        )
+        # Floating annotation toolbar: over the preview, or over the
+        # full screen view while that is open (see _dock_annotation_bar).
+        self.annotation_toolbar = FloatingAnnotationBar(self.slide_ink)
+        self.annotation_toolbar.attach(self.slide_view)
 
         stage_layout.addWidget(preview_holder, 1)
 
@@ -809,6 +924,15 @@ class PresentationPage(QWidget):
         )
         self.stop_button.clicked.connect(self.manual_stop)
 
+        # Shown while presenting: leaves full screen and turns gestures
+        # off, keeping the slide so Resume carries on from it.
+        self.pause_button = QPushButton()
+        self.pause_button.setObjectName("pauseButton")
+        self.pause_button.setToolTip(
+            "Pause on this slide. Press Resume to carry on from here."
+        )
+        self.pause_button.clicked.connect(self.manual_pause)
+
         deck = QHBoxLayout()
         deck.setSpacing(8)
 
@@ -824,6 +948,14 @@ class PresentationPage(QWidget):
             deck.addWidget(button, stretch)
 
         deck.addSpacing(10)
+
+        self.pause_button.setFixedHeight(44)
+        self.pause_button.setMinimumWidth(0)
+        self.pause_button.setCursor(Qt.PointingHandCursor)
+        self.pause_button.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        deck.addWidget(self.pause_button, 1)
 
         self.stop_button.setFixedHeight(44)
         self.stop_button.setMinimumWidth(0)
@@ -1116,11 +1248,23 @@ class PresentationPage(QWidget):
         presenting = self.gestures_enabled
         narrow = self._narrow
 
+        paused = self.presentation_paused and not presenting
+
         self.previous_button.setText("‹  Prev" if narrow else "‹  Previous")
         self.next_button.setText("Next  ›")
         self.stop_button.setText("■  Stop")
+        self.pause_button.setText("❚❚  Pause")
+        self.pause_button.setVisible(presenting)
 
-        if presenting:
+        if paused:
+            slide = self.current_page + 1
+            self.start_button.setText(
+                "▶  Resume" if narrow else f"▶  Resume from slide {slide}"
+            )
+            self.start_button.setToolTip(
+                f"Carry on presenting from slide {slide}"
+            )
+        elif presenting:
             self.start_button.setText(
                 "⤢  Full screen" if narrow else "⤢  Back to full screen"
             )
@@ -1138,14 +1282,26 @@ class PresentationPage(QWidget):
         self.start_button.setEnabled(loaded)
         self.previous_button.setEnabled(loaded)
         self.next_button.setEnabled(loaded)
-        self.stop_button.setEnabled(presenting)
+        self.stop_button.setEnabled(presenting or paused)
 
         if not loaded:
             hint = "Choose a file above. Your slides show up here."
+        elif self.annotation_mode and presenting:
+            hint = (
+                "Drawing is on: hold index and middle fingers together to "
+                "draw, point left or right to change slides, hold thumbs "
+                "down to clear this slide."
+            )
         elif self.annotation_mode:
             hint = (
-                "Annotation mode: hold index and middle fingers together "
-                "to draw. Show three fingers again to finish."
+                "Drawing is on: draw on the slide with the mouse, or press "
+                "Resume and use your hand. Each slide keeps its own drawing."
+            )
+        elif paused:
+            hint = (
+                f"Paused on slide {self.current_page + 1}. Press Resume to "
+                "carry on. To draw on your slides, press Start on the "
+                "Annotation page."
             )
         elif presenting:
             hint = (
@@ -1164,6 +1320,8 @@ class PresentationPage(QWidget):
             self.status_gesture.setText("● Annotating")
         elif presenting:
             self.status_gesture.setText("● Gestures on")
+        elif paused:
+            self.status_gesture.setText("● Paused")
         else:
             self.status_gesture.setText("● Gestures off")
 
@@ -1323,8 +1481,12 @@ class PresentationPage(QWidget):
                 color: {c['sidebar_text']};
             }}
 
-            QPushButton#navButton {{
+            QPushButton#navButton, QPushButton#pauseButton {{
                 font-size: 14px;
+            }}
+
+            QPushButton#pauseButton {{
+                font-weight: 600;
             }}
 
             QPushButton#startButton {{
@@ -1470,55 +1632,6 @@ class PresentationPage(QWidget):
                 color: {c['text_secondary']};
             }}
 
-            /* ---------- Annotation bar (over the slide) ---------- */
-
-            QFrame#annotBar {{
-                background: rgba(11, 26, 48, 0.94);
-                border: 1px solid #2A5A9E;
-                border-radius: 12px;
-                margin: 10px;
-            }}
-
-            QFrame#annotBar QPushButton#annotTool,
-            QFrame#annotBar QPushButton#annotAction {{
-                background: transparent;
-                color: #EAF2FF;
-                border: 1px solid transparent;
-                border-radius: 7px;
-                padding: 4px 9px;
-                font-size: 12px;
-                font-weight: 600;
-            }}
-
-            QFrame#annotBar QPushButton#annotTool:hover,
-            QFrame#annotBar QPushButton#annotAction:hover {{
-                background: #1B3A63;
-            }}
-
-            QFrame#annotBar QPushButton#annotTool:checked {{
-                background: #3E7CF7;
-                color: #0B1A30;
-            }}
-
-            QFrame#annotBar QPushButton#annotSwatch {{
-                border: 2px solid rgba(255, 255, 255, 0.35);
-                border-radius: 11px;
-                padding: 0;
-            }}
-
-            QFrame#annotBar QPushButton#annotSwatch:checked {{
-                border: 3px solid #7FD3FF;
-            }}
-
-            QFrame#annotBar QLabel#annotLabel {{
-                color: #AAC0E1;
-                font-size: 12px;
-            }}
-
-            QFrame#annotBar QSlider {{
-                background: transparent;
-            }}
-
             QSplitter::handle {{
                 background: transparent;
             }}
@@ -1654,6 +1767,9 @@ class PresentationPage(QWidget):
                 file_path
             )
 
+            # A new file starts without drawings.
+            self.slide_ink.clear_all()
+
             self.total_pages = len(
                 self.pdf_document
             )
@@ -1695,6 +1811,9 @@ class PresentationPage(QWidget):
 
         try:
             prs = PptxPresentation(file_path)
+
+            # A new file starts without drawings.
+            self.slide_ink.clear_all()
 
             slides = [slide for slide in prs.slides]
             self.total_pages = len(slides)
@@ -1851,10 +1970,11 @@ class PresentationPage(QWidget):
 
             img = self.ppt_slides[self.current_page]
 
-            # set_slide() clears any annotations -> every slide starts clean.
-            self.slide_view.set_slide(
-                QPixmap.fromImage(img)
-            )
+            pixmap = QPixmap.fromImage(img)
+
+            # Each slide keeps its own drawing.
+            self.slide_view.set_slide(pixmap)
+            self.slide_ink.set_slide(self.current_page, pixmap.size())
 
             self._update_counter()
 
@@ -1898,10 +2018,12 @@ class PresentationPage(QWidget):
             image
         )
 
-        # set_slide() clears any annotations -> every slide starts clean.
+        # Each slide keeps its own drawing.
         self.slide_view.set_slide(
             pixmap
         )
+
+        self.slide_ink.set_slide(self.current_page, pixmap.size())
 
         self._update_counter()
 
@@ -2333,129 +2455,113 @@ class PresentationPage(QWidget):
         )
 
     # ============================================================
-    # ANNOTATION TOOLBAR (floating, temporary)
+    # ANNOTATION WHILE PRESENTING  (Start / Pause / Stop)
+    #
+    # Controlled from the Annotation page. While "on", the floating
+    # toolbar shows over the slides and the hand gestures draw.
     # ============================================================
 
-    def _build_annotation_toolbar(self):
+    def start_live_annotation(self):
 
-        # Dark glass bar floating over the slide; styled by the page
-        # stylesheet (QFrame#annotBar) so it matches in both themes.
-        bar = QFrame()
-        bar.setObjectName("annotBar")
-        bar.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+        if not self._has_slides():
+            return False
 
-        layout = QVBoxLayout(bar)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
+        self._set_live_annotation("on")
+        return True
 
-        # Row 1: tool choice, then history actions
-        tools_row = QHBoxLayout()
-        tools_row.setSpacing(4)
+    def pause_live_annotation(self):
 
-        self.annot_tools = QButtonGroup(bar)
-        self.annot_tools.setExclusive(True)
+        if self.live_annotation == "on":
+            self._set_live_annotation("paused")
 
-        for tool, label in (
-            ("pen", "✎ Pen"),
-            ("highlighter", "▍ Highlighter"),
-            ("eraser", "⌫ Eraser"),
-        ):
-            button = QPushButton(label)
-            button.setObjectName("annotTool")
-            button.setCheckable(True)
-            button.setChecked(tool == "pen")
-            button.clicked.connect(
-                lambda checked=False, t=tool: self._set_annotation_tool(t)
-            )
-            self.annot_tools.addButton(button)
-            tools_row.addWidget(button)
+    def stop_live_annotation(self):
+        """End annotating and forget the drawings on every slide."""
 
-        # Keep the old attribute names for anything that refers to them.
-        self.pen_btn, self.highlighter_btn, self.eraser_btn = (
-            self.annot_tools.buttons()
-        )
+        self.slide_ink.clear_all()
+        self._set_live_annotation("off")
 
-        tools_row.addSpacing(8)
+    def _set_live_annotation(self, state):
 
-        for label, tip, slot in (
-            ("Undo", "Undo the last stroke", self.slide_view.undo),
-            ("Redo", "Bring back the last undone stroke", self.slide_view.redo),
-            ("Clear", "Erase everything on this slide", self.slide_view.clear_annotations),
-        ):
-            button = QPushButton(label)
-            button.setObjectName("annotAction")
-            button.setToolTip(tip)
-            button.clicked.connect(slot)
-            tools_row.addWidget(button)
+        self.live_annotation = state
 
-        layout.addLayout(tools_row)
+        self.end_annotation_draw()
+        self._reset_clear_hold()
 
-        # Row 2: colour swatches and brush size
-        style_row = QHBoxLayout()
-        style_row.setSpacing(6)
+        self.slide_ink.set_enabled(state == "on")
 
-        self.annot_colors = QButtonGroup(bar)
-        self.annot_colors.setExclusive(True)
+        self._dock_annotation_bar()
 
-        for color, name in (
-            ("#E81123", "Red"),
-            ("#FFB020", "Yellow"),
-            ("#28C76F", "Green"),
-            ("#2876E8", "Blue"),
-            ("#FFFFFF", "White"),
-        ):
-            swatch = QPushButton()
-            swatch.setObjectName("annotSwatch")
-            swatch.setCheckable(True)
-            swatch.setChecked(color == "#E81123")
-            swatch.setFixedSize(22, 22)
-            swatch.setToolTip(name)
-            swatch.setStyleSheet(
-                f"QPushButton {{ background: {color}; }}"
-            )
-            swatch.clicked.connect(
-                lambda checked=False, c=color:
-                self._set_annotation_color(c)
-            )
-            self.annot_colors.addButton(swatch)
-            style_row.addWidget(swatch)
+        # Show the drawing gestures while annotating.
+        if hasattr(self, "guide_tabs"):
+            tab = self.guide_tabs.button(1 if state == "on" else 0)
+            if tab is not None:
+                tab.click()
 
-        style_row.addSpacing(10)
+        self._set_action({
+            "on": "Annotation on",
+            "paused": "Annotation paused",
+            "off": "Annotation stopped",
+        }[state])
 
-        size_label = QLabel("Size")
-        size_label.setObjectName("annotLabel")
-        style_row.addWidget(size_label)
+        self.update_status()
+        self.liveAnnotationChanged.emit(state)
 
-        size_slider = QSlider(Qt.Horizontal)
-        size_slider.setObjectName("annotSize")
-        size_slider.setRange(1, 20)
-        size_slider.setValue(4)
-        size_slider.setFixedWidth(96)
-        size_slider.valueChanged.connect(
-            lambda v: setattr(self.slide_view, "brush_size", v)
-        )
-        style_row.addWidget(size_slider)
-        style_row.addStretch()
+    def _dock_annotation_bar(self):
+        """Float the toolbar over the full screen view if it is open,
+        otherwise over the slide preview."""
 
-        layout.addLayout(style_row)
+        bar = self.annotation_toolbar
 
-        bar.hide()
+        if bar is None:
+            return
 
-        return bar
+        viewer = self.fullscreen_window
+        target = viewer.slide_view if viewer is not None else self.slide_view
 
-    def _set_annotation_tool(self, tool):
+        if bar.parentWidget() is not target:
+            bar.attach(target)
 
-        self.slide_view.tool = tool
+        bar.setVisible(self.live_annotation == "on")
+        bar.raise_()
 
-    def _set_annotation_color(self, color):
+    def _reset_clear_hold(self):
 
-        self.slide_view.color = QColor(color)
+        self._clear_hold_start = None
+
+        if self.annotation_toolbar is not None:
+            self.annotation_toolbar.set_clear_progress(0)
+
+    def _hold_to_clear(self):
+        """Thumbs down held for CLEAR_HOLD_SECONDS clears this slide."""
+
+        now = time.monotonic()
+
+        if self._clear_hold_start is None:
+            self._clear_hold_start = now
+
+        # Already cleared during this hold: wait for the hand to change.
+        if self._clear_hold_start == float("inf"):
+            return
+
+        progress = (now - self._clear_hold_start) / self.CLEAR_HOLD_SECONDS
+        self.annotation_toolbar.set_clear_progress(progress)
+
+        if progress >= 1:
+            self.slide_ink.clear_slide()
+            self._clear_hold_start = float("inf")
+            self._set_action("Cleared this slide")
+        else:
+            self._set_action("Hold to clear this slide")
 
     # ============================================================
     # GESTURE PROCESSING
     # ============================================================
 
     def process_gesture(self, gesture, hand=None):
+
+        # Clearing needs an unbroken thumbs-down hold.
+        if gesture != "Thumbs Down" and self._clear_hold_start is not None:
+            self._reset_clear_hold()
 
         if gesture in ("None", "Unknown"):
             return
@@ -2475,9 +2581,31 @@ class PresentationPage(QWidget):
         # ====================================================
         if self.annotation_mode:
 
-            # 🖖 Three Fingers toggles annotation mode OFF.
+            # 🖖 Three Fingers pauses drawing (presenting carries on).
             if gesture == "Three Fingers":
-                self.set_annotation_mode(False)
+                if gesture != self.detected_gesture:
+                    self.set_annotation_mode(False)
+                self.detected_gesture = gesture
+                return
+
+            # 👎 Thumbs down, held -> clear this slide's drawing.
+            if gesture == "Thumbs Down":
+                self.end_annotation_draw()
+                self._hold_to_clear()
+                self.detected_gesture = gesture
+                return
+
+            # 👉 / 👈 still change slides; each slide keeps its drawing.
+            if gesture in ("Point Right", "Point Left"):
+                self.end_annotation_draw()
+                if gesture != self.detected_gesture:
+                    if gesture == "Point Right":
+                        self.next_pdf_preview()
+                        self._set_action("Next Slide")
+                    else:
+                        self.previous_pdf_preview()
+                        self._set_action("Previous Slide")
+                    self.update_status()
                 self.detected_gesture = gesture
                 return
 
@@ -2599,28 +2727,16 @@ class PresentationPage(QWidget):
 
 
     def set_annotation_mode(self, enabled):
+        """Three Fingers gesture: start drawing, or pause it.
 
-        self.annotation_mode = bool(enabled)
+        Pausing keeps every slide's drawing, the same as Pause on the
+        Annotation page.
+        """
 
-        if self.annotation_toolbar is not None:
-            self.annotation_toolbar.setVisible(self.annotation_mode)
-
-        # Always start the overlay clean.
-        self.slide_view.clear_annotations()
-
-        self.end_annotation_draw()
-
-        # Show the drawing gestures while annotating.
-        if hasattr(self, "guide_tabs"):
-            tab = self.guide_tabs.button(1 if self.annotation_mode else 0)
-            if tab is not None:
-                tab.click()
-
-        self._set_action(
-            "Annotation Mode" if enabled else "Presentation"
-        )
-
-        self.update_status()
+        if enabled:
+            self.start_live_annotation()
+        else:
+            self.pause_live_annotation()
 
     def begin_annotation_draw(self):
 
@@ -2777,15 +2893,38 @@ class PresentationPage(QWidget):
             )
             return
 
+        resuming = self.presentation_paused
+
         # Enable gesture control ONLY here (explicit user action).
         self.gestures_enabled = True
+        self.presentation_paused = False
 
         self.presentation_controller.start_presentation()
 
+        # Resuming shows the slide it was paused on (current_page is
+        # kept), with that slide's drawing.
         self.enter_fullscreen()
 
         self.current_action = (
-            "Presentation Started"
+            "Presentation Resumed" if resuming else "Presentation Started"
+        )
+
+        self.update_status()
+
+    def manual_pause(self):
+
+        if not self.gestures_enabled:
+            return
+
+        # Keep the slide; gestures go off until Resume.
+        self.gestures_enabled = False
+        self.presentation_paused = True
+
+        self.end_annotation_draw()
+        self.exit_fullscreen()
+
+        self.current_action = (
+            f"Paused on slide {self.current_page + 1}"
         )
 
         self.update_status()
@@ -2794,6 +2933,9 @@ class PresentationPage(QWidget):
 
         # Turn OFF hand-gesture control until Start is pressed again.
         self.gestures_enabled = False
+        self.presentation_paused = False
+
+        self.end_annotation_draw()
 
         self.presentation_controller.end_presentation()
 
@@ -2904,6 +3046,9 @@ class PresentationPage(QWidget):
 
         self.refresh_fullscreen()
 
+        # The annotation toolbar follows the slides into full screen.
+        self._dock_annotation_bar()
+
     def refresh_fullscreen(self):
         """Push the current slide into the fullscreen viewer."""
 
@@ -2921,6 +3066,8 @@ class PresentationPage(QWidget):
         """Close the fullscreen view."""
 
         if self.fullscreen_window is not None:
+            # closeEvent() hands the annotation toolbar back to the
+            # preview before the viewer goes away.
             self.fullscreen_window.close()
             self.fullscreen_window = None
 
@@ -2967,6 +3114,9 @@ class FullscreenViewer(QDialog):
     Created as a frameless, always-on-top, independent window (no parent) so
     it can still show fullscreen even if the main GestureBoard window is
     minimized or the user is working in another application.
+
+    The slide is shown with its drawing from the page's SlideInk, and
+    the floating annotation toolbar moves in here while it is open.
     """
 
     def __init__(self, parent=None, page=None):
@@ -2992,13 +3142,12 @@ class FullscreenViewer(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.slide_label = QLabel("Loading slide...")
-        self.slide_label.setAlignment(Qt.AlignCenter)
-        self.slide_label.setStyleSheet("""
-            color: #FFFFFF;
-            font-size: 18px;
-        """)
-        layout.addWidget(self.slide_label, 1)
+        self.slide_view = SlideView(
+            page.slide_ink,
+            background="#000000",
+            empty_text="Loading slide…",
+        )
+        layout.addWidget(self.slide_view, 1)
 
         info = QLabel("")
         info.setObjectName("infoLabel")
@@ -3011,47 +3160,37 @@ class FullscreenViewer(QDialog):
         self.info_label = info
         layout.addWidget(info)
 
-        # Cache the current image so we can re-scale on resize.
-        self._image = None
-
     def set_slide(self, image, page_number, total_pages):
         """Display a slide image fullscreen."""
 
-        self._image = image
-        self._render()
+        self.slide_view.set_slide(QPixmap.fromImage(image))
 
         self.info_label.setText(
             f"{page_number} / {total_pages}"
         )
 
-    def _render(self):
-        if self._image is None:
-            return
-
-        pixmap = QPixmap.fromImage(self._image)
-
-        pixmap = pixmap.scaled(
-            self.slide_label.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
-        )
-
-        self.slide_label.setPixmap(pixmap)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._render()
-
     def keyPressEvent(self, event):
+        key = event.key()
+
         # Allow ESC / Q to exit fullscreen too.
-        if event.key() in (Qt.Key_Escape, Qt.Key_Q):
+        if key in (Qt.Key_Escape, Qt.Key_Q):
             self.close()
+
+        # Arrow keys and presenter clickers change slides.
+        elif key in (Qt.Key_Right, Qt.Key_PageDown, Qt.Key_Space):
+            self.page.manual_next()
+        elif key in (Qt.Key_Left, Qt.Key_PageUp):
+            self.page.manual_previous()
+
         else:
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
         # Clear the page's reference so Full Screen can be re-opened cleanly
-        # (e.g. after the user closes the window directly).
+        # (e.g. after the user closes the window directly), and hand the
+        # annotation toolbar back to the preview so it is not deleted
+        # along with this window.
         if self.page is not None:
             self.page.fullscreen_window = None
+            self.page._dock_annotation_bar()
         super().closeEvent(event)

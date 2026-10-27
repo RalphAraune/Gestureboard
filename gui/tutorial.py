@@ -47,11 +47,12 @@ STEPS = [
             ]),
             ("Pointer and drawing", [
                 ("☝️", "Index finger", "Pointer on the slide"),
-                ("🖖", "Three fingers up", "Turn on annotation mode"),
+                ("🖖", "Three fingers up", "Turn drawing on or pause it"),
                 ("✌️", "Index and middle together", "Draw"),
                 ("✌️", "Index and middle apart", "Stop drawing"),
                 ("✋", "Open hand", "Move the cursor or pick a tool"),
                 ("✊", "Closed hand", "Click"),
+                ("👎", "Thumbs down, held", "Clear this slide's drawing"),
             ]),
         ],
         "tip": "Keep your hand about an arm's length from the camera, "
