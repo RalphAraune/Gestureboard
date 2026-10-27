@@ -22,6 +22,7 @@ from gui.dashboard import DashboardPage
 from gui.presentation import PresentationPage
 from gui.virtual_mouse import VirtualMousePage
 from gui.whiteboard import WhiteboardPage
+from gui.annotation import AnnotationPage
 from gui.saved_files import SavedFilesPage
 from gui.settings import SettingsPage
 
@@ -189,6 +190,8 @@ class MainWindow(QMainWindow):
 
         self.whiteboard = WhiteboardPage(self)
 
+        self.annotation = AnnotationPage(self)
+
         self.saved_files = SavedFilesPage(self)
 
         self.settings = SettingsPage(self)
@@ -223,6 +226,10 @@ class MainWindow(QMainWindow):
 
         self.stack.addWidget(
             self.whiteboard
+        )
+
+        self.stack.addWidget(
+            self.annotation
         )
 
         self.stack.addWidget(
@@ -421,6 +428,7 @@ class MainWindow(QMainWindow):
             self.presentation,
             self.virtual_mouse,
             self.whiteboard,
+            self.annotation,
             self.splash,
         ):
 
@@ -1195,14 +1203,47 @@ class MainWindow(QMainWindow):
         self.stack.raise_()
 
     # ==============================================================
-    # ANNOTATION  (now integrated into Presentation Control)
+    # ANNOTATION
+    #
+    # Standalone Annotation page from the sidebar. Presentation Control
+    # still has its own annotation overlay as well.
     # ==============================================================
 
     def showAnnotation(self):
 
-        # Annotation is no longer a separate page — it lives inside
-        # Presentation Control as a temporary overlay.
-        self.showPresentation()
+        print(
+            "Opening Annotation..."
+        )
+
+        # Keep sidebar visible
+        self.showSidebar()
+
+        # Active sidebar item
+        self.setActivePage(
+            "Annotation"
+        )
+
+        # Update camera
+        try:
+
+            if hasattr(
+                self.annotation,
+                "updateCameraName"
+            ):
+
+                self.annotation.updateCameraName(
+                    self.active_camera_name
+                )
+
+        except Exception:
+            pass
+
+        # Show page
+        self.stack.setCurrentWidget(
+            self.annotation
+        )
+
+        self.stack.raise_()
 
     # ==============================================================
     # SAVED FILES
@@ -1367,6 +1408,28 @@ class MainWindow(QMainWindow):
 
             print(
                 f"Whiteboard camera warning: {e}"
+            )
+
+        # ----------------------------------------------------------
+        # Annotation
+        # ----------------------------------------------------------
+
+        try:
+
+            if hasattr(
+                self.annotation,
+                "setActiveCamera"
+            ):
+
+                self.annotation.setActiveCamera(
+                    index,
+                    name
+                )
+
+        except Exception as e:
+
+            print(
+                f"Annotation camera warning: {e}"
             )
 
         # ----------------------------------------------------------

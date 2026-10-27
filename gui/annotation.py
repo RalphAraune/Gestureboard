@@ -20,6 +20,9 @@ from PyQt5.QtWidgets import (
     QSizePolicy
 )
 
+from settings import theme as app_theme
+from widgets import page_background
+
 try:
     import fitz
 except ImportError:
@@ -476,34 +479,8 @@ class AnnotationPage(QWidget):
         # Main background
         # ----------------------------------------------------
 
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #F2F8FC;
-                color: #163A7A;
-                font-family: "Segoe UI";
-            }
-
-            QLabel {
-                background: transparent;
-            }
-
-            QPushButton {
-                background-color: #F2F8FC;
-                border: 1px solid #C7D8EC;
-                border-radius: 7px;
-                padding: 7px 12px;
-                color: #163A7A;
-                font-size: 13px;
-            }
-
-            QPushButton:hover {
-                background-color: #E8F1FB;
-            }
-
-            QPushButton:pressed {
-                background-color: #D5E4F6;
-            }
-        """)
+        # Colours come from apply_theme(), which runs once the widgets exist.
+        self.colors = page_background.page_colors()
 
         # ====================================================
         # MAIN LAYOUT
@@ -533,24 +510,17 @@ class AnnotationPage(QWidget):
             "Annotation"
         )
 
-        self.title_label.setStyleSheet("""
-            QLabel {
-                color: #123777;
-                font-size: 25px;
-                font-weight: 700;
-            }
-        """)
+        self.title_label.setObjectName(
+            "pageTitle"
+        )
 
         self.subtitle_label = QLabel(
             "Annotate presentation materials using your mouse."
         )
 
-        self.subtitle_label.setStyleSheet("""
-            QLabel {
-                color: #6684B5;
-                font-size: 13px;
-            }
-        """)
+        self.subtitle_label.setObjectName(
+            "pageSubtitle"
+        )
 
         title_layout.addWidget(
             self.title_label
@@ -571,16 +541,9 @@ class AnnotationPage(QWidget):
             "● Annotation Mode: Active"
         )
 
-        self.mode_status.setStyleSheet("""
-            QLabel {
-                background-color: #E2EDF8;
-                color: #5577AA;
-                border-radius: 14px;
-                padding: 8px 14px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-        """)
+        self.mode_status.setObjectName(
+            "modeStatus"
+        )
 
         header_layout.addWidget(
             self.mode_status
@@ -596,13 +559,9 @@ class AnnotationPage(QWidget):
 
         toolbar_frame = QFrame()
 
-        toolbar_frame.setStyleSheet("""
-            QFrame {
-                background-color: #F8FCFF;
-                border: 1px solid #D8E5F2;
-                border-radius: 9px;
-            }
-        """)
+        toolbar_frame.setObjectName(
+            "toolbarFrame"
+        )
 
         toolbar_layout = QHBoxLayout(
             toolbar_frame
@@ -668,8 +627,8 @@ class AnnotationPage(QWidget):
             QFrame.VLine
         )
 
-        separator1.setStyleSheet(
-            "color: #D7E4F1;"
+        separator1.setObjectName(
+            "separator"
         )
 
         toolbar_layout.addWidget(
@@ -737,8 +696,8 @@ class AnnotationPage(QWidget):
             QFrame.VLine
         )
 
-        separator2.setStyleSheet(
-            "color: #D7E4F1;"
+        separator2.setObjectName(
+            "separator"
         )
 
         toolbar_layout.addWidget(
@@ -806,8 +765,8 @@ class AnnotationPage(QWidget):
             QFrame.VLine
         )
 
-        separator3.setStyleSheet(
-            "color: #D7E4F1;"
+        separator3.setObjectName(
+            "separator"
         )
 
         toolbar_layout.addWidget(
@@ -817,6 +776,8 @@ class AnnotationPage(QWidget):
         # ====================================================
         # COLORS
         # ====================================================
+
+        self.color_buttons = []
 
         colors = [
             ("#132B5C", "Dark Blue"),
@@ -839,18 +800,13 @@ class AnnotationPage(QWidget):
                 tooltip
             )
 
-            button.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background-color: {color};
-                    border: 2px solid white;
-                    border-radius: 11px;
-                }}
+            button.setProperty(
+                "swatchColor",
+                color
+            )
 
-                QPushButton:hover {{
-                    border: 2px solid #9CB8D9;
-                }}
-                """
+            self.color_buttons.append(
+                button
             )
 
             button.clicked.connect(
@@ -874,13 +830,9 @@ class AnnotationPage(QWidget):
 
         canvas_frame = QFrame()
 
-        canvas_frame.setStyleSheet("""
-            QFrame {
-                background-color: #F9FDFF;
-                border: 1px solid #D6E4F1;
-                border-radius: 13px;
-            }
-        """)
+        canvas_frame.setObjectName(
+            "canvasFrame"
+        )
 
         canvas_layout = QVBoxLayout(
             canvas_frame
@@ -918,12 +870,9 @@ class AnnotationPage(QWidget):
             "No presentation loaded"
         )
 
-        self.file_label.setStyleSheet("""
-            QLabel {
-                color: #6A86AE;
-                font-size: 12px;
-            }
-        """)
+        self.file_label.setObjectName(
+            "fileLabel"
+        )
 
         bottom_layout.addWidget(
             self.file_label
@@ -935,15 +884,9 @@ class AnnotationPage(QWidget):
             "Page 0 / 0"
         )
 
-        self.page_label.setStyleSheet("""
-            QLabel {
-                background-color: #E2EDF8;
-                color: #5577AA;
-                border-radius: 12px;
-                padding: 6px 12px;
-                font-size: 12px;
-            }
-        """)
+        self.page_label.setObjectName(
+            "pageLabel"
+        )
 
         bottom_layout.addWidget(
             self.page_label
@@ -953,6 +896,10 @@ class AnnotationPage(QWidget):
             bottom_layout
         )
 
+        page_background.clear_layers(self)
+
+        self.apply_theme()
+
         # ====================================================
         # INITIAL TOOL
         # ====================================================
@@ -961,6 +908,139 @@ class AnnotationPage(QWidget):
             "pen"
         )
 
+
+    # ========================================================
+    # THEME
+    #
+    # The page, toolbar and labels follow the app theme. The drawing
+    # canvas stays light like paper, the same as the Whiteboard board.
+    # ========================================================
+
+    def apply_theme(self):
+
+        self.colors = c = page_background.page_colors()
+
+        dark = app_theme.is_dark()
+
+        active_bg = "#1B3A63" if dark else "#AFC6E5"
+
+        active_border = c["accent"] if dark else "#9CB7D9"
+
+        swatch_hover = c["accent"] if dark else "#9CB8D9"
+
+        # A lighter ring in dark mode keeps the dark blue swatch visible.
+        swatch_ring = c["muted"] if dark else c["card"]
+
+        self.setStyleSheet(page_background.LAYER_RULE + f"""
+            QWidget {{
+                color: {c['text']};
+                font-family: "Segoe UI";
+            }}
+
+            QLabel {{
+                background: transparent;
+                color: {c['text']};
+            }}
+
+            QLabel#pageTitle {{
+                font-size: 25px;
+                font-weight: 700;
+            }}
+
+            QLabel#pageSubtitle {{
+                color: {c['text_secondary']};
+                font-size: 13px;
+            }}
+
+            QLabel#modeStatus {{
+                background-color: {c['card']};
+                color: {c['text_secondary']};
+                border: 1px solid {c['card_border']};
+                border-radius: 14px;
+                padding: 8px 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+
+            QFrame#toolbarFrame {{
+                background-color: {c['card']};
+                border: 1px solid {c['card_border']};
+                border-radius: 9px;
+            }}
+
+            QFrame#separator {{
+                color: {c['card_border']};
+            }}
+
+            QPushButton {{
+                background-color: {c['button_bg']};
+                border: 1px solid {c['card_border']};
+                border-radius: 7px;
+                padding: 7px 12px;
+                color: {c['text']};
+                font-size: 13px;
+            }}
+
+            QPushButton:hover {{
+                background-color: {c['button_hover']};
+            }}
+
+            QPushButton:pressed {{
+                background-color: {active_bg};
+            }}
+
+            QPushButton[activeTool="true"] {{
+                background-color: {active_bg};
+                border: 1px solid {active_border};
+                font-weight: 600;
+            }}
+
+            QFrame#canvasFrame {{
+                background-color: {c['card']};
+                border: 1px solid {c['card_border']};
+                border-radius: 13px;
+            }}
+
+            QLabel#fileLabel {{
+                color: {c['text_secondary']};
+                font-size: 12px;
+            }}
+
+            QLabel#pageLabel {{
+                background-color: {c['card']};
+                color: {c['text_secondary']};
+                border: 1px solid {c['card_border']};
+                border-radius: 12px;
+                padding: 6px 12px;
+                font-size: 12px;
+            }}
+        """)
+
+        # Swatches keep their own colour; only the ring follows the theme.
+        for button in self.color_buttons:
+
+            color = button.property("swatchColor")
+
+            button.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: {color};
+                    border: 2px solid {swatch_ring};
+                    border-radius: 11px;
+                    padding: 0;
+                }}
+
+                QPushButton:hover {{
+                    border: 2px solid {swatch_hover};
+                }}
+                """
+            )
+
+        self.update()
+
+    def paintEvent(self, event):
+
+        page_background.paint_page_background(self, self.colors)
 
     # ========================================================
     # SELECT TOOL
@@ -981,16 +1061,10 @@ class AnnotationPage(QWidget):
 
         for button in buttons:
 
-            button.setStyleSheet("""
-                QPushButton {
-                    background-color: #F2F8FC;
-                    border: 1px solid #C7D8EC;
-                    border-radius: 7px;
-                    padding: 7px 12px;
-                    color: #163A7A;
-                    font-size: 13px;
-                }
-            """)
+            button.setProperty(
+                "activeTool",
+                False
+            )
 
         # Highlight active button
         if tool == "pen":
@@ -1005,17 +1079,17 @@ class AnnotationPage(QWidget):
 
             button = self.eraser_button
 
-        button.setStyleSheet("""
-            QPushButton {
-                background-color: #AFC6E5;
-                border: 1px solid #9CB7D9;
-                border-radius: 7px;
-                padding: 7px 12px;
-                color: #163A7A;
-                font-size: 13px;
-                font-weight: 600;
-            }
-        """)
+        button.setProperty(
+            "activeTool",
+            True
+        )
+
+        # Re-polish so the [activeTool] rule in apply_theme() takes effect.
+        for button in buttons:
+
+            button.style().unpolish(button)
+
+            button.style().polish(button)
 
         # Update status
         if tool == "pen":

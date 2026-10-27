@@ -161,6 +161,14 @@ def _icon_path(name):
         path.moveTo(16, 17); path.lineTo(17.5, 21)
         path.moveTo(6.5, 13); path.quadTo(8.5, 7, 11, 10.5); path.quadTo(13.5, 14, 17, 8)
 
+    elif name == "annotation":
+        # Pencil on a slant, with a short stroke under its tip.
+        path.moveTo(15.5, 4.5); path.lineTo(19.5, 8.5)
+        path.lineTo(9, 19); path.lineTo(4.5, 19.5)
+        path.lineTo(5, 15); path.closeSubpath()
+        path.moveTo(13.5, 6.5); path.lineTo(17.5, 10.5)
+        path.moveTo(13, 19.5); path.lineTo(19.5, 19.5)
+
     elif name == "folder":
         path.moveTo(3, 7.5); path.lineTo(3, 18.5)
         path.quadTo(3, 19.5, 4, 19.5); path.lineTo(20, 19.5)
@@ -405,6 +413,7 @@ class Sidebar(QFrame):
         ("Presentation Control", "presentation", "showPresentation"),
         ("Virtual Mouse", "mouse", "showVirtualMouse"),
         ("Whiteboard", "whiteboard", "showWhiteboard"),
+        ("Annotation", "annotation", "showAnnotation"),
         ("Saved Files", "folder", "showSavedFiles"),
         ("Settings", "settings", "showSettings"),
     ]
