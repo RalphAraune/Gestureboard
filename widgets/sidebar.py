@@ -314,7 +314,7 @@ TIPS = [
     "Close your hand to left click with the virtual mouse.",
     "Touch your thumb and index finger to right click.",
     "Hold the cursor at the top or bottom centre to scroll.",
-    "Point right or left to change slides in a presentation.",
+    "Swipe your index finger right or left to change slides.",
     "Keep your palm facing the camera, about an arm's length away.",
 ]
 

@@ -40,19 +40,19 @@ STEPS = [
         "groups": [
             ("Slides", [
                 ("🤘", "Rock sign", "Start the presentation"),
-                ("👉", "Point right", "Next slide"),
-                ("👈", "Point left", "Previous slide"),
+                ("👉", "Swipe index finger right", "Next slide"),
+                ("👈", "Swipe index finger left", "Previous slide"),
                 ("👍", "Thumbs up", "Full screen"),
                 ("👎", "Thumbs down", "Exit full screen"),
             ]),
             ("Pointer and drawing", [
                 ("☝️", "Index finger", "Pointer on the slide"),
-                ("🖖", "Three fingers up", "Turn drawing on or pause it"),
+                ("🖖", "Three fingers up", "Turn drawing on"),
                 ("✌️", "Index and middle together", "Draw"),
                 ("✌️", "Index and middle apart", "Stop drawing"),
                 ("✋", "Open hand", "Move the cursor or pick a tool"),
                 ("✊", "Closed hand", "Click"),
-                ("👎", "Thumbs down, held", "Clear this slide's drawing"),
+                ("👋", "Wave open hand side to side", "Clear this slide's drawing"),
             ]),
         ],
         "tip": "Keep your hand about an arm's length from the camera, "

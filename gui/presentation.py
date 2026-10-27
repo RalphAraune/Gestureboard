@@ -50,14 +50,47 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
 )
 
-from core.gesture_detector import GestureDetector
+from core.gesture_detector import GestureDetector, SwipeDetector, WaveDetector
 from widgets.annotation_bar import FloatingAnnotationBar
+from gui.virtual_mouse import CameraWorker, looks_like_hand, native_move
 from core.presentation_controller import PresentationController
 
 try:
     from pptx import Presentation as PptxPresentation
 except Exception:
     PptxPresentation = None
+
+
+# ============================================================
+# CAMERA WORKER FOR PRESENTATIONS
+#
+# The Virtual Mouse's worker passes on a hand only when MediaPipe is
+# confident and the hand has been seen for two frames in a row. A
+# fast swipe blurs the hand and drops below that confidence, so the
+# frames in the middle of a swipe came back empty. This worker also
+# keeps the newest hand that has real hand proportions whatever the
+# confidence, used only to follow swipes; every other gesture still
+# needs the fully checked hand.
+# ============================================================
+
+class PresentationCameraWorker(CameraWorker):
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.raw_hand = None
+
+    def _checked_hand(self, results):
+
+        raw = None
+
+        if results is not None and results.multi_hand_landmarks:
+            candidate = results.multi_hand_landmarks[0]
+            if looks_like_hand(candidate.landmark):
+                raw = candidate
+
+        self.raw_hand = raw
+
+        return super()._checked_hand(results)
 
 
 # ============================================================
@@ -563,9 +596,6 @@ class PresentationPage(QWidget):
     # Live annotation state changed: "off", "on" or "paused".
     liveAnnotationChanged = pyqtSignal(str)
 
-    # Hold thumbs down this long (seconds) to clear the slide's drawing.
-    CLEAR_HOLD_SECONDS = 1.0
-
     @property
     def annotation_mode(self):
         """Drawing is on (the hand gestures draw instead of presenting)."""
@@ -598,18 +628,24 @@ class PresentationPage(QWidget):
         self.camera = None
         self.camera_index = 0
 
+        # Background camera + hand tracking (see start_camera).
+        self.camera_worker = None
+
         # MediaPipe is optional: if it failed to load, disable hand tracking
         # but keep the page (and the rest of the app) fully functional.
         if mp is not None:
             self.mp_hands = mp.solutions.hands
             self.mp_drawing = mp.solutions.drawing_utils
 
+            # Same fast model and confidence as the Virtual Mouse; the
+            # heavy model roughly doubled the delay for no better
+            # gestures.
             self.hands = self.mp_hands.Hands(
                 static_image_mode=False,
                 max_num_hands=1,
-                model_complexity=1,
-                min_detection_confidence=0.55,
-                min_tracking_confidence=0.55,
+                model_complexity=0,
+                min_detection_confidence=0.6,
+                min_tracking_confidence=0.7,
             )
         else:
             self.mp_hands = None
@@ -617,6 +653,12 @@ class PresentationPage(QWidget):
             self.hands = None
 
         self.gesture_detector = GestureDetector()
+        self.swipe_detector = SwipeDetector()
+
+        # A fast swipe loses the hand for a few frames (blur, and the
+        # worker re-confirming it); only a longer gap ends the swipe.
+        self.swipe_detector.GAP = 0.4
+        self.wave_detector = WaveDetector()
         self.presentation_controller = PresentationController()
 
         self.detected_gesture = "None"
@@ -644,8 +686,9 @@ class PresentationPage(QWidget):
 
         self._annot_drawing = False
 
-        # When the thumbs-down hold (clear this slide) began.
-        self._clear_hold_start = None
+        # Steady-hold tracking for one-shot gestures (_handle_hand).
+        self._pose = None
+        self._pose_since = 0.0
 
         self.left_click_cooldown = 0
 
@@ -902,7 +945,7 @@ class PresentationPage(QWidget):
         self.previous_button = QPushButton()
         self.previous_button.setObjectName("navButton")
         self.previous_button.setToolTip(
-            "Go back one slide\nGesture: point left 👈"
+            "Go back one slide\nGesture: swipe your index finger left 👈"
         )
         self.previous_button.clicked.connect(self.manual_previous)
 
@@ -913,7 +956,7 @@ class PresentationPage(QWidget):
         self.next_button = QPushButton()
         self.next_button.setObjectName("navButton")
         self.next_button.setToolTip(
-            "Go forward one slide\nGesture: point right 👉"
+            "Go forward one slide\nGesture: swipe your index finger right 👉"
         )
         self.next_button.clicked.connect(self.manual_next)
 
@@ -1276,7 +1319,8 @@ class PresentationPage(QWidget):
                 "▶  Start" if narrow else "▶  Start presenting"
             )
             self.start_button.setToolTip(
-                "Show the slides full screen and turn hand gestures on"
+                "Show the slides full screen and turn hand gestures on\n"
+                "Gesture: rock sign 🤘"
             )
 
         self.start_button.setEnabled(loaded)
@@ -1289,8 +1333,8 @@ class PresentationPage(QWidget):
         elif self.annotation_mode and presenting:
             hint = (
                 "Drawing is on: hold index and middle fingers together to "
-                "draw, point left or right to change slides, hold thumbs "
-                "down to clear this slide."
+                "draw, swipe your index finger left or right to change "
+                "slides, wave your open hand to clear this slide."
             )
         elif self.annotation_mode:
             hint = (
@@ -1305,13 +1349,13 @@ class PresentationPage(QWidget):
             )
         elif presenting:
             hint = (
-                "Hand gestures are on. Point right for the next slide, "
-                "point left to go back."
+                "Hand gestures are on. Swipe your index finger right for "
+                "the next slide, left to go back."
             )
         else:
             hint = (
-                "Hand gestures are off. Press Start presenting to turn "
-                "them on, or use Previous and Next."
+                "Hand gestures are off. Press Start presenting or show the "
+                "rock sign 🤘 to start, or use Previous and Next."
             )
 
         self.hint_label.setText(hint)
@@ -2161,8 +2205,10 @@ class PresentationPage(QWidget):
 
             self._last_shared_frame = None
 
+            # Cheap check for a new Virtual Mouse frame; frequent so a
+            # new frame is picked up almost as soon as it exists.
             if not self.camera_timer.isActive():
-                self.camera_timer.start(30)
+                self.camera_timer.start(10)
 
             self.camera_status.setText(
                 "● Shared with Virtual Mouse"
@@ -2170,9 +2216,11 @@ class PresentationPage(QWidget):
 
             return
 
+        backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY
+
         self.camera = cv2.VideoCapture(
             self.camera_index,
-            cv2.CAP_DSHOW
+            backend
         )
 
         if not self.camera.isOpened():
@@ -2185,17 +2233,33 @@ class PresentationPage(QWidget):
 
         if self.camera.isOpened():
 
-            self.camera.set(
-                cv2.CAP_PROP_FRAME_WIDTH,
-                640
-            )
+            # Same settings as the Virtual Mouse: MJPG for full frame
+            # rate, and a one-frame buffer so stale frames never queue up
+            # behind the hand (the delay). Unsupported settings are
+            # ignored by the camera.
+            for prop, value in (
+                (cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG")),
+                (cv2.CAP_PROP_FRAME_WIDTH, 640),
+                (cv2.CAP_PROP_FRAME_HEIGHT, 480),
+                (cv2.CAP_PROP_FPS, 30),
+                (cv2.CAP_PROP_BUFFERSIZE, 1),
+            ):
+                try:
+                    self.camera.set(prop, value)
+                except Exception:
+                    pass
 
-            self.camera.set(
-                cv2.CAP_PROP_FRAME_HEIGHT,
-                480
+            # Reading the camera and tracking the hand run on background
+            # threads (the Virtual Mouse's camera worker), keeping only
+            # the newest frame, so the window never waits on them.
+            self.camera_worker = PresentationCameraWorker(
+                self.camera,
+                self.hands,
+                self.mp_hands,
+                self.mp_drawing,
             )
-
-            self.camera_timer.start(30)
+            self.camera_worker.ready.connect(self._on_worker_frame)
+            self.camera_worker.start()
 
             self.camera_status.setText(
                 "● Connected"
@@ -2215,6 +2279,26 @@ class PresentationPage(QWidget):
             self.camera_label.setText(
                 "No camera found.\nPick one in Camera Setup."
             )
+
+    def _on_worker_frame(self):
+        """A new frame from the camera worker (UI thread)."""
+
+        worker = self.camera_worker
+
+        if worker is None:
+            return
+
+        result = worker.take()
+
+        if result is None:
+            return
+
+        frame, hand, _stamp = result
+
+        # The worker has mirrored the frame, tracked the hand (only
+        # real, confirmed hands) and drawn it. raw_hand may be a
+        # blurred hand it did not confirm: only swipes use it.
+        self.process_frame(frame, hand, raw_hand=worker.raw_hand)
 
     # ============================================================
     # CAMERA SELECTION
@@ -2256,39 +2340,29 @@ class PresentationPage(QWidget):
         if self.camera_timer.isActive():
             self.camera_timer.stop()
 
+        worker = getattr(self, "camera_worker", None)
+
+        if worker is not None:
+            self.camera_worker = None
+            worker.stop()
+
         if self.camera is not None:
             self.camera.release()
             self.camera = None
 
-    # ============================================================
-    # UPDATE CAMERA
-    # ============================================================
-
-    def update_camera(self):
-
-        if not self.camera:
-            self.update_shared_camera()
-            return
-
-        success, frame = self.camera.read()
-
-        if not success:
-            return
-
-        # --------------------------------------------------------
-        # MIRROR CAMERA
-        # --------------------------------------------------------
-
-        frame = cv2.flip(
-            frame,
-            1
-        )
-
-        self.process_frame(frame)
+        # A hand that vanishes with the camera must not keep drawing.
+        self._handle_no_hand()
 
     # ============================================================
     # SHARED CAMERA (from the Virtual Mouse)
     # ============================================================
+
+    def update_camera(self):
+        """Timer tick: only used while sharing the Virtual Mouse camera
+        (an own camera delivers frames through the camera worker)."""
+
+        if self.camera is None:
+            self.update_shared_camera()
 
     def update_shared_camera(self):
 
@@ -2316,109 +2390,119 @@ class PresentationPage(QWidget):
 
         self._last_shared_frame = frame
 
-        # The Virtual Mouse already ran MediaPipe and drew the
-        # landmarks; reuse its result instead of tracking again.
+        # The Virtual Mouse already ran MediaPipe, with the same real
+        # hand checks, and drew the landmarks; reuse its result.
         self.process_frame(
             frame.copy(),
-            shared_hand=vmouse.get_latest_hand()
+            vmouse.get_latest_hand(),
+            shared=True,
         )
 
     # ============================================================
     # PROCESS FRAME (gestures + preview)
     # ============================================================
 
-    def process_frame(self, frame, shared_hand=None):
+    # Landmarks this close to the frame edge count as cut off.
+    EDGE_MARGIN = 0.01
 
-        shared = shared_hand is not None or self.camera is None
+    def _whole_hand(self, hand):
+        """True when all 21 points of the hand are inside the picture.
 
-        # --------------------------------------------------------
-        # MEDIAPIPE
-        # --------------------------------------------------------
+        MediaPipe guesses the points of a hand that is partly out of
+        frame; a guessed finger can look like any gesture, so a cut-off
+        hand does nothing.
+        """
+
+        low, high = self.EDGE_MARGIN, 1.0 - self.EDGE_MARGIN
+
+        try:
+            return all(
+                low <= point.x <= high and low <= point.y <= high
+                for point in hand.landmark
+            )
+        except Exception:
+            return False
+
+    # Points a swipe needs in the picture: wrist, index and middle
+    # finger (see SwipeDetector.index_stretched).
+    SWIPE_POINTS = (0, 6, 8, 10, 12)
+
+    def _swipe_points_inside(self, hand):
+
+        try:
+            return all(
+                0.0 <= hand.landmark[i].x <= 1.0
+                and 0.0 <= hand.landmark[i].y <= 1.0
+                for i in self.SWIPE_POINTS
+            )
+        except Exception:
+            return False
+
+    def process_frame(self, frame, hand, shared=False, raw_hand=None):
+        """One camera frame: `hand` is a real, confirmed hand or None.
+
+        `raw_hand` is a hand the camera worker saw but did not confirm
+        (usually blurred by fast movement); it is only used to follow
+        a swipe.
+        """
 
         gesture = "None"
+        cut_off = False
 
-        if shared:
+        # Swipes come first and are followed on any frame where the
+        # finger can be seen: mid-swipe the hand blurs (not confirmed)
+        # or reaches the edge of the picture (not whole).
+        swipe_hand = hand if hand is not None else raw_hand
 
-            if shared_hand is not None:
+        swiped = (
+            swipe_hand is not None
+            and self._swipe_points_inside(swipe_hand)
+            and self._check_swipe(swipe_hand)
+        )
 
-                gesture = self.gesture_detector.detect(
-                    shared_hand
-                )
+        if hand is not None and not self._whole_hand(hand):
+            hand = None
+            cut_off = True
 
-                self.process_gesture(
-                    gesture,
-                    shared_hand
-                )
+        if swiped:
 
-                self.camera_status.setText(
-                    "● Hand detected"
-                )
+            # Stop any drawing stroke the swipe may have started.
+            self.end_annotation_draw()
+            self.detected_gesture = "Swipe"
+            self._pose = None
 
+            self.camera_status.setText("● Hand detected")
+
+        elif hand is not None:
+
+            gesture = self._detect(hand)
+            self._handle_hand(gesture, hand)
+
+            self.camera_status.setText("● Hand detected")
+
+        else:
+
+            self._handle_no_hand()
+
+            if cut_off:
+                self.camera_status.setText("● Show your whole hand")
+            elif shared:
+                self.camera_status.setText("● Shared with Virtual Mouse")
             else:
+                self.camera_status.setText("● Connected")
 
-                self.camera_status.setText(
-                    "● Shared with Virtual Mouse"
-                )
-
-        # If MediaPipe is unavailable, just show the raw camera feed.
-        elif self.hands is not None:
-
-            rgb = cv2.cvtColor(
-                frame,
-                cv2.COLOR_BGR2RGB
-            )
-
-            rgb.flags.writeable = False
-
-            results = self.hands.process(
-                rgb
-            )
-
-            rgb.flags.writeable = True
-
-            # ----------------------------------------------------
-            # DRAW LANDMARKS
-            # ----------------------------------------------------
-
-            if results.multi_hand_landmarks:
-
-                hand = results.multi_hand_landmarks[0]
-
-                self.mp_drawing.draw_landmarks(
-                    frame,
-                    hand,
-                    self.mp_hands.HAND_CONNECTIONS
-                )
-
-                gesture = (
-                    self.gesture_detector.detect(
-                        hand
-                    )
-                )
-
-                self.process_gesture(
-                    gesture,
-                    hand
-                )
-
-                self.camera_status.setText(
-                    "● Hand detected"
-                )
-
-            else:
-
-                self.camera_status.setText(
-                    "● Connected"
-                )
-
-        if gesture in ("None", "Unknown"):
+        if cut_off:
+            seen = "Hand cut off: show all of it"
+        elif gesture in ("None", "Unknown"):
             seen = "No gesture"
         elif self.gestures_enabled:
             seen = gesture
         else:
             seen = gesture + " (gestures off)"
 
-        self.detected_label.setText(seen)
+        # A swipe shows its own name for a moment.
+        if time.monotonic() > getattr(self, "_swipe_shown_until", 0.0):
+            self.detected_label.setText(seen)
 
         # --------------------------------------------------------
         # CAMERA IMAGE
@@ -2433,25 +2517,17 @@ class PresentationPage(QWidget):
             frame_rgb.shape
         )
 
-        bytes_per_line = (
-            channel * width
-        )
-
         image = QImage(
             frame_rgb.data,
             width,
             height,
-            bytes_per_line,
+            channel * width,
             QImage.Format_RGB888
-        )
-
-        pixmap = QPixmap.fromImage(
-            image
         )
 
         # CameraFeed scales it to the panel size when painting.
         self.camera_label.setPixmap(
-            pixmap
+            QPixmap.fromImage(image)
         )
 
     # ============================================================
@@ -2525,49 +2601,189 @@ class PresentationPage(QWidget):
         bar.raise_()
 
     def _reset_clear_hold(self):
+        """Forget a half-done wave and empty the circle's red fill."""
 
-        self._clear_hold_start = None
+        self.wave_detector.reset()
 
         if self.annotation_toolbar is not None:
             self.annotation_toolbar.set_clear_progress(0)
 
-    def _hold_to_clear(self):
-        """Thumbs down held for CLEAR_HOLD_SECONDS clears this slide."""
+    def _check_wave(self, gesture, hand):
+        """✋ Open hand waved side to side clears this slide's drawing."""
 
         now = time.monotonic()
 
-        if self._clear_hold_start is None:
-            self._clear_hold_start = now
+        if gesture != "Open Hand" or not self.gestures_enabled:
+            self.wave_detector.idle(now)
+            if self.wave_detector.progress() == 0:
+                self._show_wave_progress(0)
+            return False
 
-        # Already cleared during this hold: wait for the hand to change.
-        if self._clear_hold_start == float("inf"):
-            return
+        done = self.wave_detector.track(hand.landmark[9].x, now)
 
-        progress = (now - self._clear_hold_start) / self.CLEAR_HOLD_SECONDS
-        self.annotation_toolbar.set_clear_progress(progress)
+        if not done:
+            self._show_wave_progress(self.wave_detector.progress())
+            return False
 
-        if progress >= 1:
-            self.slide_ink.clear_slide()
-            self._clear_hold_start = float("inf")
-            self._set_action("Cleared this slide")
-        else:
-            self._set_action("Hold to clear this slide")
+        self.end_annotation_draw()
+        self.slide_ink.clear_slide()
+        self._set_action("Cleared this slide (wave)")
+
+        # Show the full red circle briefly, then back to normal.
+        self._show_wave_progress(1.0)
+        QTimer.singleShot(600, lambda: self._show_wave_progress(0))
+
+        return True
+
+    def _show_wave_progress(self, fraction):
+
+        if self.annotation_toolbar is not None:
+            self.annotation_toolbar.set_clear_progress(fraction)
 
     # ============================================================
     # GESTURE PROCESSING
+    #
+    # Only a real, whole hand gets here (see process_frame). Gestures
+    # that do something once (thumbs up / down, rock sign, three
+    # fingers) must be held steady for STEADY_SECONDS first, so the
+    # in-between shapes of a moving hand never trigger anything.
     # ============================================================
+
+    STEADY_SECONDS = 0.3
+
+    ONE_SHOT_GESTURES = (
+        "Rock & Roll",
+        "Thumbs Up",
+        "Thumbs Down",
+        "Three Fingers",
+    )
+
+    def _detect(self, hand):
+        """Gesture name for this frame.
+
+        Pointing left or right with the index finger is just the
+        pointer here: slides change by swiping (see _check_swipe).
+        """
+
+        gesture = self.gesture_detector.detect(hand)
+
+        if gesture in ("Point Right", "Point Left"):
+            return "Index Finger"
+
+        # A finger pointing sideways or a little down (mid-swipe) can
+        # read as a fist or nothing; with the index stretched out it
+        # is the pointer, so a swipe never clicks by accident.
+        if gesture in ("Fist", "Thumbs Down", "None") and hand is not None:
+            try:
+                if SwipeDetector.index_stretched(hand.landmark):
+                    return "Index Finger"
+            except Exception:
+                pass
+
+        return gesture
+
+    def _check_swipe(self, hand):
+        """Next / previous slide when the index fingertip is swiped.
+
+        Runs on every frame with a hand (see process_frame), whatever
+        GestureDetector made of it: mid-swipe the finger points sideways
+        and the hand blurs, which reads as other gestures.
+        """
+
+        if hand is None or not self.gestures_enabled or not self._page_opened:
+            return False
+
+        try:
+            swipe = self.swipe_detector.track(hand, time.monotonic())
+        except Exception:
+            return False
+
+        if swipe is None:
+            return False
+
+        if swipe == "Swipe Right":
+            self.next_pdf_preview()
+            action = "Next Slide (swipe right)"
+        else:
+            self.previous_pdf_preview()
+            action = "Previous Slide (swipe left)"
+
+        self._set_action(action)
+        self.presentationAction.emit(action)
+        self.detected_label.setText(swipe)
+        self.update_status()
+
+        # Keep "Next / Previous Slide" readable for a moment.
+        self._swipe_shown_until = time.monotonic() + 1.2
+
+        return True
+
+    def _handle_hand(self, gesture, hand):
+        """One camera frame with a real, whole hand (swipes are checked
+        before this, in process_frame)."""
+
+        if self._check_wave(gesture, hand):
+            self.detected_gesture = "Wave"
+            return
+
+        now = time.monotonic()
+
+        if gesture != getattr(self, "_pose", None):
+            self._pose = gesture
+            self._pose_since = now
+
+        # One-shot gestures wait until they have been held steady.
+        if (
+            gesture in self.ONE_SHOT_GESTURES
+            and now - self._pose_since < self.STEADY_SECONDS
+        ):
+            self.end_annotation_draw()
+            return
+
+        self.process_gesture(gesture, hand)
+
+    def _handle_no_hand(self):
+        """No hand (or not a whole one) in this frame: do nothing, and
+        let go of anything a hand was doing."""
+
+        self.end_annotation_draw()
+
+        self._pose = None
+        self.detected_gesture = "None"
+
+        # The swipe in progress is kept: a frame or two without the
+        # hand is normal mid-swipe, and SwipeDetector ends it after a
+        # real gap.
+
+        if getattr(self, "wave_detector", None) is not None:
+            if self.wave_detector.progress() > 0:
+                self._reset_clear_hold()
+            self.wave_detector.reset()
 
     def process_gesture(self, gesture, hand=None):
 
-        # Clearing needs an unbroken thumbs-down hold.
-        if gesture != "Thumbs Down" and self._clear_hold_start is not None:
-            self._reset_clear_hold()
-
         if gesture in ("None", "Unknown"):
+            self.end_annotation_draw()
             return
 
         # Only act once the page has been opened at least once.
         if not self._page_opened:
+            return
+
+        # 🤘 Rock sign starts the presentation (or resumes it) while
+        # Presentation Control is open with slides loaded.
+        if (
+            gesture == "Rock & Roll"
+            and not self.gestures_enabled
+            and gesture != self.detected_gesture
+        ):
+            self.detected_gesture = gesture
+
+            if self._has_slides() and self.isVisible():
+                self.manual_start()
+                self._set_action("Start Presentation")
+                self.presentationAction.emit("Start Presentation")
+
             return
 
         if not self.gestures_enabled:
@@ -2576,40 +2792,61 @@ class PresentationPage(QWidget):
             )
             return
 
+        # ☝️ Index finger: the pointer (a quick sideways swipe changes
+        # slides, see _check_swipe). Works while drawing too.
+        if gesture == "Index Finger":
+            self.end_annotation_draw()
+            self.move_cursor_from_hand(hand)
+            self.detected_gesture = gesture
+            if time.monotonic() > getattr(self, "_swipe_shown_until", 0.0):
+                self._set_action("Pointer (swipe to change slides)")
+            return
+
         # ====================================================
-        # ANNOTATION MODE GESTURES
+        # ONE-SHOT GESTURES (same with drawing on or off)
         # ====================================================
+
+        if gesture in self.ONE_SHOT_GESTURES:
+
+            self.end_annotation_draw()
+
+            # Fire once per hold.
+            if gesture == self.detected_gesture:
+                return
+
+            self.detected_gesture = gesture
+
+            if gesture in ("Thumbs Up", "Rock & Roll"):
+                # 👍 Full screen (🤘 while presenting: back to it).
+                self.enter_fullscreen()
+                action = "Full Screen"
+
+            elif gesture == "Thumbs Down":
+                # 👎 Exit full screen.
+                self.exit_fullscreen()
+                action = "Exit Full Screen"
+
+            else:
+                # 🖖 Turn drawing on. It is paused or stopped from the
+                # Annotation page, so a hand passing through this shape
+                # can never hide the floating circle.
+                if not self.annotation_mode:
+                    self.set_annotation_mode(True)
+                action = "Annotation on"
+
+            self._set_action(action)
+            self.presentationAction.emit(action)
+            self.update_status()
+            return
+
+        # ====================================================
+        # DRAWING GESTURES
+        # ====================================================
+
         if self.annotation_mode:
 
-            # 🖖 Three Fingers pauses drawing (presenting carries on).
-            if gesture == "Three Fingers":
-                if gesture != self.detected_gesture:
-                    self.set_annotation_mode(False)
-                self.detected_gesture = gesture
-                return
-
-            # 👎 Thumbs down, held -> clear this slide's drawing.
-            if gesture == "Thumbs Down":
-                self.end_annotation_draw()
-                self._hold_to_clear()
-                self.detected_gesture = gesture
-                return
-
-            # 👉 / 👈 still change slides; each slide keeps its drawing.
-            if gesture in ("Point Right", "Point Left"):
-                self.end_annotation_draw()
-                if gesture != self.detected_gesture:
-                    if gesture == "Point Right":
-                        self.next_pdf_preview()
-                        self._set_action("Next Slide")
-                    else:
-                        self.previous_pdf_preview()
-                        self._set_action("Previous Slide")
-                    self.update_status()
-                self.detected_gesture = gesture
-                return
-
-            # ✌️ Index + Middle together -> DRAW (hold left button + move)
+            # ✌️ Index + Middle together -> DRAW (hold left button + move).
+            # Over the floating circle this drags it instead.
             if gesture == "Index + Middle":
                 self.move_cursor_from_hand(hand)
                 self.begin_annotation_draw()
@@ -2620,99 +2857,23 @@ class PresentationPage(QWidget):
             # Any other gesture stops drawing.
             self.end_annotation_draw()
 
-            # ✋ Open Hand -> move cursor over the floating toolbar.
+            # ✋ Open Hand -> move cursor over the floating circle / tools.
             if gesture == "Open Hand":
                 self.move_cursor_from_hand(hand)
                 self._set_action("Cursor (select tool)")
                 self.detected_gesture = gesture
                 return
 
-            # ✊ Fist -> click the floating toolbar.
+            # ✊ Fist -> click (opens the circle's tools, picks a tool).
             if gesture == "Fist":
-                if self.left_click_cooldown <= 0:
+                if gesture != self.detected_gesture:
                     self._safe_click()
-                    self.left_click_cooldown = 8
-                else:
-                    self.left_click_cooldown -= 1
-                self._set_action("Click")
+                    self._set_action("Click")
                 self.detected_gesture = gesture
                 return
 
-            # ☝️ Index Finger also moves the cursor (convenience).
-            if gesture == "Index Finger":
-                self.move_cursor_from_hand(hand)
-                self.detected_gesture = gesture
-                return
-
-            self.detected_gesture = gesture
-            return
-
-        # ====================================================
-        # PRESENTATION MODE GESTURES
-        # ====================================================
-
-        # ☝️ Index Finger -> move the presentation pointer (continuous).
-        if gesture == "Index Finger":
-            self.move_cursor_from_hand(hand)
-            self.detected_gesture = gesture
-            self._set_action("Cursor / Pointer")
-            return
-
-        # Discrete gestures fire once.
-        if gesture == self.detected_gesture:
-            return
-
+        self.end_annotation_draw()
         self.detected_gesture = gesture
-
-        actions = {
-            "Rock & Roll": "Start Presentation",
-            "Point Right": "Next Slide",
-            "Point Left": "Previous Slide",
-            "Thumbs Up": "Full Screen",
-            "Thumbs Down": "Exit Full Screen",
-            "Three Fingers": "Annotation Mode",
-        }
-
-        action = actions.get(gesture, "Ready")
-
-        self._set_action(action)
-
-        self.presentationAction.emit(action)
-
-        if gesture == "Rock & Roll":
-
-            self.enter_fullscreen()
-
-        elif gesture == "Point Right":
-
-            self.next_pdf_preview()
-
-            if self.fullscreen_window is not None:
-                self.refresh_fullscreen()
-
-        elif gesture == "Point Left":
-
-            self.previous_pdf_preview()
-
-            if self.fullscreen_window is not None:
-                self.refresh_fullscreen()
-
-        elif gesture == "Thumbs Up":
-
-            self.enter_fullscreen()
-
-        elif gesture == "Thumbs Down":
-
-            self.exit_fullscreen()
-
-            self._set_action("Exit Full Screen")
-
-        elif gesture == "Three Fingers":
-
-            # Enter Annotation Mode (temporary overlay on the current slide).
-            self.set_annotation_mode(True)
-
-        self.update_status()
 
     # ============================================================
     # ANNOTATION HELPERS
@@ -2744,7 +2905,7 @@ class PresentationPage(QWidget):
             return
 
         try:
-            pyautogui.mouseDown()
+            pyautogui.mouseDown(_pause=False)
         except Exception:
             pass
 
@@ -2756,7 +2917,7 @@ class PresentationPage(QWidget):
             return
 
         try:
-            pyautogui.mouseUp()
+            pyautogui.mouseUp(_pause=False)
         except Exception:
             pass
 
@@ -2765,7 +2926,7 @@ class PresentationPage(QWidget):
     def _safe_click(self):
 
         try:
-            pyautogui.click()
+            pyautogui.click(_pause=False)
         except Exception:
             pass
 
@@ -2818,11 +2979,9 @@ class PresentationPage(QWidget):
                 min(self._screen_h - 1, int(smooth_y))
             )
 
-            pyautogui.moveTo(
-                smooth_x,
-                smooth_y,
-                duration=0
-            )
+            # Instant move: pyautogui.moveTo() sleeps 0.1 s after every
+            # call, which held up each camera frame (the lag).
+            native_move(smooth_x, smooth_y)
 
             self._cursor_prev_x = smooth_x
             self._cursor_prev_y = smooth_y
@@ -3077,13 +3236,8 @@ class PresentationPage(QWidget):
 
     def close_camera(self):
 
-        if self.camera_timer.isActive():
-            self.camera_timer.stop()
-
-        if self.camera:
-
-            self.camera.release()
-            self.camera = None
+        # Stops the camera worker first: it uses self.hands.
+        self.release_camera()
 
         if self.hands:
             self.hands.close()
