@@ -40,8 +40,8 @@ STEPS = [
         "groups": [
             ("Slides", [
                 ("🤘", "Rock sign", "Start the presentation"),
-                ("👉", "Swipe index finger right", "Next slide"),
-                ("👈", "Swipe index finger left", "Previous slide"),
+                ("👉", "Swipe open hand right", "Next slide"),
+                ("👈", "Swipe open hand left", "Previous slide"),
                 ("👍", "Thumbs up", "Full screen"),
                 ("👎", "Thumbs down", "Exit full screen"),
             ]),

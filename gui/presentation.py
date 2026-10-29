@@ -637,15 +637,18 @@ class PresentationPage(QWidget):
             self.mp_hands = mp.solutions.hands
             self.mp_drawing = mp.solutions.drawing_utils
 
-            # Same fast model and confidence as the Virtual Mouse; the
-            # heavy model roughly doubled the delay for no better
-            # gestures.
+            # Same fast model as the Virtual Mouse (the heavy model
+            # roughly doubled the delay for no better gestures), but
+            # lower confidences: a hand partly out of the picture (only
+            # the fingers showing) or blurred by a swipe is still found
+            # and followed. Gestures other than swipes still need the
+            # worker's full hand checks.
             self.hands = self.mp_hands.Hands(
                 static_image_mode=False,
                 max_num_hands=1,
                 model_complexity=0,
-                min_detection_confidence=0.6,
-                min_tracking_confidence=0.7,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
             )
         else:
             self.mp_hands = None
@@ -945,7 +948,7 @@ class PresentationPage(QWidget):
         self.previous_button = QPushButton()
         self.previous_button.setObjectName("navButton")
         self.previous_button.setToolTip(
-            "Go back one slide\nGesture: swipe your index finger left 👈"
+            "Go back one slide\nGesture: swipe your open hand left 👈"
         )
         self.previous_button.clicked.connect(self.manual_previous)
 
@@ -956,7 +959,7 @@ class PresentationPage(QWidget):
         self.next_button = QPushButton()
         self.next_button.setObjectName("navButton")
         self.next_button.setToolTip(
-            "Go forward one slide\nGesture: swipe your index finger right 👉"
+            "Go forward one slide\nGesture: swipe your open hand right 👉"
         )
         self.next_button.clicked.connect(self.manual_next)
 
@@ -1333,7 +1336,7 @@ class PresentationPage(QWidget):
         elif self.annotation_mode and presenting:
             hint = (
                 "Drawing is on: hold index and middle fingers together to "
-                "draw, swipe your index finger left or right to change "
+                "draw, swipe your open hand left or right to change "
                 "slides, wave your open hand to clear this slide."
             )
         elif self.annotation_mode:
@@ -1349,7 +1352,7 @@ class PresentationPage(QWidget):
             )
         elif presenting:
             hint = (
-                "Hand gestures are on. Swipe your index finger right for "
+                "Hand gestures are on. Swipe your open hand right for "
                 "the next slide, left to go back."
             )
         else:
@@ -2423,9 +2426,10 @@ class PresentationPage(QWidget):
         except Exception:
             return False
 
-    # Points a swipe needs in the picture: wrist, index and middle
-    # finger (see SwipeDetector.index_stretched).
-    SWIPE_POINTS = (0, 6, 8, 10, 12)
+    # Points a swipe needs in the picture: the four knuckles it
+    # follows (see SwipeDetector.palm_centre). The wrist and fingertips
+    # may be out of frame.
+    SWIPE_POINTS = (5, 9, 13, 17)
 
     def _swipe_points_inside(self, hand):
 
@@ -2450,15 +2454,15 @@ class PresentationPage(QWidget):
         cut_off = False
 
         # Swipes come first and are followed on any frame where the
-        # finger can be seen: mid-swipe the hand blurs (not confirmed)
-        # or reaches the edge of the picture (not whole).
+        # knuckles can be seen: mid-swipe the hand blurs (not confirmed)
+        # or reaches the edge of the picture (not whole). Frames without
+        # a hand still go in, so a swipe waiting to be confirmed fires.
         swipe_hand = hand if hand is not None else raw_hand
 
-        swiped = (
-            swipe_hand is not None
-            and self._swipe_points_inside(swipe_hand)
-            and self._check_swipe(swipe_hand)
-        )
+        if swipe_hand is not None and not self._swipe_points_inside(swipe_hand):
+            swipe_hand = None
+
+        swiped = self._check_swipe(swipe_hand)
 
         if hand is not None and not self._whole_hand(hand):
             hand = None
@@ -2468,6 +2472,7 @@ class PresentationPage(QWidget):
 
             # Stop any drawing stroke the swipe may have started.
             self.end_annotation_draw()
+            self._reset_clear_hold()
             self.detected_gesture = "Swipe"
             self._pose = None
 
@@ -2524,6 +2529,8 @@ class PresentationPage(QWidget):
             channel * width,
             QImage.Format_RGB888
         )
+
+        self._draw_swipe_trail(frame_rgb)
 
         # CameraFeed scales it to the panel size when painting.
         self.camera_label.setPixmap(
@@ -2662,7 +2669,8 @@ class PresentationPage(QWidget):
         """Gesture name for this frame.
 
         Pointing left or right with the index finger is just the
-        pointer here: slides change by swiping (see _check_swipe).
+        pointer here: slides change by swiping the open hand (see
+        _check_swipe).
         """
 
         gesture = self.gesture_detector.detect(hand)
@@ -2670,28 +2678,26 @@ class PresentationPage(QWidget):
         if gesture in ("Point Right", "Point Left"):
             return "Index Finger"
 
-        # A finger pointing sideways or a little down (mid-swipe) can
-        # read as a fist or nothing; with the index stretched out it
-        # is the pointer, so a swipe never clicks by accident.
-        if gesture in ("Fist", "Thumbs Down", "None") and hand is not None:
-            try:
-                if SwipeDetector.index_stretched(hand.landmark):
-                    return "Index Finger"
-            except Exception:
-                pass
-
         return gesture
 
     def _check_swipe(self, hand):
-        """Next / previous slide when the index fingertip is swiped.
+        """Next / previous slide when the open hand is swiped.
 
-        Runs on every frame with a hand (see process_frame), whatever
-        GestureDetector made of it: mid-swipe the finger points sideways
-        and the hand blurs, which reads as other gestures.
+        Runs on every frame (see process_frame), whatever
+        GestureDetector made of the hand: mid-swipe the hand blurs and
+        turns, which reads as other gestures. `hand` is None on frames
+        without a usable hand.
         """
 
-        if hand is None or not self.gestures_enabled or not self._page_opened:
+        if not self.gestures_enabled or not self._page_opened:
+            self.swipe_detector.reset()
             return False
+
+        # While drawing, an open hand waved back and forth clears the
+        # slide: a swipe only counts once the hand has not turned back.
+        self.swipe_detector.confirm_delay = (
+            self.SWIPE_CONFIRM_SECONDS if self.annotation_mode else 0.0
+        )
 
         try:
             swipe = self.swipe_detector.track(hand, time.monotonic())
@@ -2717,6 +2723,72 @@ class PresentationPage(QWidget):
         self._swipe_shown_until = time.monotonic() + 1.2
 
         return True
+
+    # Seconds a swipe waits while drawing (see _check_swipe).
+    SWIPE_CONFIRM_SECONDS = 0.25
+
+    # How long the arrow shows on the camera picture after a swipe.
+    SWIPE_FLASH_SECONDS = 0.7
+
+    def _draw_swipe_trail(self, frame):
+        """Draw the open hand's path, and an arrow after a swipe, on
+        the camera picture (RGB, mirrored like the trail)."""
+
+        detector = self.swipe_detector
+        now = time.monotonic()
+
+        height, width = frame.shape[:2]
+
+        last = detector.last_swipe
+        flashing = (
+            last is not None
+            and now - last[1] < self.SWIPE_FLASH_SECONDS
+        )
+
+        # Blue while following the hand, green just after a swipe.
+        colour = (60, 220, 120) if flashing else (80, 170, 255)
+
+        points = [
+            (t, int(x * width), int(y * height))
+            for t, x, y in detector.trail
+            if now - t <= detector.TRAIL_SECONDS
+        ]
+
+        # Older parts are thinner and darker, so the direction shows.
+        for (t0, x0, y0), (_t1, x1, y1) in zip(points, points[1:]):
+            fade = max(0.0, 1.0 - (now - t0) / detector.TRAIL_SECONDS)
+            shade = tuple(int(c * (0.35 + 0.65 * fade)) for c in colour)
+            cv2.line(
+                frame, (x0, y0), (x1, y1), shade,
+                max(2, int(12 * fade)), cv2.LINE_AA,
+            )
+
+        if points:
+            _t, x, y = points[-1]
+            cv2.circle(frame, (x, y), 9, colour, -1, cv2.LINE_AA)
+            cv2.circle(frame, (x, y), 13, (255, 255, 255), 2, cv2.LINE_AA)
+
+        if not flashing:
+            return
+
+        right = last[0] == "Swipe Right"
+        cy = height // 2
+        start = int(width * (0.3 if right else 0.7))
+        end = int(width * (0.7 if right else 0.3))
+
+        cv2.arrowedLine(
+            frame, (start, cy), (end, cy), colour, 10,
+            cv2.LINE_AA, tipLength=0.3,
+        )
+
+        label = "NEXT" if right else "PREVIOUS"
+        (text_w, _text_h), _base = cv2.getTextSize(
+            label, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3
+        )
+        cv2.putText(
+            frame, label, ((width - text_w) // 2, cy - 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.0, colour, 3, cv2.LINE_AA,
+        )
 
     def _handle_hand(self, gesture, hand):
         """One camera frame with a real, whole hand (swipes are checked
@@ -2792,8 +2864,8 @@ class PresentationPage(QWidget):
             )
             return
 
-        # ☝️ Index finger: the pointer (a quick sideways swipe changes
-        # slides, see _check_swipe). Works while drawing too.
+        # ☝️ Index finger: the pointer (a quick sideways swipe of the
+        # open hand changes slides, see _check_swipe). Works while drawing too.
         if gesture == "Index Finger":
             self.end_annotation_draw()
             self.move_cursor_from_hand(hand)
