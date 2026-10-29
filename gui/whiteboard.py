@@ -664,7 +664,7 @@ class DrawingCanvas(QWidget):
         rect = QRectF(
             QPointF(min(x0, x1), min(y0, y1)),
             QPointF(max(x0, x1), max(y0, y1)),
-        ).united(QRectF(x0, y0, side, side))
+        ).united(QRectF(x0 - side, y0 - side, side * 2, side * 2))
 
         return rect.toAlignedRect().adjusted(-40, -40, 160, 50)
 
@@ -675,31 +675,35 @@ class DrawingCanvas(QWidget):
         start,
         end
     ):
-        """Dashed box with its size, and the shape it will become."""
+        """The shape being drawn (picked in the Shapes menu), with a
+        dashed box, corner marks and its size, so it is clear how big
+        it will be."""
+
+        shape = drag_shape(mode, start, end)
 
         guide_color = QColor("#0E7BD8")
-
-        x0, y0 = start
-        x1, y1 = end
 
         painter.save()
 
         painter.setBrush(Qt.NoBrush)
 
-        if mode in ("line", "arrow"):
+        # The shape it will become.
+        ghost = QColor(self.color)
+        ghost.setAlpha(150)
 
-            painter.setPen(QPen(guide_color, 1, Qt.DashLine))
-            painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+        painter.setPen(QPen(ghost, max(1, self.brush_size), Qt.DashLine))
+        paint_shape(painter, shape)
+
+        if shape[0] in ("line", "arrow"):
+
+            (x0, y0), (x1, y1) = shape[1], shape[2]
 
             label = f"{int(round(math.hypot(x1 - x0, y1 - y0)))} px"
             anchor = QPointF(max(x0, x1) + 10, max(y0, y1) + 4)
 
         else:
 
-            box = QRectF(
-                QPointF(min(x0, x1), min(y0, y1)),
-                QPointF(max(x0, x1), max(y0, y1)),
-            )
+            box = shape_bounds(shape)
 
             painter.setPen(QPen(guide_color, 1, Qt.DashLine))
             painter.drawRect(box)
@@ -719,15 +723,6 @@ class DrawingCanvas(QWidget):
 
             label = f"{int(round(box.width()))} × {int(round(box.height()))} px"
             anchor = QPointF(box.right() + 10, box.bottom() + 4)
-
-        # The shape it will become (a picked shape, not Automatic).
-        if mode in SHAPE_LABELS and mode not in ("auto", "free"):
-
-            ghost = QColor(self.color)
-            ghost.setAlpha(140)
-
-            painter.setPen(QPen(ghost, max(1, self.brush_size), Qt.DashLine))
-            paint_shape(painter, drag_shape(mode, start, end))
 
         # Size label on a small pill.
         font = QFont("Segoe UI", 9)
@@ -1407,49 +1402,8 @@ class DrawingCanvas(QWidget):
             )
 
         # ====================================================
-        # LIVE SHAPE PREVIEW (rubber-band while dragging a shape)
-        # ====================================================
-
-        if (
-            self._shape_dragging
-            and self._shape_start is not None
-            and self._shape_current is not None
-        ):
-
-            shape_start = self._shape_start
-
-            shape_end = self._shape_current
-
-            preview_color = QColor(
-                self.color
-            )
-
-            preview_color.setAlpha(170)
-
-            painter.setBrush(
-                Qt.NoBrush
-            )
-
-            painter.setPen(
-                QPen(
-                    preview_color,
-                    2,
-                    Qt.DashLine
-                )
-            )
-
-            # Same geometry as the shape that is committed on release.
-            paint_shape(
-                painter,
-                drag_shape(
-                    self.shape_mode,
-                    (shape_start.x(), shape_start.y()),
-                    (shape_end.x(), shape_end.y())
-                )
-            )
-
-        # ====================================================
-        # SIZE GUIDE (how big a shape drawn by hand / dragged is)
+        # SHAPE PREVIEW + SIZE GUIDE (a shape picked in the Shapes
+        # menu, dragged with the mouse or drawn with the hand)
         # ====================================================
 
         if (
@@ -2361,6 +2315,26 @@ def drag_shape(mode, start, end):
         return ("polygon", _star_outline(cx, cy, radius, radius * 0.4, -90.0))
 
     return ("line", start, end)
+
+
+def shape_bounds(shape):
+    """The box (QRectF) a shape tuple fills."""
+
+    kind = shape[0]
+
+    if kind == "ellipse":
+        _, cx, cy, rx, ry, _angle = shape
+        return QRectF(cx - rx, cy - ry, rx * 2, ry * 2)
+
+    if kind == "polygon":
+        points = shape[1]
+    else:
+        points = [shape[1], shape[2]]
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+
+    return QRectF(QPointF(min(xs), min(ys)), QPointF(max(xs), max(ys)))
 
 
 def paint_shape(painter, shape):
@@ -4331,6 +4305,32 @@ class WhiteboardPage(QWidget):
         )
 
         # ====================================================
+        # PICKED SHAPE: drag it out from where the fingers closed,
+        # like the mouse; the guide shows its size. Nothing is drawn
+        # until the fingers part.
+        # ====================================================
+
+        if self.shape_picked():
+
+            if not self.gesture_drawing:
+
+                self.gesture_drawing = True
+                self.gesture_points = [point]
+                self.canvas.save_state()
+
+                self._set_gesture_status(
+                    "Move to set the size  (spread fingers to finish)", "draw"
+                )
+
+            else:
+
+                self.gesture_points = [self.gesture_points[0], point]
+
+            self.update_size_guide()
+
+            return
+
+        # ====================================================
         # START NEW STROKE
         # ====================================================
 
@@ -4360,46 +4360,41 @@ class WhiteboardPage(QWidget):
             point
         )
 
-        self.update_size_guide()
-
     # ========================================================
     # SIZE GUIDE
     #
-    # While a pen stroke is drawn with the hand, a dashed box shows how
-    # big it is (with its width and height), and a picked shape shows
-    # the outline it will become, so the size is clear before the
-    # fingers part.
+    # With a shape picked in the Shapes menu, the hand drags the shape
+    # out (from where the fingers closed to where they are), and the
+    # canvas shows it with a dashed box and its width and height, so
+    # the size is clear before the fingers part. Ordinary drawing has
+    # no guide.
     # ========================================================
+
+    def shape_picked(
+        self
+    ):
+        """True when the pen draws a shape picked in the Shapes menu."""
+
+        return (
+            self.current_tool == "pen"
+            and getattr(self.canvas, "shape_mode", "auto") not in ("auto", "free")
+        )
 
     def update_size_guide(
         self
     ):
 
-        mode = getattr(self.canvas, "shape_mode", "auto")
-
         points = self.gesture_points
 
-        if (
-            self.current_tool != "pen"
-            or mode == "free"
-            or len(points) < 2
-        ):
+        if not self.shape_picked() or len(points) < 2:
             self.canvas.set_size_guide(None)
             return
 
-        if mode in ("line", "arrow"):
-
-            start = (points[0].x(), points[0].y())
-            end = (points[-1].x(), points[-1].y())
-
-        else:
-
-            xs = [p.x() for p in points]
-            ys = [p.y() for p in points]
-
-            start, end = (min(xs), min(ys)), (max(xs), max(ys))
-
-        self.canvas.set_size_guide((mode, start, end))
+        self.canvas.set_size_guide((
+            self.canvas.shape_mode,
+            (points[0].x(), points[0].y()),
+            (points[-1].x(), points[-1].y()),
+        ))
 
     # ========================================================
     # SMOOTH STROKE
@@ -4477,7 +4472,8 @@ class WhiteboardPage(QWidget):
         )
 
         # The curve stops half way along the last segment; finish it.
-        if len(points) >= 2:
+        # (A picked shape drew nothing yet: its two points make it.)
+        if len(points) >= 2 and not self.shape_picked():
 
             path = QPainterPath()
             path.moveTo(self._midpoint(points[-2], points[-1]))

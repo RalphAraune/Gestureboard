@@ -771,6 +771,15 @@ class PresentationPage(QWidget):
         self._cursor_filter_y = OneEuroFilter(min_cutoff=1.0, beta=0.03)
         self._cursor_last = 0.0
 
+        # Annotation pen (see move_draw_cursor): heavier smoothing than
+        # the pointer, so lines are steady.
+        self._draw_filter_x = OneEuroFilter(min_cutoff=0.5, beta=0.008)
+        self._draw_filter_y = OneEuroFilter(min_cutoff=0.5, beta=0.008)
+        self._draw_last = 0.0
+        self._draw_hand = None         # hand target last frame (px)
+        self._draw_pen = None          # pen before smoothing (px)
+        self._draw_string = None       # anti-shake string end (px)
+
         # Swipe debounce (see _debounce_swipe) and fingertip trails.
         self._swipe_locked_until = 0.0
         self._swipe_return = None
@@ -3249,8 +3258,11 @@ class PresentationPage(QWidget):
             # ✌️ Index + Middle together -> DRAW (hold left button + move).
             # Over the floating circle this drags it instead.
             if gesture == "Index + Middle":
-                self.move_cursor_from_hand(hand)
-                self.begin_annotation_draw()
+                self.move_draw_cursor(hand)
+                # Press only once the fingers have settled together,
+                # so closing them does not leave a flick at the start.
+                if time.monotonic() - self._pose_since >= self.DRAW_START_SECONDS:
+                    self.begin_annotation_draw()
                 self._set_action("Drawing")
                 self.detected_gesture = gesture
                 return
@@ -3351,6 +3363,84 @@ class PresentationPage(QWidget):
     # instead of sliding over from where it was last.
     POINTER_GAP = 0.3
 
+    # ============================================================
+    # ANNOTATION PEN
+    #
+    # Drawing needs a steadier, slower cursor than pointing:
+    #   * it follows the point between the index and middle tips,
+    #     which shakes less than one fingertip;
+    #   * it moves DRAW_GAIN of the hand's movement, starting from
+    #     where the cursor already is (no jump when drawing starts);
+    #   * tremor smaller than DRAW_STEADY px is ignored (the pen hangs
+    #     on a short string behind the hand), then a One Euro filter
+    #     rounds off what is left.
+    # ============================================================
+
+    DRAW_GAIN = 0.55
+    DRAW_STEADY = 4.0
+    DRAW_START_SECONDS = 0.1
+
+    def move_draw_cursor(self, hand):
+
+        if hand is None or pyautogui is None:
+            return
+
+        try:
+
+            lm = hand.landmark
+            now = time.monotonic()
+
+            x = (lm[8].x + lm[12].x) / 2.0
+            y = (lm[8].y + lm[12].y) / 2.0
+
+            left, top, right, bottom = self.POINTER_BOX
+            target = (
+                (x - left) / (right - left) * (self._screen_w - 1),
+                (y - top) / (bottom - top) * (self._screen_h - 1),
+            )
+
+            if self._draw_hand is None or now - self._draw_last > self.POINTER_GAP:
+
+                # Start from the cursor, wherever it is.
+                cx, cy = pyautogui.position()
+                self._draw_pen = (float(cx), float(cy))
+                self._draw_string = self._draw_pen
+                self._draw_filter_x.reset()
+                self._draw_filter_y.reset()
+
+            else:
+
+                px, py = self._draw_pen
+                hx, hy = self._draw_hand
+
+                self._draw_pen = (
+                    min(self._screen_w - 1, max(0.0, px + (target[0] - hx) * self.DRAW_GAIN)),
+                    min(self._screen_h - 1, max(0.0, py + (target[1] - hy) * self.DRAW_GAIN)),
+                )
+
+            self._draw_hand = target
+            self._draw_last = now
+
+            # The string end only moves once the pen pulls it taut.
+            px, py = self._draw_pen
+            ex, ey = self._draw_string
+            distance = ((px - ex) ** 2 + (py - ey) ** 2) ** 0.5
+
+            if distance > self.DRAW_STEADY:
+                pull = 1.0 - self.DRAW_STEADY / distance
+                self._draw_string = (ex + (px - ex) * pull, ey + (py - ey) * pull)
+
+            sx = self._draw_filter_x(self._draw_string[0], now)
+            sy = self._draw_filter_y(self._draw_string[1], now)
+
+            native_move(int(round(sx)), int(round(sy)))
+
+            # The pointer carries on from here, not from where it was.
+            self._cursor_last = 0.0
+
+        except Exception:
+            pass
+
     def move_cursor_from_hand(self, hand):
 
         if (
@@ -3373,6 +3463,7 @@ class PresentationPage(QWidget):
                 self._cursor_filter_y.reset()
 
             self._cursor_last = now
+            self._draw_hand = None
 
             # The camera feed is mirrored, so x already matches the
             # user's on-screen left/right.
