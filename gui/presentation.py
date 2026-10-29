@@ -4,6 +4,7 @@ import html
 import os
 import sys
 import time
+from collections import deque
 
 import cv2
 import fitz
@@ -52,7 +53,9 @@ from PyQt5.QtWidgets import (
 
 from core.gesture_detector import GestureDetector, SwipeDetector, WaveDetector
 from widgets.annotation_bar import FloatingAnnotationBar
-from gui.virtual_mouse import CameraWorker, looks_like_hand, native_move
+from gui.virtual_mouse import (
+    CameraWorker, OneEuroFilter, looks_like_hand, native_move,
+)
 from core.presentation_controller import PresentationController
 
 try:
@@ -708,10 +711,17 @@ class PresentationPage(QWidget):
         #   * Switching to any other sidebar page disables them.
         self.gestures_enabled = False
 
-        # Index Finger cursor state (smoothed movement).
-        self._cursor_prev_x = None
-        self._cursor_prev_y = None
-        self._cursor_smoothing = 0.5
+        # Index Finger cursor state (see move_cursor_from_hand); same
+        # filter settings as the Virtual Mouse.
+        self._cursor_filter_x = OneEuroFilter(min_cutoff=0.8, beta=0.015)
+        self._cursor_filter_y = OneEuroFilter(min_cutoff=0.8, beta=0.015)
+        self._cursor_last = 0.0
+
+        # Swipe debounce (see _debounce_swipe) and fingertip trails.
+        self._swipe_locked_until = 0.0
+        self._swipe_return = None
+        self._last_swipe = None
+        self._tip_trails = {}
 
         try:
             # Allow the gesture cursor to reach the screen edges/corners.
@@ -2459,6 +2469,8 @@ class PresentationPage(QWidget):
         # a hand still go in, so a swipe waiting to be confirmed fires.
         swipe_hand = hand if hand is not None else raw_hand
 
+        self._update_tip_trails(swipe_hand, time.monotonic())
+
         if swipe_hand is not None and not self._swipe_points_inside(swipe_hand):
             swipe_hand = None
 
@@ -2680,6 +2692,105 @@ class PresentationPage(QWidget):
 
         return gesture
 
+    # ============================================================
+    # SWIPE DEBOUNCE
+    #
+    # After a swipe the hand comes back to the middle, and that return
+    # stroke is a quick sideways movement the other way: it used to
+    # count as a second swipe (next, then previous straight away).
+    # Now, after a swipe:
+    #   * no swipe at all counts for SWIPE_DEBOUNCE seconds;
+    #   * the hand's way back is the "return stroke": a swipe the other
+    #     way while it is under way is swallowed. It is over once the
+    #     hand has come back half a swipe, has been away for a moment,
+    #     or after SWIPE_RETURN_SECONDS;
+    #   * after the return stroke, SWIPE_REARM seconds of quiet.
+    # ============================================================
+
+    SWIPE_DEBOUNCE = 0.8
+    SWIPE_RETURN_SECONDS = 2.0
+    SWIPE_REARM = 0.35
+
+    # A hand missing this long ends the return stroke (it was lowered).
+    SWIPE_HAND_GONE = 0.5
+
+    def _swipe_need(self, hand):
+        """Travel (image width) the swipe detector asks of this hand."""
+
+        detector = self.swipe_detector
+        lm = hand.landmark
+        palm = ((lm[9].x - lm[0].x) ** 2 + (lm[9].y - lm[0].y) ** 2) ** 0.5
+
+        return min(
+            detector.MAX_DISTANCE,
+            max(detector.MIN_DISTANCE, palm * detector.SWIPE_PALMS),
+        )
+
+    def _follow_return_stroke(self, hand, now):
+        """Watch the hand coming back after a swipe (every frame)."""
+
+        back = self._swipe_return
+
+        if back is None:
+            return
+
+        if hand is None:
+            if now - back["seen"] > self.SWIPE_HAND_GONE:
+                self._swipe_return = None
+            return
+
+        back["seen"] = now
+
+        if now > back["until"]:
+            self._swipe_return = None
+            return
+
+        x, _y = SwipeDetector.palm_centre(hand.landmark)
+        sign = back["sign"]
+
+        if (x - back["extreme"]) * sign > 0:
+            # Still carrying on the swipe's way.
+            back["extreme"] = x
+        elif (back["extreme"] - x) * sign >= back["need"] * 0.5:
+            # Back far enough: the return stroke is over.
+            self._swipe_return = None
+            self._swipe_locked_until = max(
+                self._swipe_locked_until, now + self.SWIPE_REARM
+            )
+
+    def _debounce_swipe(self, swipe, hand, now):
+        """True when this swipe should change the slide."""
+
+        if now < self._swipe_locked_until:
+            return False
+
+        back = self._swipe_return
+        sign = 1 if swipe == "Swipe Right" else -1
+
+        if back is not None and sign != back["sign"]:
+            # This is the hand coming back, not a new swipe.
+            self._swipe_return = None
+            self._swipe_locked_until = now + self.SWIPE_REARM
+            return False
+
+        x = 0.5
+        need = self.swipe_detector.MIN_DISTANCE
+
+        if hand is not None:
+            x, _y = SwipeDetector.palm_centre(hand.landmark)
+            need = self._swipe_need(hand)
+
+        self._swipe_locked_until = now + self.SWIPE_DEBOUNCE
+        self._swipe_return = {
+            "sign": sign,
+            "extreme": x,
+            "need": need,
+            "until": now + self.SWIPE_RETURN_SECONDS,
+            "seen": now,
+        }
+
+        return True
+
     def _check_swipe(self, hand):
         """Next / previous slide when the open hand is swiped.
 
@@ -2691,6 +2802,7 @@ class PresentationPage(QWidget):
 
         if not self.gestures_enabled or not self._page_opened:
             self.swipe_detector.reset()
+            self._swipe_return = None
             return False
 
         # While drawing, an open hand waved back and forth clears the
@@ -2699,12 +2811,16 @@ class PresentationPage(QWidget):
             self.SWIPE_CONFIRM_SECONDS if self.annotation_mode else 0.0
         )
 
+        now = time.monotonic()
+
+        self._follow_return_stroke(hand, now)
+
         try:
-            swipe = self.swipe_detector.track(hand, time.monotonic())
+            swipe = self.swipe_detector.track(hand, now)
         except Exception:
             return False
 
-        if swipe is None:
+        if swipe is None or not self._debounce_swipe(swipe, hand, now):
             return False
 
         if swipe == "Swipe Right":
@@ -2714,13 +2830,15 @@ class PresentationPage(QWidget):
             self.previous_pdf_preview()
             action = "Previous Slide (swipe left)"
 
+        self._last_swipe = (swipe, now)
+
         self._set_action(action)
         self.presentationAction.emit(action)
         self.detected_label.setText(swipe)
         self.update_status()
 
         # Keep "Next / Previous Slide" readable for a moment.
-        self._swipe_shown_until = time.monotonic() + 1.2
+        self._swipe_shown_until = now + 1.2
 
         return True
 
@@ -2730,47 +2848,78 @@ class PresentationPage(QWidget):
     # How long the arrow shows on the camera picture after a swipe.
     SWIPE_FLASH_SECONDS = 0.7
 
-    def _draw_swipe_trail(self, frame):
-        """Draw the open hand's path, and an arrow after a swipe, on
-        the camera picture (RGB, mirrored like the trail)."""
+    # ============================================================
+    # FINGERTIP TRAILS
+    #
+    # Each fingertip leaves a short fading trail on the camera
+    # picture, so a swipe (and any hand movement) can be seen.
+    # ============================================================
 
-        detector = self.swipe_detector
+    # Landmark and colour (RGB) of each fingertip: thumb to pinky.
+    TRAIL_TIPS = (
+        (4, (255, 120, 90)),
+        (8, (80, 170, 255)),
+        (12, (90, 220, 140)),
+        (16, (250, 200, 70)),
+        (20, (200, 120, 255)),
+    )
+
+    TRAIL_SECONDS = 0.5
+
+    def _update_tip_trails(self, hand, now):
+
+        trails = self._tip_trails
+
+        for tip, _colour in self.TRAIL_TIPS:
+
+            trail = trails.setdefault(tip, deque())
+
+            if hand is not None:
+                point = hand.landmark[tip]
+                trail.append((now, point.x, point.y))
+
+            while trail and now - trail[0][0] > self.TRAIL_SECONDS:
+                trail.popleft()
+
+    def _draw_swipe_trail(self, frame):
+        """Draw every fingertip's trail, and an arrow after a swipe, on
+        the camera picture (RGB, mirrored like the trails)."""
+
         now = time.monotonic()
 
         height, width = frame.shape[:2]
 
-        last = detector.last_swipe
+        last = self._last_swipe
         flashing = (
             last is not None
             and now - last[1] < self.SWIPE_FLASH_SECONDS
         )
 
-        # Blue while following the hand, green just after a swipe.
-        colour = (60, 220, 120) if flashing else (80, 170, 255)
+        for tip, colour in self.TRAIL_TIPS:
 
-        points = [
-            (t, int(x * width), int(y * height))
-            for t, x, y in detector.trail
-            if now - t <= detector.TRAIL_SECONDS
-        ]
+            points = [
+                (t, int(x * width), int(y * height))
+                for t, x, y in self._tip_trails.get(tip, ())
+            ]
 
-        # Older parts are thinner and darker, so the direction shows.
-        for (t0, x0, y0), (_t1, x1, y1) in zip(points, points[1:]):
-            fade = max(0.0, 1.0 - (now - t0) / detector.TRAIL_SECONDS)
-            shade = tuple(int(c * (0.35 + 0.65 * fade)) for c in colour)
-            cv2.line(
-                frame, (x0, y0), (x1, y1), shade,
-                max(2, int(12 * fade)), cv2.LINE_AA,
-            )
+            # Older parts are thinner and darker, so the direction shows.
+            for (t0, x0, y0), (_t1, x1, y1) in zip(points, points[1:]):
+                fade = max(0.0, 1.0 - (now - t0) / self.TRAIL_SECONDS)
+                shade = tuple(int(c * (0.3 + 0.7 * fade)) for c in colour)
+                cv2.line(
+                    frame, (x0, y0), (x1, y1), shade,
+                    max(1, int(8 * fade)), cv2.LINE_AA,
+                )
 
-        if points:
-            _t, x, y = points[-1]
-            cv2.circle(frame, (x, y), 9, colour, -1, cv2.LINE_AA)
-            cv2.circle(frame, (x, y), 13, (255, 255, 255), 2, cv2.LINE_AA)
+            if points:
+                _t, x, y = points[-1]
+                cv2.circle(frame, (x, y), 6, colour, -1, cv2.LINE_AA)
+                cv2.circle(frame, (x, y), 8, (255, 255, 255), 1, cv2.LINE_AA)
 
         if not flashing:
             return
 
+        colour = (60, 220, 120)
         right = last[0] == "Swipe Right"
         cy = height // 2
         start = int(width * (0.3 if right else 0.7))
@@ -3004,7 +3153,20 @@ class PresentationPage(QWidget):
 
     # ============================================================
     # INDEX FINGER CURSOR
+    #
+    # The fingertip is mapped from a box in the middle of the camera
+    # picture (POINTER_BOX) to the whole screen, so every edge can be
+    # reached without the hand leaving the picture. A One Euro filter
+    # smooths it: steady when the finger is still, no lag when it
+    # moves fast (the old fixed smoothing trailed behind the finger).
     # ============================================================
+
+    # left, top, right, bottom of the box, as fractions of the picture.
+    POINTER_BOX = (0.15, 0.12, 0.85, 0.72)
+
+    # The pointer not used for this long starts afresh at the finger,
+    # instead of sliding over from where it was last.
+    POINTER_GAP = 0.3
 
     def move_cursor_from_hand(self, hand):
 
@@ -3021,42 +3183,32 @@ class PresentationPage(QWidget):
                 self.mp_hands.HandLandmark.INDEX_FINGER_TIP
             ]
 
-            # The camera feed is mirrored, so x already matches the user's
-            # on-screen left/right. Map normalized (0..1) to screen pixels.
-            target_x = int(tip.x * self._screen_w)
-            target_y = int(tip.y * self._screen_h)
+            now = time.monotonic()
 
-            if self._cursor_prev_x is None:
-                self._cursor_prev_x = target_x
-                self._cursor_prev_y = target_y
+            if now - self._cursor_last > self.POINTER_GAP:
+                self._cursor_filter_x.reset()
+                self._cursor_filter_y.reset()
 
-            smooth_x = (
-                self._cursor_prev_x
-                + (target_x - self._cursor_prev_x)
-                * self._cursor_smoothing
-            )
+            self._cursor_last = now
 
-            smooth_y = (
-                self._cursor_prev_y
-                + (target_y - self._cursor_prev_y)
-                * self._cursor_smoothing
-            )
+            # The camera feed is mirrored, so x already matches the
+            # user's on-screen left/right.
+            left, top, right, bottom = self.POINTER_BOX
+            fx = min(1.0, max(0.0, (tip.x - left) / (right - left)))
+            fy = min(1.0, max(0.0, (tip.y - top) / (bottom - top)))
 
-            smooth_x = max(
-                0,
-                min(self._screen_w - 1, int(smooth_x))
-            )
-            smooth_y = max(
-                0,
-                min(self._screen_h - 1, int(smooth_y))
-            )
+            target_x = fx * (self._screen_w - 1)
+            target_y = fy * (self._screen_h - 1)
+
+            smooth_x = self._cursor_filter_x(target_x, now)
+            smooth_y = self._cursor_filter_y(target_y, now)
+
+            smooth_x = max(0, min(self._screen_w - 1, int(round(smooth_x))))
+            smooth_y = max(0, min(self._screen_h - 1, int(round(smooth_y))))
 
             # Instant move: pyautogui.moveTo() sleeps 0.1 s after every
             # call, which held up each camera frame (the lag).
             native_move(smooth_x, smooth_y)
-
-            self._cursor_prev_x = smooth_x
-            self._cursor_prev_y = smooth_y
 
         except Exception:
             pass
