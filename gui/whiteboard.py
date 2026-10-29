@@ -26,6 +26,7 @@ from PyQt5.QtCore import (
     QPoint,
     QPointF,
     QRect,
+    QRectF,
     QTimer,
     QStandardPaths,
     QSize,
@@ -41,6 +42,7 @@ from PyQt5.QtGui import (
     QPolygonF,
     QPainterPath,
     QBrush,
+    QFont,
     QIcon,
     QKeySequence,
 )
@@ -106,6 +108,11 @@ STEADY_RADIUS = 7.0
 # Extra smoothing after the string, 0..1: the share of the remaining
 # distance the pen covers each frame. Lower = smoother but laggier.
 STEADY_SMOOTHING = 0.5
+
+# The two-finger pen moves this share of the hand's cursor movement,
+# so it is slower and more precise than the open-hand cursor. 1 = the
+# same speed as the Virtual Mouse.
+DRAW_GAIN = 0.6
 
 # Minimum points required before automatic shape recognition.
 MIN_SHAPE_POINTS = 12
@@ -403,6 +410,9 @@ class DrawingCanvas(QWidget):
         self._shape_start = None
         self._shape_current = None
 
+        # Size guide of a hand stroke: (mode, start, end) or None.
+        self.size_guide = None
+
         # ====================================================
         # PIXMAP
         # ====================================================
@@ -616,6 +626,128 @@ class DrawingCanvas(QWidget):
 
         if new is not None:
             self.update(new)
+
+    def set_size_guide(
+        self,
+        guide
+    ):
+        """(mode, start, end) of a hand stroke's size guide, or None."""
+
+        if guide == self.size_guide:
+            return
+
+        old = self._size_guide_rect()
+
+        self.size_guide = guide
+
+        new = self._size_guide_rect()
+
+        # Repaint only around the old and new guide.
+        if old is not None:
+            self.update(old)
+
+        if new is not None:
+            self.update(new)
+
+    def _size_guide_rect(self):
+
+        guide = getattr(self, "size_guide", None)
+
+        if guide is None:
+            return None
+
+        _mode, (x0, y0), (x1, y1) = guide
+
+        # Room for a shape grown from the start corner, and the label.
+        side = max(abs(x1 - x0), abs(y1 - y0))
+
+        rect = QRectF(
+            QPointF(min(x0, x1), min(y0, y1)),
+            QPointF(max(x0, x1), max(y0, y1)),
+        ).united(QRectF(x0, y0, side, side))
+
+        return rect.toAlignedRect().adjusted(-40, -40, 160, 50)
+
+    def paint_size_guide(
+        self,
+        painter,
+        mode,
+        start,
+        end
+    ):
+        """Dashed box with its size, and the shape it will become."""
+
+        guide_color = QColor("#0E7BD8")
+
+        x0, y0 = start
+        x1, y1 = end
+
+        painter.save()
+
+        painter.setBrush(Qt.NoBrush)
+
+        if mode in ("line", "arrow"):
+
+            painter.setPen(QPen(guide_color, 1, Qt.DashLine))
+            painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+
+            label = f"{int(round(math.hypot(x1 - x0, y1 - y0)))} px"
+            anchor = QPointF(max(x0, x1) + 10, max(y0, y1) + 4)
+
+        else:
+
+            box = QRectF(
+                QPointF(min(x0, x1), min(y0, y1)),
+                QPointF(max(x0, x1), max(y0, y1)),
+            )
+
+            painter.setPen(QPen(guide_color, 1, Qt.DashLine))
+            painter.drawRect(box)
+
+            # Corner marks.
+            painter.setPen(QPen(guide_color, 2))
+            mark = 10.0
+
+            for cx, cy, dx, dy in (
+                (box.left(), box.top(), 1, 1),
+                (box.right(), box.top(), -1, 1),
+                (box.left(), box.bottom(), 1, -1),
+                (box.right(), box.bottom(), -1, -1),
+            ):
+                painter.drawLine(QPointF(cx, cy), QPointF(cx + mark * dx, cy))
+                painter.drawLine(QPointF(cx, cy), QPointF(cx, cy + mark * dy))
+
+            label = f"{int(round(box.width()))} × {int(round(box.height()))} px"
+            anchor = QPointF(box.right() + 10, box.bottom() + 4)
+
+        # The shape it will become (a picked shape, not Automatic).
+        if mode in SHAPE_LABELS and mode not in ("auto", "free"):
+
+            ghost = QColor(self.color)
+            ghost.setAlpha(140)
+
+            painter.setPen(QPen(ghost, max(1, self.brush_size), Qt.DashLine))
+            paint_shape(painter, drag_shape(mode, start, end))
+
+        # Size label on a small pill.
+        font = QFont("Segoe UI", 9)
+        font.setBold(True)
+        painter.setFont(font)
+
+        metrics = painter.fontMetrics()
+        pill = QRectF(
+            anchor.x(), anchor.y(),
+            metrics.horizontalAdvance(label) + 12, metrics.height() + 6,
+        )
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(guide_color)
+        painter.drawRoundedRect(pill, 6, 6)
+
+        painter.setPen(QColor("#FFFFFF"))
+        painter.drawText(pill, Qt.AlignCenter, label)
+
+        painter.restore()
 
     def gesture_cursor_radius(self):
 
@@ -1314,6 +1446,30 @@ class DrawingCanvas(QWidget):
                     (shape_start.x(), shape_start.y()),
                     (shape_end.x(), shape_end.y())
                 )
+            )
+
+        # ====================================================
+        # SIZE GUIDE (how big a shape drawn by hand / dragged is)
+        # ====================================================
+
+        if (
+            self._shape_dragging
+            and self._shape_start is not None
+            and self._shape_current is not None
+        ):
+
+            self.paint_size_guide(
+                painter,
+                self.shape_mode,
+                (self._shape_start.x(), self._shape_start.y()),
+                (self._shape_current.x(), self._shape_current.y()),
+            )
+
+        elif getattr(self, "size_guide", None) is not None:
+
+            self.paint_size_guide(
+                painter,
+                *self.size_guide
             )
 
         # ====================================================
@@ -3999,23 +4155,61 @@ class WhiteboardPage(QWidget):
             except Exception:
                 pass
 
-        target = QCursor.pos()
+        # Where the Virtual Mouse put the cursor for this hand. Its own
+        # position, not QCursor.pos(): the pen moves the real cursor
+        # too. Screen pixels -> Qt's (scaled) pixels.
+        hand_x = getattr(vmouse, "previous_x", None)
+        hand_y = getattr(vmouse, "previous_y", None)
 
-        # Keep the target on the board.
+        if hand_x is None or hand_y is None:
+            cursor = QCursor.pos()
+            hand_x, hand_y, ratio = cursor.x(), cursor.y(), 1.0
+        else:
+            ratio = self.devicePixelRatioF() or 1.0
+
+        hand = (hand_x / ratio, hand_y / ratio)
+
         origin = self.canvas.mapToGlobal(QPoint(0, 0))
 
         left, top = origin.x(), origin.y()
         right = left + self.canvas.width() - 1
         bottom = top + self.canvas.height() - 1
 
-        tx = float(min(max(target.x(), left), right))
-        ty = float(min(max(target.y(), top), bottom))
-
-        self._steer_outside = (tx, ty) != (target.x(), target.y())
-
         if self._steady is None:
 
             # Start where the cursor already is: no jump.
+            start = QCursor.pos()
+            self._pen_raw = (float(start.x()), float(start.y()))
+
+        else:
+
+            # The pen follows the hand's movement at DRAW_GAIN speed.
+            px, py = self._pen_raw
+            hx, hy = self._hand_ref
+
+            self._pen_raw = (
+                px + (hand[0] - hx) * DRAW_GAIN,
+                py + (hand[1] - hy) * DRAW_GAIN,
+            )
+
+        self._hand_ref = hand
+
+        # Keep the pen on the board.
+        rx, ry = self._pen_raw
+
+        tx = float(min(max(rx, left), right))
+        ty = float(min(max(ry, top), bottom))
+
+        self._steer_outside = (tx, ty) != (rx, ry)
+
+        # Pressing against the edge does not build up: moving back
+        # starts at once.
+        self._pen_raw = (tx, ty)
+
+        target = QPoint(int(round(tx)), int(round(ty)))
+
+        if self._steady is None:
+
             self._string = (tx, ty)
             self._steady = (tx, ty)
 
@@ -4049,7 +4243,7 @@ class WhiteboardPage(QWidget):
 
         steady = QPoint(int(round(sx)), int(round(sy)))
 
-        if steady != target:
+        if steady != QCursor.pos():
             QCursor.setPos(steady)
 
         # Float position on the canvas, for smooth lines.
@@ -4166,6 +4360,47 @@ class WhiteboardPage(QWidget):
             point
         )
 
+        self.update_size_guide()
+
+    # ========================================================
+    # SIZE GUIDE
+    #
+    # While a pen stroke is drawn with the hand, a dashed box shows how
+    # big it is (with its width and height), and a picked shape shows
+    # the outline it will become, so the size is clear before the
+    # fingers part.
+    # ========================================================
+
+    def update_size_guide(
+        self
+    ):
+
+        mode = getattr(self.canvas, "shape_mode", "auto")
+
+        points = self.gesture_points
+
+        if (
+            self.current_tool != "pen"
+            or mode == "free"
+            or len(points) < 2
+        ):
+            self.canvas.set_size_guide(None)
+            return
+
+        if mode in ("line", "arrow"):
+
+            start = (points[0].x(), points[0].y())
+            end = (points[-1].x(), points[-1].y())
+
+        else:
+
+            xs = [p.x() for p in points]
+            ys = [p.y() for p in points]
+
+            start, end = (min(xs), min(ys)), (max(xs), max(ys))
+
+        self.canvas.set_size_guide((mode, start, end))
+
     # ========================================================
     # SMOOTH STROKE
     #
@@ -4255,6 +4490,8 @@ class WhiteboardPage(QWidget):
         self.gesture_drawing = False
 
         self.gesture_points = []
+
+        self.canvas.set_size_guide(None)
 
         self.canvas.set_gesture_cursor(
             None,

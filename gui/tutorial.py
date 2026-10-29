@@ -53,6 +53,7 @@ STEPS = [
                 ("✋", "Open hand", "Move the cursor or pick a tool"),
                 ("✊", "Closed hand", "Click"),
                 ("👋", "Wave open hand side to side", "Clear this slide's drawing"),
+                ("🤙", "Pinky finger up", "Close drawing (🖖 opens it again)"),
             ]),
         ],
         "tip": "Keep your hand about an arm's length from the camera, "

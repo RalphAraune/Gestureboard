@@ -138,6 +138,10 @@ class SlideInk(QObject):
         self._path = None
         self._last = None
 
+        # Goes up whenever an ink image changes, so the views know when
+        # to rescale their cached copy (see SlideView.paintEvent).
+        self.version = 0
+
     # --------------------------------------------------------
 
     def set_enabled(self, enabled):
@@ -153,6 +157,7 @@ class SlideInk(QObject):
         self.end_stroke()
         self.index = index
         self.size = QSize(size)
+        self.version += 1
         self.changed.emit()
 
     def ink(self):
@@ -196,7 +201,29 @@ class SlideInk(QObject):
 
     # --------------------------------------------------------
     # STROKES  (points in slide pixels)
+    #
+    # A pen or marker stroke is not painted into the ink image while
+    # it is drawn: the views paint it on top (live_stroke), and it is
+    # painted in once when it ends. Copying the slide-sized image and
+    # redrawing the whole stroke on every move was the drawing lag.
+    # The eraser works on the image straight away (a short line each
+    # move, no copy).
     # --------------------------------------------------------
+
+    def live_stroke(self):
+        """(path, pen) of the pen / marker stroke being drawn, or None."""
+
+        if self._path is None or self.tool == "eraser":
+            return None
+
+        return self._path, self._stroke_pen()
+
+    def _stroke_pen(self):
+
+        color = QColor(self.color)
+        color.setAlpha(MARKER_ALPHA if self.tool == "highlighter" else 235)
+
+        return QPen(color, self._width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
 
     def begin_stroke(self, point, width):
 
@@ -230,6 +257,17 @@ class SlideInk(QObject):
             return
 
         entry = self._entry()
+
+        # Paint the finished pen / marker stroke in, in one go, so a
+        # see-through marker stays even where it overlaps itself.
+        if self.tool != "eraser":
+            painter = QPainter(entry[0])
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(self._stroke_pen())
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(self._path)
+            painter.end()
+
         entry[1].append(self._base)
         if len(entry[1]) > INK_UNDO_LIMIT:
             entry[1].pop(0)
@@ -237,6 +275,8 @@ class SlideInk(QObject):
 
         self._base = None
         self._path = None
+        self.version += 1
+        self.changed.emit()
 
     def _paint(self, point):
 
@@ -250,21 +290,7 @@ class SlideInk(QObject):
             painter.setPen(QPen(Qt.black, self._width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.drawLine(self._last, point)
             painter.end()
-
-        else:
-            # Redraw the whole stroke over the ink from before it, so a
-            # see-through marker stays even where its segments overlap.
-            color = QColor(self.color)
-            color.setAlpha(MARKER_ALPHA if self.tool == "highlighter" else 235)
-
-            entry[0] = self._base.copy()
-
-            painter = QPainter(entry[0])
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setPen(QPen(color, self._width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawPath(self._path)
-            painter.end()
+            self.version += 1
 
         self._last = point
         self.changed.emit()
@@ -282,6 +308,7 @@ class SlideInk(QObject):
 
         entry[2].append(entry[0])
         entry[0] = entry[1].pop()
+        self.version += 1
         self.changed.emit()
 
     def redo(self):
@@ -293,6 +320,7 @@ class SlideInk(QObject):
 
         entry[1].append(entry[0])
         entry[0] = entry[2].pop()
+        self.version += 1
         self.changed.emit()
 
     def clear_slide(self):
@@ -314,6 +342,7 @@ class SlideInk(QObject):
         blank.fill(Qt.transparent)
         entry[0] = blank
 
+        self.version += 1
         self.changed.emit()
 
     def clear_all(self):
@@ -322,6 +351,7 @@ class SlideInk(QObject):
         self._base = None
         self._path = None
         self.pages = {}
+        self.version += 1
         self.changed.emit()
 
 
@@ -342,6 +372,7 @@ class SlideView(QWidget):
         self.ink = ink
         self.slide = None              # QPixmap of the current slide
         self._scaled = None            # slide scaled to the current size
+        self._ink_cache = None         # (key, ink scaled to the current size)
         self.background = QColor(background)
         self.empty_text = empty_text
 
@@ -437,7 +468,30 @@ class SlideView(QWidget):
 
             ink = self.ink.ink()
             if ink is not None and ink.size() == self.slide.size():
-                painter.drawImage(QRectF(rect), ink)
+
+                # Rescale the ink only when it changed, not on every
+                # repaint while a stroke is drawn.
+                key = (self.ink.index, self.ink.version, rect.size())
+
+                if self._ink_cache is None or self._ink_cache[0] != key:
+                    self._ink_cache = (key, QPixmap.fromImage(ink.scaled(
+                        rect.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+                    )))
+
+                painter.drawPixmap(rect.topLeft(), self._ink_cache[1])
+
+            # The stroke being drawn, on top (slide pixels -> view).
+            live = self.ink.live_stroke()
+            if live is not None:
+                path, pen = live
+                scale = rect.width() / max(1, self.slide.width())
+                painter.save()
+                painter.translate(rect.topLeft())
+                painter.scale(scale, scale)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPath(path)
+                painter.restore()
 
         elif self.empty_text:
 
@@ -711,15 +765,16 @@ class PresentationPage(QWidget):
         #   * Switching to any other sidebar page disables them.
         self.gestures_enabled = False
 
-        # Index Finger cursor state (see move_cursor_from_hand); same
-        # filter settings as the Virtual Mouse.
-        self._cursor_filter_x = OneEuroFilter(min_cutoff=0.8, beta=0.015)
-        self._cursor_filter_y = OneEuroFilter(min_cutoff=0.8, beta=0.015)
+        # Index Finger cursor state (see move_cursor_from_hand): One Euro
+        # filter (a little more responsive than the Virtual Mouse's).
+        self._cursor_filter_x = OneEuroFilter(min_cutoff=1.0, beta=0.03)
+        self._cursor_filter_y = OneEuroFilter(min_cutoff=1.0, beta=0.03)
         self._cursor_last = 0.0
 
         # Swipe debounce (see _debounce_swipe) and fingertip trails.
         self._swipe_locked_until = 0.0
         self._swipe_return = None
+        self._cursor_frozen_until = 0.0
         self._last_swipe = None
         self._tip_trails = {}
 
@@ -1347,7 +1402,8 @@ class PresentationPage(QWidget):
             hint = (
                 "Drawing is on: hold index and middle fingers together to "
                 "draw, swipe your open hand left or right to change "
-                "slides, wave your open hand to clear this slide."
+                "slides, wave your open hand to clear this slide, raise "
+                "your pinky 🤙 to close drawing."
             )
         elif self.annotation_mode:
             hint = (
@@ -2664,18 +2720,26 @@ class PresentationPage(QWidget):
     #
     # Only a real, whole hand gets here (see process_frame). Gestures
     # that do something once (thumbs up / down, rock sign, three
-    # fingers) must be held steady for STEADY_SECONDS first, so the
-    # in-between shapes of a moving hand never trigger anything.
+    # fingers, pinky) must be held still for STEADY_SECONDS first
+    # (thumbs and pinky: HOLD_SECONDS), so the in-between shapes of a
+    # moving hand never trigger anything.
     # ============================================================
 
     STEADY_SECONDS = 0.3
+    HOLD_SECONDS = 0.5
+
+    # The hand moving more than this (image width) restarts the hold.
+    STEADY_MOVE = 0.05
 
     ONE_SHOT_GESTURES = (
         "Rock & Roll",
         "Thumbs Up",
         "Thumbs Down",
         "Three Fingers",
+        "Pinky",
     )
+
+    LONG_HOLD_GESTURES = ("Thumbs Up", "Thumbs Down", "Pinky")
 
     def _detect(self, hand):
         """Gesture name for this frame.
@@ -2690,7 +2754,66 @@ class PresentationPage(QWidget):
         if gesture in ("Point Right", "Point Left"):
             return "Index Finger"
 
+        lm = hand.landmark
+
+        # 👍 / 👎 only from a real fist: an open palm with the thumb up
+        # (or a hand turned towards the camera) is not full screen.
+        if gesture in ("Thumbs Up", "Thumbs Down") and not self._closed_fist(lm):
+            gesture = "None"
+
+        # 🤙 Pinky only: close the drawing.
+        if gesture == "None" and self._pinky_only(lm):
+            gesture = "Pinky"
+
         return gesture
+
+    @staticmethod
+    def _reach_ratio(lm, tip, pip):
+        """How far a fingertip reaches from the wrist, against its
+        middle joint (straight ~1.4-1.6, curled ~1 or less)."""
+
+        def reach(i):
+            return ((lm[i].x - lm[0].x) ** 2 + (lm[i].y - lm[0].y) ** 2) ** 0.5
+
+        return reach(tip) / max(reach(pip), 1e-6)
+
+    FINGERS = ((8, 6), (12, 10), (16, 14), (20, 18))
+
+    def _closed_fist(self, lm):
+        """All four fingers curled into the palm (the thumb may be out)."""
+
+        if SwipeDetector.hand_open(lm):
+            return False
+
+        palm = max(
+            ((lm[9].x - lm[0].x) ** 2 + (lm[9].y - lm[0].y) ** 2) ** 0.5,
+            1e-6,
+        )
+        cx, cy = SwipeDetector.palm_centre(lm)
+
+        for tip, pip in self.FINGERS:
+
+            # Not even loosely stretched...
+            if self._reach_ratio(lm, tip, pip) > 1.1:
+                return False
+
+            # ...and folded in next to the knuckles, not pointing at
+            # the camera (which also looks short).
+            if ((lm[tip].x - cx) ** 2 + (lm[tip].y - cy) ** 2) ** 0.5 > palm * 0.75:
+                return False
+
+        return True
+
+    def _pinky_only(self, lm):
+        """Pinky straight, the other three fingers curled."""
+
+        if self._reach_ratio(lm, 20, 18) < 1.3:
+            return False
+
+        return all(
+            self._reach_ratio(lm, tip, pip) < 1.1
+            for tip, pip in self.FINGERS[:3]
+        )
 
     # ============================================================
     # SWIPE DEBOUNCE
@@ -2845,6 +2968,39 @@ class PresentationPage(QWidget):
     # Seconds a swipe waits while drawing (see _check_swipe).
     SWIPE_CONFIRM_SECONDS = 0.25
 
+    # The open hand moving sideways faster than this (image widths per
+    # second, over the last SWIPE_SPEED_SPAN seconds) is a swipe: the
+    # annotation cursor stays still until SWIPE_FREEZE seconds after.
+    SWIPE_SPEED = 0.6
+    SWIPE_SPEED_SPAN = 0.15
+    SWIPE_FREEZE = 0.3
+
+    def _hand_swiping(self):
+        """True while the open hand is swiping (or just swiped)."""
+
+        now = time.monotonic()
+
+        if now < self._swipe_locked_until or now < self._cursor_frozen_until:
+            return True
+
+        detector = self.swipe_detector
+
+        if detector._pending:
+            return True
+
+        recent = [
+            (t, x) for t, x, _y in detector.trail
+            if now - t <= self.SWIPE_SPEED_SPAN
+        ]
+
+        if len(recent) >= 2:
+            dt = recent[-1][0] - recent[0][0]
+            if dt > 0 and abs(recent[-1][1] - recent[0][1]) / dt > self.SWIPE_SPEED:
+                self._cursor_frozen_until = now + self.SWIPE_FREEZE
+                return True
+
+        return False
+
     # How long the arrow shows on the camera picture after a swipe.
     SWIPE_FLASH_SECONDS = 0.7
 
@@ -2948,15 +3104,31 @@ class PresentationPage(QWidget):
             return
 
         now = time.monotonic()
+        centre = SwipeDetector.palm_centre(hand.landmark)
 
         if gesture != getattr(self, "_pose", None):
             self._pose = gesture
             self._pose_since = now
+            self._pose_anchor = centre
 
-        # One-shot gestures wait until they have been held steady.
+        # A hand still moving (or just after a swipe) restarts the hold.
+        anchor = self._pose_anchor
+        moved = ((centre[0] - anchor[0]) ** 2 + (centre[1] - anchor[1]) ** 2) ** 0.5
+
+        if moved > self.STEADY_MOVE or now < self._swipe_locked_until:
+            self._pose_since = now
+            self._pose_anchor = centre
+
+        hold = (
+            self.HOLD_SECONDS
+            if gesture in self.LONG_HOLD_GESTURES
+            else self.STEADY_SECONDS
+        )
+
+        # One-shot gestures wait until they have been held still.
         if (
             gesture in self.ONE_SHOT_GESTURES
-            and now - self._pose_since < self.STEADY_SECONDS
+            and now - self._pose_since < hold
         ):
             self.end_annotation_draw()
             return
@@ -3047,6 +3219,14 @@ class PresentationPage(QWidget):
                 self.exit_fullscreen()
                 action = "Exit Full Screen"
 
+            elif gesture == "Pinky":
+                # 🤙 Close the drawing: paused, so every slide keeps its
+                # drawing and 🖖 three fingers opens it again.
+                if not self.annotation_mode:
+                    return
+                self.set_annotation_mode(False)
+                action = "Annotation closed"
+
             else:
                 # 🖖 Turn drawing on. It is paused or stopped from the
                 # Annotation page, so a hand passing through this shape
@@ -3079,9 +3259,11 @@ class PresentationPage(QWidget):
             self.end_annotation_draw()
 
             # ✋ Open Hand -> move cursor over the floating circle / tools.
+            # Not while the hand is swiping: the cursor stays put.
             if gesture == "Open Hand":
-                self.move_cursor_from_hand(hand)
-                self._set_action("Cursor (select tool)")
+                if not self._hand_swiping():
+                    self.move_cursor_from_hand(hand)
+                    self._set_action("Cursor (select tool)")
                 self.detected_gesture = gesture
                 return
 
@@ -3162,7 +3344,8 @@ class PresentationPage(QWidget):
     # ============================================================
 
     # left, top, right, bottom of the box, as fractions of the picture.
-    POINTER_BOX = (0.15, 0.12, 0.85, 0.72)
+    # A smaller box means a smaller hand movement crosses the screen.
+    POINTER_BOX = (0.22, 0.15, 0.78, 0.60)
 
     # The pointer not used for this long starts afresh at the finger,
     # instead of sliding over from where it was last.
