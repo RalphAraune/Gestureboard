@@ -53,6 +53,7 @@ except ImportError:
 # ============================================================
 
 from gui.virtual_mouse import CameraWorker
+from core.phone_camera import PHONE_CAMERA, PHONE_CAMERA_NAME, open_camera
 
 TRACK_WIDTH = 640
 TRACK_HEIGHT = 480
@@ -64,6 +65,22 @@ TRACK_FPS = 30
 # ============================================================
 
 def find_named_cameras():
+    """
+    Detected webcams, then the phone (always offered: it connects
+    over the network, so there is nothing to detect).
+
+    Returns:
+        [
+            (camera_index, camera_name),
+            ...
+            (PHONE_CAMERA, PHONE_CAMERA_NAME),
+        ]
+    """
+
+    return _find_webcams() + [(PHONE_CAMERA, PHONE_CAMERA_NAME)]
+
+
+def _find_webcams():
     """
     Detect available cameras.
 
@@ -1297,6 +1314,23 @@ class CameraSetupPage(QWidget):
         self.stop_preview()
 
         # ----------------------------------------------------
+        # Phone camera: connect the phone first (QR code)
+        # ----------------------------------------------------
+
+        if index == PHONE_CAMERA:
+
+            from gui.phone_camera_dialog import connect_phone
+
+            if not connect_phone(self):
+
+                self.preview_label.setText(
+                    "Phone not connected.\n\n"
+                    "Click Test Camera to show the QR code again."
+                )
+
+                return
+
+        # ----------------------------------------------------
         # Windows camera backend
         # ----------------------------------------------------
 
@@ -1306,7 +1340,7 @@ class CameraSetupPage(QWidget):
             else cv2.CAP_ANY
         )
 
-        self.capture = cv2.VideoCapture(
+        self.capture = open_camera(
             index,
             backend
         )

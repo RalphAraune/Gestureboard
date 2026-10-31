@@ -58,6 +58,7 @@ from widgets.annotation_bar import FloatingAnnotationBar
 from gui.virtual_mouse import (
     CameraWorker, OneEuroFilter, looks_like_hand, native_move,
 )
+from core.phone_camera import open_camera as open_capture
 from core.presentation_controller import PresentationController
 
 try:
@@ -2317,7 +2318,8 @@ class PresentationPage(QWidget):
 
         backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY
 
-        self.camera = cv2.VideoCapture(
+        # open_capture: a webcam as before, or the phone camera.
+        self.camera = open_capture(
             self.camera_index,
             backend
         )
@@ -2326,7 +2328,7 @@ class PresentationPage(QWidget):
 
             self.camera.release()
 
-            self.camera = cv2.VideoCapture(
+            self.camera = open_capture(
                 self.camera_index
             )
 

@@ -32,6 +32,8 @@ from PyQt5.QtWidgets import (
     QScrollArea,
 )
 
+from core.phone_camera import open_camera as open_capture
+
 
 # ==============================================================
 # NATIVE MOUSE INPUT (Windows)
@@ -1583,7 +1585,8 @@ class VirtualMousePage(QWidget):
         if self.camera is not None:
             return True
 
-        self.camera = cv2.VideoCapture(
+        # open_capture: a webcam as before, or the phone camera.
+        self.camera = open_capture(
             self.camera_index,
             cv2.CAP_DSHOW
         )
@@ -1592,7 +1595,7 @@ class VirtualMousePage(QWidget):
 
             self.camera.release()
 
-            self.camera = cv2.VideoCapture(
+            self.camera = open_capture(
                 self.camera_index
             )
 
