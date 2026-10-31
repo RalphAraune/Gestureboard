@@ -28,6 +28,22 @@ from gui.virtual_mouse import GESTURE_GUIDE as VIRTUAL_MOUSE_GESTURES
 # its position, so the order here can change freely.
 # ==============================================================
 
+# Drawing on slides in Presentation Control. One list, shown in the
+# Presentation Control guide, Settings and both tutorial steps, so
+# they always match what the page does.
+ANNOTATION_GESTURES = [
+    ("☝️", "Index finger", "Pointer"),
+    ("🖖", "Three fingers up", "Turn drawing on"),
+    ("✌️", "Index and middle together", "Draw"),
+    ("✌️", "Index and middle apart", "Move the cursor"),
+    ("✋", "Open hand", "Move the cursor"),
+    ("✊", "Closed hand", "Click or pick a tool"),
+    ("✊", "Closed hand on the circle, 1 s", "Move the circle"),
+    ("👌", "OK sign, 1 s", "Clear this slide"),
+    ("🤙", "Pinky finger up", "Close drawing"),
+]
+
+
 STEPS = [
     {
         "key": "camera",
@@ -94,16 +110,7 @@ STEPS = [
                 ("👍", "Thumbs up", "Full screen"),
                 ("👎", "Thumbs down", "Exit full screen"),
             ]),
-            ("Pointer and drawing", [
-                ("☝️", "Index finger", "Pointer on the slide"),
-                ("🖖", "Three fingers up", "Turn drawing on"),
-                ("✌️", "Index and middle together", "Draw"),
-                ("✌️", "Index and middle apart", "Stop drawing"),
-                ("✋", "Open hand", "Move the cursor or pick a tool"),
-                ("✊", "Closed hand", "Click"),
-                ("👋", "Wave open hand side to side", "Clear this slide's drawing"),
-                ("🤙", "Pinky finger up", "Close drawing (🖖 opens it again)"),
-            ]),
+            ("Pointer and drawing", ANNOTATION_GESTURES),
         ],
         "tip": "Keep your hand about an arm's length from the camera, "
                "with your palm facing it.",
@@ -142,24 +149,16 @@ STEPS = [
             "Open your slides in Presentation Control first.",
             "Open Annotation from the sidebar and press Start, or hold up "
             "three fingers 🖖 while presenting.",
-            "A floating circle appears on the slides. Close your hand on it "
-            "to open the pen, marker, eraser, colours and sizes.",
+            "A floating circle appears in the upper right of the slides. "
+            "Close your hand on it to open the pen, marker, eraser, colours "
+            "and sizes.",
         ],
         "groups": [
-            ("Turn drawing on and off", [
-                ("🖖", "Three fingers up", "Turn drawing on and show the floating circle"),
-                ("🤙", "Pinky finger up", "Close drawing. Your drawings stay on the slides"),
-                ("▶", "Start or Resume", "On the Annotation page: show the floating circle"),
+            ("Hand gestures", ANNOTATION_GESTURES),
+            ("Annotation page buttons", [
+                ("▶", "Start or Resume", "Show the floating circle on your slides"),
                 ("❚❚", "Pause", "Hide the floating circle and keep the drawings"),
                 ("■", "Stop", "End annotating and clear every slide"),
-            ]),
-            ("Draw with the floating circle", [
-                ("✋", "Open hand", "Move the cursor over the circle and its tools"),
-                ("✊", "Closed hand", "Tap: open the tools, pick a pen, colour or size"),
-                ("✌️", "Index and middle together", "Draw on the slide (on the circle: drag it)"),
-                ("✌️", "Index and middle apart", "Lift the pen"),
-                ("👋", "Wave open hand side to side", "Clear this slide. The red ring fills as you wave"),
-                ("☝️", "Index finger", "Point without drawing"),
             ]),
             ("Mark up a PDF with the mouse", [
                 ("Ctrl+O", "Open PDF", "Choose the file to mark up"),
