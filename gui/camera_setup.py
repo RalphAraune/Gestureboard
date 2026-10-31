@@ -849,6 +849,14 @@ class CameraSetupPage(QWidget):
             camera_row
         )
 
+        # No webcam? Step-by-step help for using the phone.
+        self.phone_help_button = QPushButton("📱  How to use phone camera")
+        self.phone_help_button.setCursor(Qt.PointingHandCursor)
+        self.phone_help_button.clicked.connect(self._open_phone_tutorial)
+
+        controls.addSpacing(6)
+        controls.addWidget(self.phone_help_button)
+
         # ----------------------------------------------------
         # Resolution
         # ----------------------------------------------------
@@ -1923,6 +1931,46 @@ class CameraSetupPage(QWidget):
         super().hideEvent(
             event
         )
+
+
+    # ========================================================
+    # PHONE CAMERA HELP (gui/phone_tutorial.py)
+    # ========================================================
+
+    def showEvent(self, event):
+
+        super().showEvent(event)
+
+        # No real webcam found: offer the phone, once the page is up.
+        QTimer.singleShot(400, self._maybe_offer_phone)
+
+    def _maybe_offer_phone(self):
+
+        from gui.phone_tutorial import maybe_prompt_phone_camera
+
+        cameras = [
+            (self.camera_combo.itemData(i), self.camera_combo.itemText(i))
+            for i in range(self.camera_combo.count())
+        ]
+
+        maybe_prompt_phone_camera(self, cameras)
+
+    def _open_phone_tutorial(self):
+
+        from gui.phone_tutorial import open_phone_tutorial
+
+        open_phone_tutorial(self)
+
+    def use_phone_camera(self):
+        """Pick Phone Camera and test it (shows its QR code)."""
+
+        found = self.camera_combo.findData(PHONE_CAMERA)
+
+        if found < 0:
+            return
+
+        self.camera_combo.setCurrentIndex(found)
+        self.start_preview()
 
 
     # ========================================================
