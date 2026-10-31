@@ -2,8 +2,23 @@
 
 from pathlib import Path
 import json
+import os
+import sys
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+
+def _config_path():
+    """settings/config.json when run from source. In the one-file .exe
+    the code lives in a temporary folder that is deleted on exit, so
+    there it is %APPDATA%/GestureBoard/config.json instead."""
+
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("APPDATA") or str(Path.home())
+        return Path(base) / "GestureBoard" / "config.json"
+
+    return Path(__file__).resolve().parent / "config.json"
+
+
+CONFIG_PATH = _config_path()
 
 _DEFAULTS = {
     "tutorial_completed": False,
