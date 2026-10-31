@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -86,7 +87,7 @@ DEFAULTS = {
     "show_gesture_tips": True,
 }
 
-CONTENT_MAX_WIDTH = 820
+CONTENT_MAX_WIDTH = 900
 
 
 # ==============================================================
@@ -270,14 +271,37 @@ def section_pixmap(name, color, size):
 
 
 def settings_colors():
-    """Shared page surfaces plus the tones used by fields and switches."""
+    """Shared page surfaces plus the tones used by fields and switches.
+
+    The cards ("sheet") stand clear of the page: white with a soft
+    navy shadow in light mode, a lighter navy with a brighter edge in
+    dark mode, so each group of settings reads as one piece.
+    """
 
     c = page_background.page_colors()
 
     if app_theme.is_dark():
-        c.update(field=c["input_bg"], knob="#E6EEF8")
+        c.update(
+            sheet="#17314F",
+            sheet_border="#2F5683",
+            field="#0F2038",
+            field_border="#335B89",
+            hover="#21416A",
+            divider="#284B74",
+            knob="#E6EEF8",
+            shadow=QColor(0, 0, 0, 120),
+        )
     else:
-        c.update(field="#F5F9FD", knob="#FFFFFF")
+        c.update(
+            sheet="#FFFFFF",
+            sheet_border="#C7D6EA",
+            field="#F4F7FB",
+            field_border="#B9CCE4",
+            hover="#EAF1F9",
+            divider="#E1E9F3",
+            knob="#FFFFFF",
+            shadow=QColor(14, 47, 118, 34),
+        )
 
     return c
 
@@ -295,7 +319,7 @@ class ToggleSwitch(QAbstractButton):
         self.setCheckable(True)
         self.setChecked(checked)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(46, 26)
+        self.setFixedSize(50, 28)
 
         self._on = QColor("#0E2F76")
         self._off = QColor("#AAC0E1")
@@ -316,7 +340,7 @@ class ToggleSwitch(QAbstractButton):
         self.update()
 
     def sizeHint(self):
-        return QSize(46, 26)
+        return QSize(50, 28)
 
     def _set_offset(self, value):
         self._offset = value
@@ -390,6 +414,9 @@ class SettingsPage(QWidget):
         self.toggles = []
         self.rail_buttons = {}
         self.section_icons = {}
+
+        # Drop shadows under the cards, recoloured with the theme.
+        self._shadows = []
 
         self.setObjectName("settingsPage")
 
@@ -465,7 +492,14 @@ class SettingsPage(QWidget):
             self.section_pages[key] = page
             self.stack.addWidget(page)
 
-        holder_layout.addWidget(self.stack, 0, Qt.AlignTop | Qt.AlignLeft)
+        # Grow with the window up to CONTENT_MAX_WIDTH, kept to the left
+        # (an alignment flag would pin it to its smallest width).
+        stack_row = QHBoxLayout()
+        stack_row.setContentsMargins(0, 0, 0, 0)
+        stack_row.addWidget(self.stack, 1)
+        stack_row.addStretch(0)
+
+        holder_layout.addLayout(stack_row)
         holder_layout.addStretch()
 
         scroll.setWidget(holder)
@@ -477,7 +511,8 @@ class SettingsPage(QWidget):
 
         rail = QFrame()
         rail.setObjectName("rail")
-        rail.setFixedWidth(220)
+        rail.setFixedWidth(232)
+        self._lift(rail)
 
         layout = QVBoxLayout(rail)
         layout.setContentsMargins(10, 10, 10, 14)
@@ -492,7 +527,7 @@ class SettingsPage(QWidget):
             button.setObjectName("railItem")
             button.setCheckable(True)
             button.setCursor(Qt.PointingHandCursor)
-            button.setIconSize(QSize(20, 20))
+            button.setIconSize(QSize(22, 22))
             button.clicked.connect(
                 lambda checked=False, k=key: self.show_section(k)
             )
@@ -557,10 +592,22 @@ class SettingsPage(QWidget):
     # BUILDING BLOCKS
     # ==========================================================
 
+    def _lift(self, widget):
+        """Soft shadow under a card, so it stands off the page."""
+
+        shadow = QGraphicsDropShadowEffect(widget)
+        shadow.setBlurRadius(26)
+        shadow.setOffset(0, 6)
+        widget.setGraphicsEffect(shadow)
+        self._shadows.append(shadow)
+
+        return widget
+
     def _group(self, parent_layout):
 
         group = QFrame()
         group.setObjectName("group")
+        self._lift(group)
 
         layout = QVBoxLayout(group)
         layout.setContentsMargins(0, 4, 0, 4)
@@ -581,7 +628,7 @@ class SettingsPage(QWidget):
         row = QWidget()
 
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(20, 14, 20, 14)
+        layout.setContentsMargins(22, 16, 22, 16)
         layout.setSpacing(24)
 
         text_box = QWidget()
@@ -644,7 +691,7 @@ class SettingsPage(QWidget):
         box.setSpacing(12)
 
         slider = QSlider(Qt.Horizontal)
-        slider.setFixedWidth(200)
+        slider.setFixedWidth(210)
         slider.setRange(minimum, maximum)
         slider.setSingleStep(step)
         slider.setPageStep(step * 2)
@@ -653,7 +700,7 @@ class SettingsPage(QWidget):
 
         value = QLabel()
         value.setObjectName("rowValue")
-        value.setFixedWidth(64)
+        value.setFixedWidth(72)
         value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         def changed(v):
@@ -841,9 +888,10 @@ class SettingsPage(QWidget):
 
             card = QFrame()
             card.setObjectName("group")
+            self._lift(card)
 
             grid = QGridLayout(card)
-            grid.setContentsMargins(16, 14, 16, 14)
+            grid.setContentsMargins(20, 18, 20, 18)
             grid.setHorizontalSpacing(14)
             grid.setVerticalSpacing(12)
             grid.setColumnStretch(0, 1)
@@ -864,7 +912,7 @@ class SettingsPage(QWidget):
 
         icon_label = QLabel(icon)
         icon_label.setObjectName("gestureIcon")
-        icon_label.setFixedSize(42, 42)
+        icon_label.setFixedSize(46, 46)
         icon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(icon_label, 0, Qt.AlignTop)
 
@@ -1457,12 +1505,12 @@ class SettingsPage(QWidget):
             }}
 
             QLabel#pageTitle {{
-                font-size: 28px;
+                font-size: 32px;
                 font-weight: 800;
             }}
 
             QLabel#pageSubtitle {{
-                font-size: 14px;
+                font-size: 16px;
                 color: {c['text_secondary']};
                 margin-top: 4px;
             }}
@@ -1470,9 +1518,9 @@ class SettingsPage(QWidget):
             /* ---------- Section rail ---------- */
 
             QFrame#rail {{
-                background: {c['card']};
-                border: 1px solid {c['card_border']};
-                border-radius: 16px;
+                background: {c['sheet']};
+                border: 1px solid {c['sheet_border']};
+                border-radius: 18px;
             }}
 
             QPushButton#railItem {{
@@ -1480,20 +1528,21 @@ class SettingsPage(QWidget):
                 background: transparent;
                 color: {c['text_secondary']};
                 border: none;
-                border-radius: 10px;
-                padding: 10px 12px;
-                font-size: 14px;
+                border-radius: 11px;
+                padding: 12px 14px;
+                font-size: 16px;
                 font-weight: 600;
             }}
 
             QPushButton#railItem:hover {{
-                background: {c['button_hover']};
+                background: {c['hover']};
                 color: {c['text']};
             }}
 
             QPushButton#railItem:checked {{
                 background: {c['primary']};
                 color: {c['primary_text']};
+                font-weight: 700;
             }}
 
             QPushButton#railItem:focus {{
@@ -1502,8 +1551,8 @@ class SettingsPage(QWidget):
 
             QLabel#railNote {{
                 color: {c['text_secondary']};
-                font-size: 12px;
-                padding: 0 12px;
+                font-size: 13px;
+                padding: 0 14px;
             }}
 
             /* ---------- Section header ---------- */
@@ -1514,80 +1563,80 @@ class SettingsPage(QWidget):
             }}
 
             QLabel#sectionTitle {{
-                font-size: 22px;
+                font-size: 26px;
                 font-weight: 800;
             }}
 
             QLabel#sectionText {{
-                font-size: 14px;
+                font-size: 15px;
                 color: {c['text_secondary']};
             }}
 
             /* ---------- Groups and rows ---------- */
 
             QFrame#group {{
-                background: {c['card']};
-                border: 1px solid {c['card_border']};
-                border-radius: 14px;
+                background: {c['sheet']};
+                border: 1px solid {c['sheet_border']};
+                border-radius: 16px;
             }}
 
             QFrame#rowDivider {{
-                background: {c['card_border']};
+                background: {c['divider']};
                 border: none;
-                margin: 0 20px;
+                margin: 0 22px;
             }}
 
             QLabel#rowLabel {{
-                font-size: 14px;
+                font-size: 16px;
                 font-weight: 700;
             }}
 
             QLabel#rowHint {{
-                font-size: 12px;
+                font-size: 14px;
                 color: {c['text_secondary']};
             }}
 
             QLabel#rowValue {{
-                font-size: 13px;
+                font-size: 15px;
                 font-weight: 700;
                 color: {c['text']};
             }}
 
             QLabel#rowValueText {{
-                font-size: 13px;
+                font-size: 15px;
                 font-weight: 600;
                 color: {c['text_secondary']};
             }}
 
             QLabel#groupTitle {{
-                font-size: 15px;
+                font-size: 17px;
                 font-weight: 700;
             }}
 
             QLabel#gestureIcon {{
-                background: {c['button_hover']};
-                border-radius: 11px;
+                background: {c['hover']};
+                border-radius: 12px;
                 font-family: "Segoe UI Emoji";
-                font-size: 20px;
+                font-size: 22px;
             }}
 
             QLabel#gestureName {{
-                font-size: 13px;
+                font-size: 15px;
                 font-weight: 700;
             }}
 
             QLabel#gestureAction {{
-                font-size: 12px;
+                font-size: 14px;
                 color: {c['text_secondary']};
             }}
 
             QLabel#aboutName {{
-                font-size: 18px;
+                font-size: 21px;
                 font-weight: 800;
             }}
 
             QLabel#aboutText {{
-                font-size: 13px;
+                font-size: 15px;
                 color: {c['text_secondary']};
             }}
 
@@ -1596,11 +1645,11 @@ class SettingsPage(QWidget):
             QComboBox {{
                 background: {c['field']};
                 color: {c['text']};
-                border: 1px solid {c['input_border']};
-                border-radius: 9px;
-                padding: 7px 12px;
-                font-size: 13px;
-                min-height: 22px;
+                border: 1px solid {c['field_border']};
+                border-radius: 10px;
+                padding: 8px 12px;
+                font-size: 15px;
+                min-height: 24px;
             }}
 
             QComboBox:hover,
@@ -1610,14 +1659,15 @@ class SettingsPage(QWidget):
 
             QComboBox::drop-down {{
                 border: none;
-                width: 26px;
+                width: 28px;
             }}
 
             QComboBox QAbstractItemView {{
-                background: {c['field']};
+                background: {c['sheet']};
                 color: {c['text']};
-                border: 1px solid {c['input_border']};
-                selection-background-color: {c['button_hover']};
+                border: 1px solid {c['field_border']};
+                font-size: 15px;
+                selection-background-color: {c['hover']};
                 selection-color: {c['text']};
                 outline: none;
             }}
@@ -1625,24 +1675,24 @@ class SettingsPage(QWidget):
             QPushButton#secondaryButton {{
                 background: {c['field']};
                 color: {c['text']};
-                border: 1px solid {c['input_border']};
-                border-radius: 9px;
-                padding: 8px 16px;
-                font-size: 13px;
+                border: 1px solid {c['field_border']};
+                border-radius: 10px;
+                padding: 9px 18px;
+                font-size: 15px;
                 font-weight: 600;
             }}
 
             QPushButton#secondaryButton:hover {{
-                background: {c['button_hover']};
+                background: {c['hover']};
             }}
 
             QPushButton#primaryButton {{
                 background: {c['primary']};
                 color: {c['primary_text']};
                 border: none;
-                border-radius: 9px;
-                padding: 9px 18px;
-                font-size: 13px;
+                border-radius: 10px;
+                padding: 10px 20px;
+                font-size: 15px;
                 font-weight: 700;
             }}
 
@@ -1657,29 +1707,29 @@ class SettingsPage(QWidget):
             }}
 
             QSlider::groove:horizontal {{
-                height: 5px;
-                background: {c['input_border']};
-                border-radius: 2px;
+                height: 6px;
+                background: {c['field_border']};
+                border-radius: 3px;
             }}
 
             QSlider::sub-page:horizontal {{
                 background: {c['primary']};
-                border-radius: 2px;
+                border-radius: 3px;
             }}
 
             QSlider {{
                 background: transparent;
                 border: none;
-                min-height: 22px;
+                min-height: 24px;
             }}
 
             QSlider::handle:horizontal {{
-                width: 14px;
-                height: 14px;
-                margin: -6px 0;
+                width: 16px;
+                height: 16px;
+                margin: -7px 0;
                 background: {c['knob']};
                 border: 2px solid {c['primary']};
-                border-radius: 9px;
+                border-radius: 10px;
             }}
 
             QSlider::handle:horizontal:hover {{
@@ -1689,28 +1739,28 @@ class SettingsPage(QWidget):
             /* ---------- Feedback ---------- */
 
             QFrame#notice {{
-                background: {c['button_hover']};
-                border: 1px solid {c['card_border']};
+                background: {c['sheet']};
+                border: 1px solid {c['sheet_border']};
                 border-left: 4px solid {c['primary']};
                 border-radius: 12px;
             }}
 
             QLabel#noticeTitle {{
-                font-size: 15px;
+                font-size: 17px;
                 font-weight: 800;
             }}
 
             QLabel#noticeText {{
-                font-size: 13px;
+                font-size: 15px;
                 color: {c['text_secondary']};
             }}
 
             QLabel#connectionPill {{
-                font-size: 12px;
+                font-size: 13px;
                 font-weight: 700;
-                border-radius: 11px;
-                padding: 4px 12px;
-                background: {c['card']};
+                border-radius: 12px;
+                padding: 5px 13px;
+                background: {c['hover']};
                 color: {c['text_secondary']};
             }}
 
@@ -1725,17 +1775,17 @@ class SettingsPage(QWidget):
             }}
 
             QLabel#fieldLabel {{
-                font-size: 13px;
+                font-size: 15px;
                 font-weight: 700;
             }}
 
             QLineEdit#field, QPlainTextEdit#field {{
                 background: {c['field']};
                 color: {c['text']};
-                border: 1px solid {c['input_border']};
-                border-radius: 9px;
-                padding: 8px 12px;
-                font-size: 14px;
+                border: 1px solid {c['field_border']};
+                border-radius: 10px;
+                padding: 9px 12px;
+                font-size: 15px;
                 selection-background-color: {c['primary']};
                 selection-color: {c['primary_text']};
             }}
@@ -1745,7 +1795,7 @@ class SettingsPage(QWidget):
             }}
 
             QLabel#feedbackStatus {{
-                font-size: 13px;
+                font-size: 15px;
                 color: {c['text_secondary']};
             }}
 
@@ -1761,7 +1811,7 @@ class SettingsPage(QWidget):
 
             QPushButton#primaryButton:disabled,
             QPushButton#secondaryButton:disabled {{
-                background: {c['input_border']};
+                background: {c['field_border']};
                 color: {c['text_secondary']};
             }}
 
@@ -1774,7 +1824,7 @@ class SettingsPage(QWidget):
             }}
 
             QScrollArea#settingsScroll QScrollBar::handle:vertical {{
-                background: {c['input_border']};
+                background: {c['field_border']};
                 border-radius: 4px;
                 min-height: 30px;
             }}
@@ -1788,15 +1838,18 @@ class SettingsPage(QWidget):
             }}
         """)
 
+        for shadow in self._shadows:
+            shadow.setColor(c["shadow"])
+
         # Rail icons: muted when idle, light on the selected item.
         for button, icon_name in self.rail_buttons.values():
             icon = QIcon()
             icon.addPixmap(
-                section_pixmap(icon_name, c["text_secondary"], 20),
+                section_pixmap(icon_name, c["text_secondary"], 22),
                 QIcon.Normal, QIcon.Off,
             )
             icon.addPixmap(
-                section_pixmap(icon_name, c["primary_text"], 20),
+                section_pixmap(icon_name, c["primary_text"], 22),
                 QIcon.Normal, QIcon.On,
             )
             button.setIcon(icon)
@@ -1805,7 +1858,7 @@ class SettingsPage(QWidget):
             tile.setPixmap(section_pixmap(icon_name, c["primary_text"], 26))
 
         for toggle in self.toggles:
-            toggle.set_colors(c["primary"], c["input_border"], c["knob"], focus)
+            toggle.set_colors(c["primary"], c["field_border"], c["knob"], focus)
 
         self.about_logo.setPixmap(
             sidebar_logo(72, c["text"] if dark else None)

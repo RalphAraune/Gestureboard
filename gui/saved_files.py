@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QFrame,
+    QGraphicsDropShadowEffect,
     QMessageBox,
     QInputDialog,
     QSizePolicy,
@@ -42,28 +43,59 @@ CARD_MIN_WIDTH = 250
 
 
 def page_colors():
-    """Shared page surfaces plus the few extra tones this page needs."""
+    """Shared page surfaces plus the few extra tones this page needs.
+
+    Cards and the filter bar ("sheet") stand clear of the page: white
+    with a soft navy shadow in light mode, a lighter navy with a
+    brighter edge in dark mode.
+    """
 
     c = page_background.page_colors()
 
     if app_theme.is_dark():
         c.update(
+            sheet="#17314F",
+            sheet_border="#2F5683",
+            field="#0F2038",
+            field_border="#335B89",
+            hover="#21416A",
+            chip="#21416A",
             preview="#0F2038",
             danger="#F07167",
             danger_hover="#3A2230",
             tab_active_bg="#3E7CF7",
             tab_active_text="#0B1A30",
+            shadow=QColor(0, 0, 0, 120),
         )
     else:
         c.update(
-            preview="#CFDFF0",
+            sheet="#FFFFFF",
+            sheet_border="#C7D6EA",
+            field="#F4F7FB",
+            field_border="#B9CCE4",
+            hover="#EAF1F9",
+            chip="#E6EEF8",
+            preview="#EEF3F9",
             danger="#B83227",
-            danger_hover="#F3DCDA",
+            danger_hover="#F8E4E2",
             tab_active_bg="#0E2F76",
             tab_active_text="#F5FEFF",
+            shadow=QColor(14, 47, 118, 34),
         )
 
     return c
+
+
+def lift(widget, color):
+    """Soft shadow under a card, so it stands off the page."""
+
+    shadow = QGraphicsDropShadowEffect(widget)
+    shadow.setBlurRadius(26)
+    shadow.setOffset(0, 6)
+    shadow.setColor(color)
+    widget.setGraphicsEffect(shadow)
+
+    return shadow
 
 
 # =================================================================
@@ -150,7 +182,7 @@ class FileThumbnail(QWidget):
 
             painter.setPen(QColor(c["text_secondary"]))
             font = painter.font()
-            font.setPointSize(9)
+            font.setPointSize(10)
             font.setBold(True)
             painter.setFont(font)
             painter.drawText(
@@ -252,7 +284,7 @@ class SavedFilesPage(QWidget):
 
         for button in (self.folder_button, self.add_button):
             button.setCursor(Qt.PointingHandCursor)
-            button.setFixedHeight(36)
+            button.setFixedHeight(42)
             header.addWidget(button, 0, Qt.AlignTop)
 
         main_layout.addLayout(header)
@@ -262,7 +294,13 @@ class SavedFilesPage(QWidget):
         # FILTER TABS + SEARCH
         # ---------------------------------------------------------
 
-        toolbar = QHBoxLayout()
+        # Tabs and search share one bar that stands off the page.
+        self.filter_bar = QFrame()
+        self.filter_bar.setObjectName("filterBar")
+        self.filter_bar_shadow = lift(self.filter_bar, self.colors["shadow"])
+
+        toolbar = QHBoxLayout(self.filter_bar)
+        toolbar.setContentsMargins(8, 8, 8, 8)
         toolbar.setSpacing(6)
 
         self.filter_buttons = {}
@@ -272,7 +310,7 @@ class SavedFilesPage(QWidget):
             button.setObjectName("filterTab")
             button.setCheckable(True)
             button.setCursor(Qt.PointingHandCursor)
-            button.setFixedHeight(34)
+            button.setFixedHeight(40)
             button.clicked.connect(
                 lambda checked=False, value=file_type: self.set_filter(value)
             )
@@ -285,15 +323,15 @@ class SavedFilesPage(QWidget):
         self.search_box.setObjectName("searchBox")
         self.search_box.setPlaceholderText("Search by file name")
         self.search_box.setClearButtonEnabled(True)
-        self.search_box.setFixedHeight(36)
-        self.search_box.setMinimumWidth(220)
-        self.search_box.setMaximumWidth(300)
+        self.search_box.setFixedHeight(40)
+        self.search_box.setMinimumWidth(240)
+        self.search_box.setMaximumWidth(320)
         self.search_box.textChanged.connect(self.refresh_files)
 
         toolbar.addWidget(self.search_box)
 
-        main_layout.addLayout(toolbar)
-        main_layout.addSpacing(14)
+        main_layout.addWidget(self.filter_bar)
+        main_layout.addSpacing(16)
 
         self.summary_label = QLabel()
         self.summary_label.setObjectName("summary")
@@ -314,9 +352,9 @@ class SavedFilesPage(QWidget):
         self.content_widget.setObjectName("filesContent")
 
         self.grid_layout = QGridLayout(self.content_widget)
-        self.grid_layout.setContentsMargins(0, 0, 6, 20)
-        self.grid_layout.setHorizontalSpacing(16)
-        self.grid_layout.setVerticalSpacing(16)
+        self.grid_layout.setContentsMargins(2, 2, 8, 24)
+        self.grid_layout.setHorizontalSpacing(18)
+        self.grid_layout.setVerticalSpacing(18)
         self.grid_layout.setAlignment(Qt.AlignTop)
 
         self.scroll_area.setWidget(self.content_widget)
@@ -349,24 +387,24 @@ class SavedFilesPage(QWidget):
             }}
 
             QLabel#pageTitle {{
-                font-size: 25px;
-                font-weight: 700;
+                font-size: 32px;
+                font-weight: 800;
             }}
 
             QLabel#pageSubtitle {{
                 color: {c['text_secondary']};
-                font-size: 13px;
+                font-size: 16px;
             }}
 
             QLabel#summary {{
                 color: {c['text_secondary']};
-                font-size: 12px;
+                font-size: 14px;
             }}
 
             QPushButton {{
-                font-size: 13px;
-                border-radius: 8px;
-                padding: 0 16px;
+                font-size: 15px;
+                border-radius: 10px;
+                padding: 0 18px;
             }}
 
             QPushButton:focus {{
@@ -378,32 +416,43 @@ class SavedFilesPage(QWidget):
                 background-color: {c['primary']};
                 color: {c['primary_text']};
                 border: none;
-                font-weight: 600;
+                font-weight: 700;
             }}
 
             QPushButton#primaryButton:hover {{
                 background-color: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
             }}
 
             QPushButton#secondaryButton {{
-                background-color: transparent;
+                background-color: {c['sheet']};
                 color: {c['text']};
-                border: 1px solid {c['border']};
+                border: 1px solid {c['sheet_border']};
+                font-weight: 600;
             }}
 
             QPushButton#secondaryButton:hover {{
-                background-color: {c['button_hover']};
+                background-color: {c['hover']};
+            }}
+
+            /* ---------- Filter bar ---------- */
+
+            QFrame#filterBar {{
+                background-color: {c['sheet']};
+                border: 1px solid {c['sheet_border']};
+                border-radius: 14px;
             }}
 
             QPushButton#filterTab {{
                 background-color: transparent;
                 color: {c['text_secondary']};
                 border: 1px solid transparent;
-                padding: 0 14px;
+                padding: 0 16px;
+                font-weight: 600;
             }}
 
             QPushButton#filterTab:hover {{
-                background-color: {c['button_hover']};
+                background-color: {c['hover']};
                 color: {c['text']};
             }}
 
@@ -413,94 +462,101 @@ class SavedFilesPage(QWidget):
             }}
 
             QLineEdit#searchBox {{
-                background-color: {c['input_bg']};
+                background-color: {c['field']};
                 color: {c['text']};
-                border: 1px solid {c['input_border']};
-                border-radius: 8px;
-                padding: 0 12px;
-                font-size: 13px;
+                border: 1px solid {c['field_border']};
+                border-radius: 10px;
+                padding: 0 14px;
+                font-size: 15px;
             }}
 
             QLineEdit#searchBox:focus {{
                 border: 2px solid {c['primary']};
             }}
 
+            /* ---------- File cards ---------- */
+
             QFrame#fileCard {{
-                background-color: {c['card']};
-                border: 1px solid {c['card_border']};
-                border-radius: 12px;
+                background-color: {c['sheet']};
+                border: 1px solid {c['sheet_border']};
+                border-radius: 16px;
             }}
 
             QLabel#fileName {{
-                font-size: 14px;
-                font-weight: 600;
+                font-size: 17px;
+                font-weight: 700;
             }}
 
             QLabel#fileType {{
-                background-color: {c['preview']};
+                background-color: {c['chip']};
                 color: {c['text']};
-                border-radius: 5px;
-                padding: 2px 8px;
-                font-size: 11px;
+                border-radius: 6px;
+                padding: 3px 9px;
+                font-size: 13px;
                 font-weight: 600;
             }}
 
             QLabel#fileMeta {{
                 color: {c['text_secondary']};
-                font-size: 11px;
+                font-size: 13px;
             }}
 
             QPushButton#openButton {{
                 background-color: {c['primary']};
                 color: {c['primary_text']};
                 border: none;
-                font-weight: 600;
-                font-size: 12px;
-                padding: 0 18px;
+                font-weight: 700;
+                font-size: 14px;
+                padding: 0 20px;
             }}
 
             QPushButton#openButton:hover {{
                 background-color: {c['sidebar_hover']};
+                color: {c['sidebar_text']};
             }}
 
             QPushButton#cardButton {{
                 background-color: transparent;
                 color: {c['text']};
-                border: 1px solid {c['card_border']};
-                font-size: 12px;
-                padding: 0 12px;
+                border: 1px solid {c['sheet_border']};
+                font-size: 14px;
+                font-weight: 600;
+                padding: 0 14px;
             }}
 
             QPushButton#cardButton:hover {{
-                background-color: {c['button_hover']};
+                background-color: {c['hover']};
             }}
 
             QPushButton#deleteButton {{
                 background-color: transparent;
                 color: {c['danger']};
                 border: 1px solid transparent;
-                font-size: 12px;
-                padding: 0 10px;
+                font-size: 14px;
+                font-weight: 600;
+                padding: 0 12px;
             }}
 
             QPushButton#deleteButton:hover {{
                 background-color: {c['danger_hover']};
             }}
 
+            /* ---------- Empty state ---------- */
+
             QFrame#emptyState {{
-                background-color: {c['card']};
-                border: 1px dashed {c['border']};
-                border-radius: 14px;
+                background-color: {c['sheet']};
+                border: 1px dashed {c['field_border']};
+                border-radius: 16px;
             }}
 
             QLabel#emptyTitle {{
-                font-size: 17px;
+                font-size: 20px;
                 font-weight: 700;
             }}
 
             QLabel#emptyBody {{
                 color: {c['text_secondary']};
-                font-size: 13px;
+                font-size: 15px;
             }}
 
             QScrollBar:vertical {{
@@ -510,7 +566,7 @@ class SavedFilesPage(QWidget):
             }}
 
             QScrollBar::handle:vertical {{
-                background: {c['border']};
+                background: {c['field_border']};
                 border-radius: 4px;
                 min-height: 40px;
             }}
@@ -521,6 +577,8 @@ class SavedFilesPage(QWidget):
             }}
             """
         )
+
+        self.filter_bar_shadow.setColor(c["shadow"])
 
         self.refresh_files()
         self.update()
@@ -774,7 +832,7 @@ class SavedFilesPage(QWidget):
         button = QPushButton(action_text)
         button.setObjectName("primaryButton")
         button.setCursor(Qt.PointingHandCursor)
-        button.setFixedHeight(36)
+        button.setFixedHeight(42)
         button.clicked.connect(lambda checked=False: action())
 
         layout.addWidget(icon)
@@ -802,9 +860,10 @@ class SavedFilesPage(QWidget):
         card.setObjectName("fileCard")
         card.setMinimumWidth(CARD_MIN_WIDTH - 30)
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        lift(card, self.colors["shadow"])
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 10, 10, 12)
+        layout.setContentsMargins(12, 12, 12, 14)
         layout.setSpacing(0)
 
         # ---------------------------------------------------------
@@ -896,7 +955,7 @@ class SavedFilesPage(QWidget):
 
         button = QPushButton(text)
         button.setObjectName(object_name)
-        button.setFixedHeight(32)
+        button.setFixedHeight(36)
         button.setCursor(Qt.PointingHandCursor)
 
         return button

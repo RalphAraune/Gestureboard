@@ -53,7 +53,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
 )
 
-from core.gesture_detector import GestureDetector, SwipeDetector, WaveDetector
+from core.gesture_detector import GestureDetector, SwipeDetector
 from widgets.annotation_bar import FloatingAnnotationBar
 from gui.virtual_mouse import (
     CameraWorker, OneEuroFilter, looks_like_hand, native_move,
@@ -720,7 +720,12 @@ class PresentationPage(QWidget):
         # A fast swipe loses the hand for a few frames (blur, and the
         # worker re-confirming it); only a longer gap ends the swipe.
         self.swipe_detector.GAP = 0.4
-        self.wave_detector = WaveDetector()
+        # 👌 OK sign held to clear the slide (see _check_clear):
+        # when it started, when it was last seen, and whether this
+        # hold has already cleared.
+        self._clear_since = None
+        self._clear_seen = 0.0
+        self._clear_done = False
         self.presentation_controller = PresentationController()
 
         self.detected_gesture = "None"
@@ -1427,8 +1432,8 @@ class PresentationPage(QWidget):
             hint = (
                 "Drawing is on: hold index and middle fingers together to "
                 "draw, swipe your open hand left or right to change "
-                "slides, wave your open hand to clear this slide, raise "
-                "your pinky 🤙 to close drawing."
+                "slides, hold an OK sign 👌 for a second to clear this "
+                "slide, raise your pinky 🤙 to close drawing."
             )
         elif self.annotation_mode:
             hint = (
@@ -2710,45 +2715,90 @@ class PresentationPage(QWidget):
         bar.setVisible(self.live_annotation == "on")
         bar.raise_()
 
+    # ============================================================
+    # 👌 OK SIGN: CLEAR THIS SLIDE
+    #
+    # Thumb and index tips touching, the other three fingers up, held
+    # for CLEAR_HOLD_SECONDS. No other gesture uses this shape, so it
+    # never fires while the open hand is moving the cursor. The
+    # circle fills red while it is held; undo brings the drawing back.
+    # ============================================================
+
+    CLEAR_HOLD_SECONDS = 1.0
+
+    # The OK sign missing for this long (blur) starts the hold again.
+    CLEAR_GAP = 0.25
+
     def _reset_clear_hold(self):
-        """Forget a half-done wave and empty the circle's red fill."""
+        """Forget a half-done OK sign and empty the circle's red fill."""
 
-        self.wave_detector.reset()
+        self._clear_since = None
+        self._clear_done = False
+        self._show_clear_progress(0)
 
-        if self.annotation_toolbar is not None:
-            self.annotation_toolbar.set_clear_progress(0)
-
-    def _check_wave(self, gesture, hand):
-        """✋ Open hand waved side to side clears this slide's drawing."""
+    def _check_clear(self, gesture):
+        """True on the frame the held 👌 OK sign clears the slide."""
 
         now = time.monotonic()
 
-        if gesture != "Open Hand" or not self.gestures_enabled:
-            self.wave_detector.idle(now)
-            if self.wave_detector.progress() == 0:
-                self._show_wave_progress(0)
+        if gesture != "OK Sign" or not self.gestures_enabled:
+            if self._clear_since is not None and now - self._clear_seen > self.CLEAR_GAP:
+                self._reset_clear_hold()
             return False
 
-        done = self.wave_detector.track(hand.landmark[9].x, now)
+        if self._clear_since is None or now - self._clear_seen > self.CLEAR_GAP:
+            self._clear_since = now
+            self._clear_done = False
 
-        if not done:
-            self._show_wave_progress(self.wave_detector.progress())
+        self._clear_seen = now
+
+        # Cleared already: wait for the hand to change before the next.
+        if self._clear_done:
             return False
+
+        progress = (now - self._clear_since) / self.CLEAR_HOLD_SECONDS
+
+        if progress < 1.0:
+            self.end_annotation_draw()
+            self._show_clear_progress(progress)
+            self._set_action(
+                f"Hold 👌 to clear this slide ({self.CLEAR_HOLD_SECONDS * (1 - progress):.1f} s)"
+            )
+            return False
+
+        self._clear_done = True
 
         self.end_annotation_draw()
         self.slide_ink.clear_slide()
-        self._set_action("Cleared this slide (wave)")
+        self._set_action("Cleared this slide (👌)")
 
         # Show the full red circle briefly, then back to normal.
-        self._show_wave_progress(1.0)
-        QTimer.singleShot(600, lambda: self._show_wave_progress(0))
+        self._show_clear_progress(1.0)
+        QTimer.singleShot(600, lambda: self._show_clear_progress(0))
 
         return True
 
-    def _show_wave_progress(self, fraction):
+    def _show_clear_progress(self, fraction):
 
         if self.annotation_toolbar is not None:
             self.annotation_toolbar.set_clear_progress(fraction)
+
+    def _ok_sign(self, lm):
+        """👌 Thumb and index tips touching, the other three fingers up."""
+
+        palm = max(
+            ((lm[9].x - lm[0].x) ** 2 + (lm[9].y - lm[0].y) ** 2) ** 0.5,
+            1e-6,
+        )
+        touch = ((lm[4].x - lm[8].x) ** 2 + (lm[4].y - lm[8].y) ** 2) ** 0.5
+
+        if touch > palm * 0.3:
+            return False
+
+        return all(
+            self._reach_ratio(lm, tip, pip) > 1.25
+            for tip, pip in self.FINGERS[1:]
+        )
 
     # ============================================================
     # GESTURE PROCESSING
@@ -2799,6 +2849,10 @@ class PresentationPage(QWidget):
         # 🤙 Pinky only: close the drawing.
         if gesture == "None" and self._pinky_only(lm):
             gesture = "Pinky"
+
+        # 👌 OK sign: clear the slide (see _check_clear).
+        if gesture in ("None", "Open Hand") and self._ok_sign(lm):
+            gesture = "OK Sign"
 
         return gesture
 
@@ -2963,8 +3017,8 @@ class PresentationPage(QWidget):
             self._swipe_return = None
             return False
 
-        # While drawing, an open hand waved back and forth clears the
-        # slide: a swipe only counts once the hand has not turned back.
+        # While drawing, the open hand also moves the cursor back and
+        # forth: a swipe only counts once the hand has not turned back.
         self.swipe_detector.confirm_delay = (
             self.SWIPE_CONFIRM_SECONDS if self.annotation_mode else 0.0
         )
@@ -3179,8 +3233,8 @@ class PresentationPage(QWidget):
         """One camera frame with a real, whole hand (swipes are checked
         before this, in process_frame)."""
 
-        if self._check_wave(gesture, hand):
-            self.detected_gesture = "Wave"
+        if self._check_clear(gesture):
+            self.detected_gesture = "OK Sign"
             return
 
         now = time.monotonic()
@@ -3259,10 +3313,12 @@ class PresentationPage(QWidget):
         # hand is normal mid-swipe, and SwipeDetector ends it after a
         # real gap.
 
-        if getattr(self, "wave_detector", None) is not None:
-            if self.wave_detector.progress() > 0:
-                self._reset_clear_hold()
-            self.wave_detector.reset()
+        # The hand gone for a moment does not end the OK sign hold.
+        if (
+            self._clear_since is not None
+            and time.monotonic() - self._clear_seen > self.CLEAR_GAP
+        ):
+            self._reset_clear_hold()
 
     def process_gesture(self, gesture, hand=None):
 
@@ -3628,6 +3684,12 @@ class PresentationPage(QWidget):
     # A smaller box means a smaller hand movement crosses the screen.
     POINTER_BOX = (0.22, 0.15, 0.78, 0.60)
 
+    # While annotating the box is bigger, so the same hand movement
+    # moves the cursor about a quarter less: easier to land on the
+    # small tools. (Not lower: the whole hand must stay in the picture
+    # to reach the bottom of the screen.)
+    ANNOTATION_POINTER_BOX = (0.12, 0.08, 0.88, 0.68)
+
     # The pointer not used for this long starts afresh at the finger,
     # instead of sliding over from where it was last.
     POINTER_GAP = 0.3
@@ -3652,7 +3714,7 @@ class PresentationPage(QWidget):
     # ✌️ Peace sign / ✊ grab: the same "carry on from the cursor" move
     # as the pen, but at the hand's full speed with less steadying,
     # since it only has to get somewhere, not draw a clean line.
-    MOVE_GAIN = 1.0
+    MOVE_GAIN = 0.6
     MOVE_STEADY = 1.5
 
     def move_draw_cursor(self, hand):
@@ -3774,7 +3836,11 @@ class PresentationPage(QWidget):
 
             # The camera feed is mirrored, so x already matches the
             # user's on-screen left/right.
-            left, top, right, bottom = self.POINTER_BOX
+            left, top, right, bottom = (
+                self.ANNOTATION_POINTER_BOX
+                if self.annotation_mode
+                else self.POINTER_BOX
+            )
             fx = min(1.0, max(0.0, (tip.x - left) / (right - left)))
             fy = min(1.0, max(0.0, (tip.y - top) / (bottom - top)))
 
