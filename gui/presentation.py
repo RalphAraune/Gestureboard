@@ -8,6 +8,7 @@ from collections import deque
 
 import cv2
 import fitz
+import numpy as np
 
 # MediaPipe may fail to load its DLL on some Python setups. Make it optional so
 # the rest of the app still starts; feature code guards against mp being None.
@@ -27,7 +28,8 @@ from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QObject, QPoint, QPointF, QRect, QRectF, QSize
 )
 from PyQt5.QtGui import (
-    QImage, QPixmap, QPainter, QPainterPath, QFont, QColor, QBrush, QPen
+    QImage, QPixmap, QPainter, QPainterPath, QFont, QColor, QBrush, QPen,
+    QCursor
 )
 from PyQt5.QtWidgets import (
     QWidget,
@@ -780,6 +782,20 @@ class PresentationPage(QWidget):
         self._draw_pen = None          # pen before smoothing (px)
         self._draw_string = None       # anti-shake string end (px)
 
+        # Peace sign / grab cursor (see move_peace_cursor): moves on
+        # from the cursor like the pen, with the pointer's lighter
+        # smoothing. _rel_mode is the relative mode last used.
+        self._move_filter_x = OneEuroFilter(min_cutoff=1.0, beta=0.03)
+        self._move_filter_y = OneEuroFilter(min_cutoff=1.0, beta=0.03)
+        self._rel_mode = None
+
+        # Recent cursor positions (time, x, y), so a closed hand clicks
+        # where the cursor was before the fingers folded (_safe_click).
+        self._cursor_trail = deque(maxlen=40)
+
+        # Closed hand holding the floating circle: {"seen": time}.
+        self._grab = None
+
         # Swipe debounce (see _debounce_swipe) and fingertip trails.
         self._swipe_locked_until = 0.0
         self._swipe_return = None
@@ -1187,9 +1203,9 @@ class PresentationPage(QWidget):
         # Same gesture list the tutorial and Settings show, split into
         # its two groups behind a segmented switch so it never needs
         # to scroll.
-        from gui.tutorial import STEPS
+        from gui.tutorial import step
 
-        groups = STEPS[0]["groups"]
+        groups = step("presentation")["groups"]
 
         segment_row = QHBoxLayout()
         segment_row.setSpacing(0)
@@ -2642,14 +2658,24 @@ class PresentationPage(QWidget):
 
     def _set_live_annotation(self, state):
 
+        switched_on = state == "on" and self.live_annotation != "on"
+
         self.live_annotation = state
 
+        # Switched on: the circle starts in the upper right corner.
+        if switched_on and self.annotation_toolbar is not None:
+            self.annotation_toolbar._anchor = (1.0, 0.0)
+
         self.end_annotation_draw()
+        self._release_grab(force=True)
         self._reset_clear_hold()
 
         self.slide_ink.set_enabled(state == "on")
 
         self._dock_annotation_bar()
+
+        if switched_on and self.annotation_toolbar is not None:
+            self.annotation_toolbar.place()
 
         # Show the drawing gestures while annotating.
         if hasattr(self, "guide_tabs"):
@@ -2980,9 +3006,9 @@ class PresentationPage(QWidget):
     # The open hand moving sideways faster than this (image widths per
     # second, over the last SWIPE_SPEED_SPAN seconds) is a swipe: the
     # annotation cursor stays still until SWIPE_FREEZE seconds after.
-    SWIPE_SPEED = 0.6
+    SWIPE_SPEED = 1.2
     SWIPE_SPEED_SPAN = 0.15
-    SWIPE_FREEZE = 0.3
+    SWIPE_FREEZE = 0.2
 
     def _hand_swiping(self):
         """True while the open hand is swiping (or just swiped)."""
@@ -3017,19 +3043,28 @@ class PresentationPage(QWidget):
     # FINGERTIP TRAILS
     #
     # Each fingertip leaves a short fading trail on the camera
-    # picture, so a swipe (and any hand movement) can be seen.
+    # picture, so a swipe (and any hand movement) can be seen. The
+    # trails are a soft white "spirit" wisp: a blurred glow added on
+    # top of the picture (it only ever brightens it), with a thin
+    # pale core that thins out towards the tail.
     # ============================================================
 
     # Landmark and colour (RGB) of each fingertip: thumb to pinky.
+    # All the same pale, slightly cool white.
     TRAIL_TIPS = (
-        (4, (255, 120, 90)),
-        (8, (80, 170, 255)),
-        (12, (90, 220, 140)),
-        (16, (250, 200, 70)),
-        (20, (200, 120, 255)),
+        (4, (235, 240, 248)),
+        (8, (235, 240, 248)),
+        (12, (235, 240, 248)),
+        (16, (235, 240, 248)),
+        (20, (235, 240, 248)),
     )
 
     TRAIL_SECONDS = 0.5
+
+    # Softness of the glow around the trails (blur, in pixels), and
+    # how much smaller the glow layer is drawn (see _draw_swipe_trail).
+    TRAIL_GLOW_SIGMA = 7
+    TRAIL_GLOW_SCALE = 4
 
     def _update_tip_trails(self, hand, now):
 
@@ -3060,6 +3095,8 @@ class PresentationPage(QWidget):
             and now - last[1] < self.SWIPE_FLASH_SECONDS
         )
 
+        trails = []
+
         for tip, colour in self.TRAIL_TIPS:
 
             points = [
@@ -3067,19 +3104,53 @@ class PresentationPage(QWidget):
                 for t, x, y in self._tip_trails.get(tip, ())
             ]
 
-            # Older parts are thinner and darker, so the direction shows.
-            for (t0, x0, y0), (_t1, x1, y1) in zip(points, points[1:]):
-                fade = max(0.0, 1.0 - (now - t0) / self.TRAIL_SECONDS)
-                shade = tuple(int(c * (0.3 + 0.7 * fade)) for c in colour)
-                cv2.line(
-                    frame, (x0, y0), (x1, y1), shade,
-                    max(1, int(8 * fade)), cv2.LINE_AA,
-                )
-
             if points:
+                trails.append((points, colour))
+
+        if trails:
+
+            # Glow: wide strokes on a black layer, blurred, then added
+            # to the picture, so the wisp lightens what is behind it
+            # and fades into it at the tail. Drawn and blurred at a
+            # quarter of the size (a full-size blur cost ~10 ms a
+            # frame), then scaled up, which softens it further.
+            s = self.TRAIL_GLOW_SCALE
+            glow = np.zeros((height // s, width // s, 3), np.uint8)
+
+            for points, colour in trails:
+
+                for (t0, x0, y0), (_t1, x1, y1) in zip(points, points[1:]):
+                    fade = max(0.0, 1.0 - (now - t0) / self.TRAIL_SECONDS)
+                    shade = tuple(int(c * fade * 0.8) for c in colour)
+                    cv2.line(
+                        glow, (x0 // s, y0 // s), (x1 // s, y1 // s), shade,
+                        max(1, int(16 * fade / s)), cv2.LINE_AA,
+                    )
+
                 _t, x, y = points[-1]
-                cv2.circle(frame, (x, y), 6, colour, -1, cv2.LINE_AA)
-                cv2.circle(frame, (x, y), 8, (255, 255, 255), 1, cv2.LINE_AA)
+                head = tuple(int(c * 0.7) for c in colour)
+                cv2.circle(glow, (x // s, y // s), max(1, 12 // s), head, -1, cv2.LINE_AA)
+
+            glow = cv2.GaussianBlur(glow, (0, 0), self.TRAIL_GLOW_SIGMA / s)
+            glow = cv2.resize(glow, (width, height), interpolation=cv2.INTER_LINEAR)
+            cv2.add(frame, glow, dst=frame)
+
+            # Pale core: older parts are thinner and fainter, so the
+            # direction of movement still shows.
+            for points, colour in trails:
+
+                for (t0, x0, y0), (_t1, x1, y1) in zip(points, points[1:]):
+                    fade = max(0.0, 1.0 - (now - t0) / self.TRAIL_SECONDS)
+                    if fade < 0.25:
+                        continue
+                    shade = tuple(int(c * (0.55 + 0.45 * fade)) for c in colour)
+                    cv2.line(
+                        frame, (x0, y0), (x1, y1), shade,
+                        max(1, int(4 * fade)), cv2.LINE_AA,
+                    )
+
+                _t, x, y = points[-1]
+                cv2.circle(frame, (x, y), 4, (255, 255, 255), -1, cv2.LINE_AA)
 
         if not flashing:
             return
@@ -3116,9 +3187,7 @@ class PresentationPage(QWidget):
         centre = SwipeDetector.palm_centre(hand.landmark)
 
         if gesture != getattr(self, "_pose", None):
-            self._pose = gesture
-            self._pose_since = now
-            self._pose_anchor = centre
+            self._change_pose(gesture, now, centre)
 
         # A hand still moving (or just after a swipe) restarts the hold.
         anchor = self._pose_anchor
@@ -3144,13 +3213,46 @@ class PresentationPage(QWidget):
 
         self.process_gesture(gesture, hand)
 
+    # A different shape for no longer than this, then back, does not
+    # restart the hold of the shape before it.
+    POSE_GLITCH = 0.2
+
+    def _change_pose(self, gesture, now, centre=None):
+
+        previous = getattr(self, "_prev_pose", None)
+
+        if (
+            previous is not None
+            and gesture == previous[0]
+            and gesture is not None
+            and now - self._pose_since <= self.POSE_GLITCH
+        ):
+            # Only a flicker: carry on the hold where it was.
+            self._pose, self._pose_since, self._pose_anchor = previous
+            self._prev_pose = None
+            return
+
+        if getattr(self, "_pose", None) is not None:
+            self._prev_pose = (
+                self._pose,
+                self._pose_since,
+                getattr(self, "_pose_anchor", centre),
+            )
+
+        self._pose = gesture
+        self._pose_since = now
+        self._pose_anchor = centre
+
     def _handle_no_hand(self):
         """No hand (or not a whole one) in this frame: do nothing, and
         let go of anything a hand was doing."""
 
         self.end_annotation_draw()
+        self._release_grab()
 
-        self._pose = None
+        if self._pose is not None:
+            self._change_pose(None, time.monotonic())
+
         self.detected_gesture = "None"
 
         # The swipe in progress is kept: a frame or two without the
@@ -3163,6 +3265,9 @@ class PresentationPage(QWidget):
             self.wave_detector.reset()
 
     def process_gesture(self, gesture, hand=None):
+
+        if gesture != "Fist":
+            self._release_grab()
 
         if gesture in ("None", "Unknown"):
             self.end_annotation_draw()
@@ -3192,6 +3297,8 @@ class PresentationPage(QWidget):
             self.detected_label.setText(
                 gesture + " (gestures off)"
             )
+            # Nothing fired: the first gesture after Start must count.
+            self.detected_gesture = "None"
             return
 
         # ☝️ Index finger: the pointer (a quick sideways swipe of the
@@ -3259,6 +3366,13 @@ class PresentationPage(QWidget):
             # Over the floating circle this drags it instead.
             if gesture == "Index + Middle":
                 self.move_draw_cursor(hand)
+                # Over the circle or its tools nothing is pressed (the
+                # fist taps and moves them), unless a line is already
+                # being drawn across them.
+                if not self._annot_drawing and self._cursor_on_bar():
+                    self._set_action("Close your hand to use the circle")
+                    self.detected_gesture = gesture
+                    return
                 # Press only once the fingers have settled together,
                 # so closing them does not leave a flick at the start.
                 if time.monotonic() - self._pose_since >= self.DRAW_START_SECONDS:
@@ -3270,6 +3384,15 @@ class PresentationPage(QWidget):
             # Any other gesture stops drawing.
             self.end_annotation_draw()
 
+            # ✌️ Index + Middle apart (peace sign) -> move the cursor,
+            # carrying on from where the pen stopped, so the next line
+            # can start without opening the whole hand.
+            if gesture == "Peace Sign":
+                self.move_peace_cursor(hand)
+                self._set_action("Cursor (peace sign)")
+                self.detected_gesture = gesture
+                return
+
             # ✋ Open Hand -> move cursor over the floating circle / tools.
             # Not while the hand is swiping: the cursor stays put.
             if gesture == "Open Hand":
@@ -3280,10 +3403,19 @@ class PresentationPage(QWidget):
                 return
 
             # ✊ Fist -> click (opens the circle's tools, picks a tool).
+            # On the floating circle: a quick fist taps it (opens /
+            # closes the tools); keeping the fist closed for
+            # GRAB_HOLD_SECONDS picks it up, then moving the fist
+            # carries it and opening the hand puts it down.
             if gesture == "Fist":
                 if gesture != self.detected_gesture:
-                    self._safe_click()
-                    self._set_action("Click")
+                    if self._grab_circle():
+                        self._set_action("Circle: open hand to tap, hold 1 s to move")
+                    else:
+                        self._safe_click()
+                        self._set_action("Click")
+                elif self._grab is not None:
+                    self._hold_grab(hand)
                 self.detected_gesture = gesture
                 return
 
@@ -3338,10 +3470,147 @@ class PresentationPage(QWidget):
 
         self._annot_drawing = False
 
+    # Closing the hand pulls the fingertips down, and the cursor with
+    # them: a click goes where the cursor was this long before.
+    CLICK_REWIND = 0.2
+
+    # Brief frames without the fist (blur) do not drop the circle.
+    GRAB_LET_GO = 0.15
+
+    # The fist must stay closed on the circle this long before it
+    # moves, so a click on the circle never drags it by mistake.
+    GRAB_HOLD_SECONDS = 1.0
+
+    def _set_cursor(self, x, y):
+        """Move the cursor instantly and remember where it went."""
+
+        native_move(x, y)
+        self._cursor_trail.append((time.monotonic(), x, y))
+
+    def _rewind_cursor(self):
+        """Put the cursor back where it was before the hand closed."""
+
+        now = time.monotonic()
+        trail = self._cursor_trail
+
+        # Not moved by the hand lately: leave it where it is.
+        if not trail or now - trail[-1][0] > 1.0:
+            return
+
+        for t, x, y in reversed(trail):
+            if now - t >= self.CLICK_REWIND:
+                native_move(x, y)
+                return
+
     def _safe_click(self):
+
+        self._rewind_cursor()
 
         try:
             pyautogui.click(_pause=False)
+        except Exception:
+            pass
+
+    def _cursor_on_circle(self):
+
+        bar = self.annotation_toolbar
+
+        if bar is None or not bar.isVisible():
+            return False
+
+        return bar.rect().contains(bar.mapFromGlobal(QCursor.pos()))
+
+    def _cursor_on_bar(self):
+        """Cursor over the floating circle or its open tools."""
+
+        bar = self.annotation_toolbar
+
+        if self._cursor_on_circle():
+            return True
+
+        if bar is None or not bar.panel.isVisible():
+            return False
+
+        panel = bar.panel
+        return panel.rect().contains(panel.mapFromGlobal(QCursor.pos()))
+
+    def _grab_circle(self):
+        """✊ closed on the floating circle: start timing the hold.
+
+        Nothing is pressed yet: opening the hand before
+        GRAB_HOLD_SECONDS taps the circle (see _release_grab).
+        """
+
+        self._rewind_cursor()
+
+        if pyautogui is None or not self._cursor_on_circle():
+            return False
+
+        now = time.monotonic()
+
+        self._grab = {
+            "seen": now,
+            "since": now,
+            "held": False,
+            "pos": pyautogui.position(),
+        }
+        self._rel_mode = None
+        return True
+
+    def _hold_grab(self, hand):
+        """✊ still closed on the circle: pick it up after the hold,
+        then carry it with the fist."""
+
+        grab = self._grab
+        now = time.monotonic()
+        grab["seen"] = now
+
+        if not grab["held"]:
+
+            waited = now - grab["since"]
+
+            if waited < self.GRAB_HOLD_SECONDS:
+                self._set_action(
+                    f"Hold to move the circle ({self.GRAB_HOLD_SECONDS - waited:.1f} s)"
+                )
+                return
+
+            native_move(*grab["pos"])
+
+            try:
+                pyautogui.mouseDown(_pause=False)
+            except Exception:
+                self._grab = None
+                return
+
+            grab["held"] = True
+            self._rel_mode = None
+
+        self._move_relative(hand, "grab")
+        self._set_action("Moving the circle (open hand to put it down)")
+
+    def _release_grab(self, force=False):
+
+        grab = self._grab
+
+        if grab is None:
+            return
+
+        if not force and time.monotonic() - grab["seen"] < self.GRAB_LET_GO:
+            return
+
+        self._grab = None
+
+        try:
+            if grab["held"]:
+                pyautogui.mouseUp(_pause=False)
+                self._set_action("Circle moved")
+            elif not force:
+                # Opened before the hold: a tap, where the fist closed
+                # (the open hand may have moved the cursor since).
+                native_move(*grab["pos"])
+                pyautogui.click(_pause=False)
+                self._set_action("Click")
         except Exception:
             pass
 
@@ -3380,7 +3649,27 @@ class PresentationPage(QWidget):
     DRAW_STEADY = 4.0
     DRAW_START_SECONDS = 0.1
 
+    # ✌️ Peace sign / ✊ grab: the same "carry on from the cursor" move
+    # as the pen, but at the hand's full speed with less steadying,
+    # since it only has to get somewhere, not draw a clean line.
+    MOVE_GAIN = 1.0
+    MOVE_STEADY = 1.5
+
     def move_draw_cursor(self, hand):
+        self._move_relative(hand, "draw")
+
+    def move_peace_cursor(self, hand):
+        self._move_relative(hand, "move")
+
+    def _move_relative(self, hand, mode):
+        """Move the cursor by the hand's movement, from where it is.
+
+        mode "draw": the pen (between the index and middle tips);
+        "move": the peace sign cursor (same point, faster);
+        "grab": the closed hand carrying the circle (the knuckles).
+        Switching mode starts again from the cursor, so going from
+        drawing to the peace sign and back never makes it jump.
+        """
 
         if hand is None or pyautogui is None:
             return
@@ -3390,8 +3679,21 @@ class PresentationPage(QWidget):
             lm = hand.landmark
             now = time.monotonic()
 
-            x = (lm[8].x + lm[12].x) / 2.0
-            y = (lm[8].y + lm[12].y) / 2.0
+            if mode == "grab":
+                x, y = SwipeDetector.palm_centre(lm)
+            else:
+                x = (lm[8].x + lm[12].x) / 2.0
+                y = (lm[8].y + lm[12].y) / 2.0
+
+            if mode == "draw":
+                gain, steady = self.DRAW_GAIN, self.DRAW_STEADY
+                filter_x, filter_y = self._draw_filter_x, self._draw_filter_y
+            else:
+                gain, steady = self.MOVE_GAIN, self.MOVE_STEADY
+                filter_x, filter_y = self._move_filter_x, self._move_filter_y
+
+            restart = mode != self._rel_mode
+            self._rel_mode = mode
 
             left, top, right, bottom = self.POINTER_BOX
             target = (
@@ -3399,14 +3701,18 @@ class PresentationPage(QWidget):
                 (y - top) / (bottom - top) * (self._screen_h - 1),
             )
 
-            if self._draw_hand is None or now - self._draw_last > self.POINTER_GAP:
+            if (
+                restart
+                or self._draw_hand is None
+                or now - self._draw_last > self.POINTER_GAP
+            ):
 
                 # Start from the cursor, wherever it is.
                 cx, cy = pyautogui.position()
                 self._draw_pen = (float(cx), float(cy))
                 self._draw_string = self._draw_pen
-                self._draw_filter_x.reset()
-                self._draw_filter_y.reset()
+                filter_x.reset()
+                filter_y.reset()
 
             else:
 
@@ -3414,8 +3720,8 @@ class PresentationPage(QWidget):
                 hx, hy = self._draw_hand
 
                 self._draw_pen = (
-                    min(self._screen_w - 1, max(0.0, px + (target[0] - hx) * self.DRAW_GAIN)),
-                    min(self._screen_h - 1, max(0.0, py + (target[1] - hy) * self.DRAW_GAIN)),
+                    min(self._screen_w - 1, max(0.0, px + (target[0] - hx) * gain)),
+                    min(self._screen_h - 1, max(0.0, py + (target[1] - hy) * gain)),
                 )
 
             self._draw_hand = target
@@ -3426,14 +3732,14 @@ class PresentationPage(QWidget):
             ex, ey = self._draw_string
             distance = ((px - ex) ** 2 + (py - ey) ** 2) ** 0.5
 
-            if distance > self.DRAW_STEADY:
-                pull = 1.0 - self.DRAW_STEADY / distance
+            if distance > steady:
+                pull = 1.0 - steady / distance
                 self._draw_string = (ex + (px - ex) * pull, ey + (py - ey) * pull)
 
-            sx = self._draw_filter_x(self._draw_string[0], now)
-            sy = self._draw_filter_y(self._draw_string[1], now)
+            sx = filter_x(self._draw_string[0], now)
+            sy = filter_y(self._draw_string[1], now)
 
-            native_move(int(round(sx)), int(round(sy)))
+            self._set_cursor(int(round(sx)), int(round(sy)))
 
             # The pointer carries on from here, not from where it was.
             self._cursor_last = 0.0
@@ -3464,6 +3770,7 @@ class PresentationPage(QWidget):
 
             self._cursor_last = now
             self._draw_hand = None
+            self._rel_mode = None
 
             # The camera feed is mirrored, so x already matches the
             # user's on-screen left/right.
@@ -3482,7 +3789,7 @@ class PresentationPage(QWidget):
 
             # Instant move: pyautogui.moveTo() sleeps 0.1 s after every
             # call, which held up each camera frame (the lag).
-            native_move(smooth_x, smooth_y)
+            self._set_cursor(smooth_x, smooth_y)
 
         except Exception:
             pass
@@ -3554,6 +3861,11 @@ class PresentationPage(QWidget):
 
         # Enable gesture control ONLY here (explicit user action).
         self.gestures_enabled = True
+
+        # Forget gestures from before Start (see process_gesture), so
+        # 👍 / 👎 work at once.
+        self.detected_gesture = "None"
+        self._pose = None
         self.presentation_paused = False
 
         self.presentation_controller.start_presentation()

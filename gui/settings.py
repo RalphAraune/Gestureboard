@@ -813,9 +813,11 @@ class SettingsPage(QWidget):
     def _fill_gesture(self, layout):
 
         # Same gesture lists the tutorial teaches, grouped by feature.
-        from gui.tutorial import STEPS
+        from gui.tutorial import step
 
-        presentation, virtual_mouse, whiteboard = STEPS[:3]
+        presentation, virtual_mouse, whiteboard = (
+            step("presentation"), step("virtual_mouse"), step("whiteboard")
+        )
         slides, drawing = presentation["groups"][:2]
 
         guides = [

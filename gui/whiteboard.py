@@ -3142,9 +3142,9 @@ class WhiteboardPage(QWidget):
         hints_row.setVerticalSpacing(6)
 
         try:
-            from gui.tutorial import STEPS
+            from gui.tutorial import step
 
-            hints = STEPS[2]["groups"][0][1]
+            hints = step("whiteboard")["groups"][0][1]
         except Exception:
             hints = []
 
