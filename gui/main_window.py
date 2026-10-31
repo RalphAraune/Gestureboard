@@ -293,6 +293,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
 
+        # Disconnect the phone camera (if used) and free its port.
+        try:
+            from core.phone_camera import stop_server
+            stop_server()
+        except Exception as e:
+            print(f"Shutdown warning (phone camera): {e}")
+
         pages = (
             getattr(self, "virtual_mouse", None),
             getattr(self, "presentation", None),
@@ -1313,6 +1320,16 @@ class MainWindow(QMainWindow):
             f"Active camera: {name} "
             f"(index {index})"
         )
+
+        # Back to a webcam: stop the phone camera server.
+        try:
+            from core.phone_camera import PHONE_CAMERA, stop_server
+
+            if index != PHONE_CAMERA:
+                stop_server()
+
+        except Exception as e:
+            print(f"Phone camera stop warning: {e}")
 
         # ----------------------------------------------------------
         # Dashboard

@@ -1967,6 +1967,20 @@ class SettingsPage(QWidget):
         if index is None or index == self.active_camera_index:
             return
 
+        # The phone has to connect first (QR code). Cancelled: go back
+        # to the camera that was in use.
+        from core.phone_camera import PHONE_CAMERA
+
+        if index == PHONE_CAMERA:
+
+            from gui.phone_camera_dialog import connect_phone
+
+            if not connect_phone(self):
+                self.camera_combo.blockSignals(True)
+                self._select_camera_in_combo()
+                self.camera_combo.blockSignals(False)
+                return
+
         # MainWindow broadcasts the choice to every page and saves it.
         if self.main_window is not None and hasattr(
             self.main_window, "setActiveCamera"
