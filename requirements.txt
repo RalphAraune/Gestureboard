@@ -1,3 +1,16 @@
 PyQt5
 opencv-python
 cv2-enumerate-cameras
+mediapipe==0.10.21
+numpy<2
+pyautogui
+pymupdf
+psutil
+
+# Phone as camera (core/phone_camera.py)
+aiohttp
+cryptography
+qrcode[pil]
+
+# Building the Windows .exe (GestureBoard.spec)
+pyinstaller
