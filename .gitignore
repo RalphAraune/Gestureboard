@@ -23,6 +23,7 @@ Thumbs.db
 build/
 dist/
 *.spec
+!GestureBoard.spec
 
 # Temporary files
 *.tmp
