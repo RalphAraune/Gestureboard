@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy
 )
 
+import settings.preferences as prefs
 from settings import theme as app_theme
 from widgets import page_background
 from gui.whiteboard import BrushPreview, WhiteboardPage, tool_icon, tool_pixmap
@@ -1350,7 +1351,7 @@ class AnnotationPage(QWidget):
             return
 
         try:
-            saved_dir = os.path.join(os.getcwd(), "saved_files", "annotations")
+            saved_dir = str(prefs.saved_files_dir() / "annotations")
             os.makedirs(saved_dir, exist_ok=True)
 
             destination = os.path.join(saved_dir, os.path.basename(file_path))

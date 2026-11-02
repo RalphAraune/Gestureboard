@@ -6,14 +6,38 @@ import os
 import sys
 
 
-def _config_path():
-    """settings/config.json when run from source. In the one-file .exe
-    the code lives in a temporary folder that is deleted on exit, so
-    there it is %APPDATA%/GestureBoard/config.json instead."""
+def _frozen():
+    return getattr(sys, "frozen", False)
 
-    if getattr(sys, "frozen", False):
-        base = os.environ.get("APPDATA") or str(Path.home())
-        return Path(base) / "GestureBoard" / "config.json"
+
+def data_dir():
+    """%APPDATA%/GestureBoard: the built app's writable folder.
+
+    The installed app lives in Program Files, which is read-only, so
+    it must never write next to its .exe.
+    """
+
+    base = os.environ.get("APPDATA") or str(Path.home())
+    return Path(base) / "GestureBoard"
+
+
+def saved_files_dir():
+    """Root of the Saved Files folder (whiteboards, annotations,
+    presentations). saved_files/ in the working folder when run from
+    source; %APPDATA%/GestureBoard/saved_files in the built app."""
+
+    if _frozen():
+        return data_dir() / "saved_files"
+
+    return Path(os.getcwd()) / "saved_files"
+
+
+def _config_path():
+    """settings/config.json when run from source;
+    %APPDATA%/GestureBoard/config.json in the built app."""
+
+    if _frozen():
+        return data_dir() / "config.json"
 
     return Path(__file__).resolve().parent / "config.json"
 

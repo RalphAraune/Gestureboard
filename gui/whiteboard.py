@@ -4667,9 +4667,10 @@ class WhiteboardPage(QWidget):
 
                 import shutil
 
+                import settings.preferences as prefs
+
                 saved_dir = (
-                    Path(os.getcwd())
-                    / "saved_files"
+                    prefs.saved_files_dir()
                     / "whiteboards"
                 )
 

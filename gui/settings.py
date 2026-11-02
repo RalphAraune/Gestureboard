@@ -988,7 +988,7 @@ class SettingsPage(QWidget):
 
         group = self._group(layout)
 
-        folder = Path(os.getcwd()) / "saved_files"
+        folder = prefs.saved_files_dir()
 
         hint = self._row(
             group, "Saved files folder",

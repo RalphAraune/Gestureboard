@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
 )
 
+import settings.preferences as prefs
 from settings import theme as app_theme
 from widgets import page_background
 from widgets.sidebar import nav_icon
@@ -222,7 +223,7 @@ class SavedFilesPage(QWidget):
         # STORAGE FOLDERS
         # =========================================================
 
-        self.base_folder = Path(os.getcwd()) / "saved_files"
+        self.base_folder = prefs.saved_files_dir()
         self.annotation_folder = self.base_folder / "annotations"
         self.whiteboard_folder = self.base_folder / "whiteboards"
         self.presentation_folder = self.base_folder / "presentations"
