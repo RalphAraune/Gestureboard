@@ -1,12 +1,17 @@
-# PyInstaller build for GestureBoard: one windowed .exe that runs on a
-# Windows PC with nothing else installed.
+# PyInstaller build for GestureBoard: a windowed app folder (onedir)
+# that runs on a Windows PC with nothing else installed. installer.iss
+# packs this folder into a setup.exe; build.bat runs both steps.
 #
 #   pip install -r requirements.txt
 #   pyinstaller --noconfirm --clean GestureBoard.spec
 #
-# The result is dist/GestureBoard.exe.
+# The result is dist/GestureBoard/GestureBoard.exe (with _internal/).
+# Onedir starts much faster than one-file, which unpacked ~200 MB to a
+# temporary folder on every start.
 #
 # Notes
+# - The app never writes next to its .exe (Program Files is
+#   read-only): settings and saved files go to %APPDATA%/GestureBoard.
 # - The phone camera page is embedded in core/phone_page.py, so it
 #   needs no data file. Its certificate is written to
 #   %APPDATA%/GestureBoard at run time, never into the bundle.
@@ -106,12 +111,18 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="GestureBoard",
     icon="assets/logo/app_icon.ico",
     console=False,
     upx=False,
-    runtime_tmpdir=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    upx=False,
+    name="GestureBoard",
 )
